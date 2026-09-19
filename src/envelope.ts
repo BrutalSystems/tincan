@@ -52,10 +52,15 @@ export function buildEnvelope(input: EnvelopeInput): Envelope {
 /**
  * The text the peer actually reads. The sender's text is reproduced verbatim;
  * naming the real id is what makes a reply correlatable at all.
+ *
+ * `runtime` is stated because the receiving harness may get it wrong: Claude
+ * Code frames every inbound peer message as coming from "another Claude
+ * session", which is false for a Codex sender. This is the one line Tin Can
+ * controls, and it sits directly above that framing.
  */
 export function renderEnvelope(e: Envelope): string {
   return [
-    `<peer_message from="${e.from.name}" id="${e.id}">`,
+    `<peer_message from="${e.from.name}" runtime="${e.from.runtime}" id="${e.id}">`,
     e.text,
     `</peer_message>`,
     ``,

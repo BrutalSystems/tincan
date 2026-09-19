@@ -1,6 +1,6 @@
 # Tin Can — Address Format
 
-> **Normative for `@brutalsystems/tincan` 0.1.0.**
+> **Normative for `@brutalsystems/tincan` 0.1.1.**
 >
 > This describes what Tin Can does today, precisely enough for another tool to
 > produce addresses Tin Can will resolve. It is a write-down of shipped
@@ -120,7 +120,7 @@ If neither pass matches, the result is refused as unknown.
 
 ## Known defects
 
-Preserved in 0.1.0 by decision, not by oversight. They are in the fixture so
+Preserved by decision, not by oversight. They are in the fixture so
 that a second implementation matches Tin Can exactly, including where Tin Can is
 wrong. **Do not "correct" them independently** — that produces addresses that
 resolve in one tool and fail silently in the other.

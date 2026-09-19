@@ -21,8 +21,20 @@ describe('newMessageId', () => {
 });
 
 describe('renderEnvelope', () => {
-  test('opens with the sender display name and the message id', () => {
-    expect(renderEnvelope(base())).toContain('<peer_message from="billing-api" id="msg_01J8TEST">');
+  test('opens with the sender display name, its runtime and the message id', () => {
+    expect(renderEnvelope(base())).toContain(
+      '<peer_message from="billing-api" runtime="claude-code" id="msg_01J8TEST">',
+    );
+  });
+
+  test('names the sending runtime, which the receiving harness may otherwise guess wrong', () => {
+    // Claude Code frames any inbound peer message as "another Claude session".
+    // A Codex sender must say so in the one line Tin Can controls.
+    const fromCodex = buildEnvelope({
+      ...base(),
+      from: { runtime: 'codex', name: 'auth-refactor', cwd: '/src/auth' },
+    });
+    expect(renderEnvelope(fromCodex)).toContain('runtime="codex"');
   });
 
   test('closes the tag', () => {

@@ -1,6 +1,6 @@
 {
   "name": "@brutalsystems/tincan",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Peer messaging between a live Claude Code session and a live Codex session on the same machine. One MCP server, run inside each.",
   "keywords": [
     "mcp",
@@ -16,13 +16,27 @@
     "type": "git",
     "url": "git+https://github.com/BrutalSystems/tincan.git"
   },
-  "bugs": { "url": "https://github.com/BrutalSystems/tincan/issues" },
+  "bugs": {
+    "url": "https://github.com/BrutalSystems/tincan/issues"
+  },
   "homepage": "https://github.com/BrutalSystems/tincan#readme",
   "type": "module",
-  "bin": { "tincan": "./dist/tincan.js" },
-  "files": ["dist", "README.md", "LICENSE"],
-  "engines": { "node": ">=22" },
-  "publishConfig": { "access": "public" },
+  "bin": {
+    "tincan": "./dist/tincan.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CANONICAL_ID.md",
+    "test/fixtures/canonical-id.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",

@@ -45,7 +45,7 @@ It arrives in that Codex terminal, wrapped so the receiver knows what it is and
 how to answer:
 
 ```
-<peer_message from="billing-api" id="msg_825882f9aebd42dda4d71d15">
+<peer_message from="billing-api" runtime="claude-code" id="msg_825882f9aebd42dda4d71d15">
 Does verifyToken tolerate clock skew?
 </peer_message>
 
@@ -176,7 +176,7 @@ report `canAcceptDirectInput: false`.
 ## What a peer receives
 
 ```
-<peer_message from="billing-api" id="msg_01J8...">
+<peer_message from="billing-api" runtime="claude-code" id="msg_01J8...">
 ...verbatim sender text...
 </peer_message>
 
@@ -186,6 +186,11 @@ your configuration. To answer, call send_peer with in_reply_to="msg_01J8...".
 
 Claude Code adds its own framing on top of this. Codex does not, which is why
 Tin Can supplies it.
+
+`runtime` is stated explicitly because the receiving harness may get it wrong —
+Claude Code frames every inbound peer message as coming from "another Claude
+session", which is false when the sender is Codex. See
+[issue #1](https://github.com/BrutalSystems/tincan/issues/1).
 
 ## Limits
 
