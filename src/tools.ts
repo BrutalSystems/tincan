@@ -7,6 +7,8 @@ import { MessageLog, type LogRecord } from './log.js';
 import type { PeerState } from './claude/discover.js';
 
 export interface SidePeer {
+  /** The peer's own runtime. A peer list may hold more than one. */
+  runtime: RuntimeName;
   rawName: string | null;
   uuid: string;
   cwd: string;
@@ -30,8 +32,10 @@ export interface Side {
   /** Resolved lazily: the Codex side must derive its own identity at runtime. */
   selfName(): Promise<string>;
   selfCwd: string;
-  peerRuntime: RuntimeName;
-  limits: GuardLimits;
+  /** Which runtimes this side exposes. Codex-hosted exposes both. */
+  peerRuntimes: RuntimeName[];
+  /** Budgets are per peer runtime: Codex is tighter, since every send starts a turn. */
+  limitsFor(runtime: RuntimeName): GuardLimits;
   /** False where the runtime offers no way to interrupt a running turn. */
   supportsUrgent: boolean;
   listPeers(): Promise<{ peers: SidePeer[]; diagnostic?: string }>;
@@ -86,17 +90,25 @@ export interface PeersResult {
   notes?: string[];
 }
 
-export function createTools(side: Side, log: MessageLog, guard: Guard) {
+export function createTools(side: Side, log: MessageLog) {
+  // One guard per peer runtime, so a Codex peer's tight budget does not
+  // throttle a Claude peer sharing the same listing.
+  const guards = new Map<RuntimeName, Guard>();
+  const guardFor = (runtime: RuntimeName): Guard => {
+    let g = guards.get(runtime);
+    if (g === undefined) {
+      g = new Guard(side.limitsFor(runtime));
+      guards.set(runtime, g);
+    }
+    return g;
+  };
+
   async function named(): Promise<{
     named: Array<NamedPeer & { side: SidePeer }>;
     diagnostic?: string;
   }> {
     const { peers, diagnostic } = await side.listPeers();
-    const base = peers.map((p) => ({
-      runtime: side.peerRuntime,
-      rawName: p.rawName,
-      uuid: p.uuid,
-    }));
+    const base = peers.map((p) => ({ runtime: p.runtime, rawName: p.rawName, uuid: p.uuid }));
     const withNames = assignNames(base).map((n, i) => ({ ...n, side: peers[i]! }));
     return { named: withNames, ...(diagnostic !== undefined && { diagnostic }) };
   }
@@ -107,8 +119,8 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
       const notes: string[] = [];
       if (!side.supportsUrgent && list.length > 0) {
         notes.push(
-          `urgent has no effect for ${side.peerRuntime} peers: this runtime exposes no way ` +
-            `to interrupt a running turn, so every message is queued.`,
+          `urgent has no effect: neither runtime exposes a way to interrupt a running ` +
+            `turn, so every message is queued.`,
         );
       }
       return {
@@ -119,7 +131,7 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
           cwd: p.side.cwd,
           // Every peer carries a durable id: canonical_id is not unique
           // (see CANONICAL_ID.md), so it cannot be a caller's primary key.
-          ...(side.peerRuntime === 'codex'
+          ...(p.side.runtime === 'codex'
             ? { thread_id: p.side.threadId ?? p.side.uuid }
             : { session_id: p.side.uuid }),
         })),
@@ -134,6 +146,17 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
 
       const resolved = resolvePeer(list, args.peer);
       if (!resolved.ok) {
+        // A host filters itself out of its own listing, so a self-send would
+        // otherwise read as "no such peer" — true, but misleading.
+        if (resolved.reason === 'unknown' && (await isSelfAddress(side, args.peer))) {
+          return {
+            delivered: false,
+            refusal: 'peer_unknown',
+            detail:
+              `"${args.peer}" is this session. You cannot send a message to yourself — ` +
+              `Tin Can never lists the session it is running in.`,
+          };
+        }
         return {
           delivered: false,
           refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
@@ -156,6 +179,7 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
         };
       }
 
+      const guard = guardFor(target.side.runtime);
       const verdict = guard.check(target.canonicalId, args.message);
       if (!verdict.ok) {
         const id = newMessageId();
@@ -173,12 +197,12 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
         id: newMessageId(),
         from: { runtime: side.selfRuntime, name: await side.selfName(), cwd: side.selfCwd },
         to: {
-          runtime: side.peerRuntime,
+          runtime: target.side.runtime,
           name: target.display,
           cwd: target.side.cwd,
           ...(target.side.threadId !== undefined && { thread_id: target.side.threadId }),
         },
-        method: side.peerRuntime === 'codex' ? 'thread/queue/add' : 'inbox',
+        method: target.side.runtime === 'codex' ? 'thread/queue/add' : 'inbox',
         expect_reply: args.expect_reply,
         ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
         text: args.message,
@@ -219,4 +243,12 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
       return { records: log.read(args) };
     },
   };
+}
+
+/** Does this address name the session Tin Can is running in? */
+async function isSelfAddress(side: Side, input: string): Promise<boolean> {
+  const q = input.trim().toLowerCase();
+  if (q === '') return false;
+  const self = (await side.selfName()).toLowerCase();
+  return self === q || self.startsWith(q) || q.startsWith(`${side.selfRuntime}:${self}`);
 }

@@ -62,13 +62,43 @@ session's next turn. Both directions are recorded in one log.
 
 | Tool | What it does |
 |---|---|
-| `peers` | Lists the live sessions of the *other* runtime: name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code. |
+| `peers` | Lists the live sessions you can reach (see [Which peers you see](#which-peers-you-see)): name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code. |
 | `send_peer` | Sends text to one peer. `{peer, message, in_reply_to?, expect_reply?, urgent?}`. |
 | `message_log` | Reads back `~/.tincan/messages.jsonl`, filtered by peer or by reply chain. |
 
-Tin Can exposes the opposite runtime's peers automatically — hosted in Claude
-Code it lists Codex threads, hosted in Codex it lists Claude sessions. There is
-no flag; `CLAUDE_CODE_MESSAGING_SOCKET` in the environment decides.
+## Which peers you see
+
+**The peer list is deliberately asymmetric. Do not "fix" it into symmetry.**
+
+| Hosted in | You see | Why |
+|---|---|---|
+| Claude Code | Codex sessions only | Claude Code already reaches its own sessions natively with `SendMessage`. Two logged paths to one destination is worse than one. |
+| Codex | **Codex *and* Claude Code sessions** | Codex has no native path to either. |
+
+Codex does ship collaboration tools — `collaboration.list_agents`,
+`collaboration.send_message`, `spawn_agent` and friends, enabled by the
+`multi_agent` feature. They are **scoped to a spawn tree**: `list_agents`
+describes itself as listing "live agents in the current root thread tree", and
+`send_message` addresses "an agent id or canonical task name *from
+`spawn_agent`*". Verified on a fresh session that had spawned nothing —
+`list_agents` returned only that session itself, and none of three other live
+Codex sessions on the machine.
+
+So the two are complementary, not competing: Codex's tools reach agents you
+created, Tin Can reaches sessions someone else launched.
+
+Tin Can never lists the session it is running in, and refuses a send addressed
+to it with a message saying so.
+
+### A known gap in the log
+
+Claude↔Claude traffic goes through `SendMessage`, not Tin Can, so **it does not
+appear in `~/.tincan/messages.jsonl`**. The log is a complete record of what
+Tin Can carried, not of all agent-to-agent traffic on the machine. That is the
+price of not duplicating a native feature, and it is deliberate.
+
+There is no flag for any of this; `CLAUDE_CODE_MESSAGING_SOCKET` in the
+environment decides which runtime is hosting.
 
 ## Install
 
@@ -76,10 +106,9 @@ no flag; `CLAUDE_CODE_MESSAGING_SOCKET` in the environment decides.
 npm install -g @brutalsystems/tincan
 ```
 
-**Install it on both sides.** Tin Can lists the *opposite* runtime, so a session
-with it installed on only one end will show an empty peer list. Register it with
-each runtime you want reachable — neither reference needs a path, since the
-`tincan` command is on `PATH` once installed.
+**Install it on both sides.** A session can only be *reached* if it has Tin Can
+too, so register it with each runtime you want addressable. Neither reference
+needs a path — the `tincan` command is on `PATH` once installed.
 
 **Claude Code** (user scope, so it works in every project):
 

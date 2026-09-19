@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { toolDefinitions } from '../src/tool-definitions.js';
 
-const defs = toolDefinitions('codex');
+const defs = toolDefinitions(['codex']);
 const byName = (n: string) => defs.find((d) => d.name === n)!;
 
 describe('toolDefinitions', () => {
@@ -26,6 +26,13 @@ describe('toolDefinitions', () => {
   test('names the peer runtime in the descriptions so the model knows who it reaches', () => {
     expect(byName('peers').description).toContain('Codex');
     expect(byName('send_peer').description).toContain('Codex');
+  });
+
+  test('names both runtimes when a side exposes both', () => {
+    const both = toolDefinitions(['codex', 'claude-code']);
+    const d = both.find((x) => x.name === 'peers')!.description;
+    expect(d).toContain('Codex');
+    expect(d).toContain('Claude Code');
   });
 
   test('tells the model send_peer does not wait for an answer', () => {

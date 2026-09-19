@@ -72,17 +72,24 @@ describe('codexSelfNameOf', () => {
 });
 
 describe('buildSide', () => {
-  test('hosted in Claude Code, it exposes Codex peers under the tighter Codex budget', () => {
+  test('hosted in Claude Code, it exposes Codex peers only', () => {
+    // Claude Code reaches its own sessions natively via SendMessage.
     const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
     expect(side.selfRuntime).toBe('claude-code');
-    expect(side.peerRuntime).toBe('codex');
-    expect(side.limits).toBe(CODEX_LIMITS);
+    expect(side.peerRuntimes).toEqual(['codex']);
   });
 
-  test('hosted in Codex, it exposes Claude Code peers under the Claude budget', () => {
+  test('hosted in Codex, it exposes both runtimes', () => {
+    // Codex's collaboration tools only reach its own spawn tree, so it has no
+    // native path to either an independent Codex session or a Claude one.
     const side = buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
-    expect(side.peerRuntime).toBe('claude-code');
-    expect(side.limits).toBe(CLAUDE_LIMITS);
+    expect(side.peerRuntimes).toEqual(['codex', 'claude-code']);
+  });
+
+  test('budgets are per peer runtime, so Codex stays tighter in a mixed listing', () => {
+    const side = buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
+    expect(side.limitsFor('codex')).toBe(CODEX_LIMITS);
+    expect(side.limitsFor('claude-code')).toBe(CLAUDE_LIMITS);
   });
 
   test('resolves its own name lazily, since the Codex side must derive it at runtime', async () => {

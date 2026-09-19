@@ -72,84 +72,150 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
     return {
       ...common,
       selfName: async () => name,
-      peerRuntime: 'codex',
-      limits: CODEX_LIMITS,
+      peerRuntimes: ['codex'],
+      limitsFor,
       async listPeers() {
+        // Claude Code reaches its own sessions natively via SendMessage, so
+        // Tin Can deliberately does not duplicate that path.
         const { peers, diagnostic } = await listCodexPeers(codex);
         return {
-          peers: peers.map((p) => ({
-            rawName: p.rawName,
-            uuid: p.uuid,
-            cwd: p.cwd,
-            state: p.state,
-            threadId: p.threadId,
-          })),
+          peers: peers.map(toCodexSidePeer),
           ...(diagnostic !== undefined && { diagnostic }),
         };
       },
-      async deliver(peer: SidePeer, _id, text): Promise<DeliveryOutcome> {
-        const r = await codex.queue(peer.threadId ?? peer.uuid, text);
-        return {
-          delivered: r.ok,
-          method: 'thread/queue/add',
-          ...(r.error !== undefined && { error: r.error }),
-        };
-      },
+      deliver: (peer, id, text) => deliverTo(codex, ctx, peer, id, text),
     };
   }
 
-  // Hosted in Codex, so the peers are Claude Code sessions.
+  // Hosted in Codex. Codex's own collaboration.list_agents / send_message are
+  // scoped to a spawn tree ("live agents in the current root thread tree") and
+  // cannot reach an independently launched session, so Tin Can exposes BOTH
+  // Codex and Claude peers here. The asymmetry with the Claude side is
+  // deliberate — see the README.
   const codexForSelf = createCodexEnv();
-  let resolved: string | undefined;
+  let resolvedName: string | undefined;
+  let selfThread: string | undefined;
+
   return {
     ...common,
     selfName: async () => {
-      resolved ??= await codexSelfName(codexForSelf, ctx, env);
-      return resolved;
+      resolvedName ??= await codexSelfName(codexForSelf, ctx, env);
+      return resolvedName;
     },
-    peerRuntime: 'claude-code',
-    limits: CLAUDE_LIMITS,
+    peerRuntimes: ['codex', 'claude-code'],
+    limitsFor,
+
     async listPeers() {
-      const sessions = await listClaudeSessions({
-        registryDir: ctx.registryDir,
-        selfPid: ctx.pid,
-        env,
-      });
-      if (sessions.length === 0) {
+      selfThread ??= await selfThreadId(codexForSelf, ctx, env);
+
+      const [codexListing, claudeSessions] = await Promise.all([
+        listCodexPeers(codexForSelf),
+        listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
+      ]);
+
+      const codexPeers = codexListing.peers
+        .filter((p) => p.threadId !== selfThread) // never list ourselves
+        .map(toCodexSidePeer);
+
+      const claudePeers: SidePeer[] = claudeSessions.map((session) => ({
+        runtime: 'claude-code',
+        rawName: session.rawName,
+        uuid: session.uuid,
+        cwd: session.cwd,
+        state: session.state,
+        socketPath: session.socketPath,
+        auth: session.auth,
+      }));
+
+      const peers = [...codexPeers, ...claudePeers];
+      if (peers.length === 0) {
         return {
-          peers: [],
+          peers,
           diagnostic:
-            'No Claude Code sessions are registered. Start one, or check that ' +
-            `${ctx.registryDir} exists.`,
+            'No other agent sessions are running. Start a Codex or Claude Code ' +
+            'session, or check that it has taken its first turn.',
         };
       }
       return {
-        peers: sessions.map((s) => ({
-          rawName: s.rawName,
-          uuid: s.uuid,
-          cwd: s.cwd,
-          state: s.state,
-          socketPath: s.socketPath,
-          auth: s.auth,
-        })),
+        peers,
+        ...(codexListing.diagnostic !== undefined && { diagnostic: codexListing.diagnostic }),
       };
     },
-    async deliver(peer: SidePeer, id, text): Promise<DeliveryOutcome> {
-      const r = await sendToInbox({
-        socketPath: peer.socketPath!,
-        auth: peer.auth as InboxAuth | undefined,
-        text,
-        msgId: id,
-      });
-      return {
-        delivered: r.delivered,
-        method: 'inbox',
-        ...(r.notice !== undefined && { notice: r.notice }),
-        ...(r.error !== undefined && { error: r.error }),
-        ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
-      };
-    },
+
+    deliver: (peer, id, text) => deliverTo(codexForSelf, ctx, peer, id, text),
   };
+}
+
+function limitsFor(runtime: RuntimeName) {
+  return runtime === 'codex' ? CODEX_LIMITS : CLAUDE_LIMITS;
+}
+
+function toCodexSidePeer(p: {
+  rawName: string | null;
+  uuid: string;
+  cwd: string;
+  state: ReturnType<typeof String> extends never ? never : SidePeer['state'];
+  threadId: string;
+}): SidePeer {
+  return {
+    runtime: 'codex',
+    rawName: p.rawName,
+    uuid: p.uuid,
+    cwd: p.cwd,
+    state: p.state,
+    threadId: p.threadId,
+  };
+}
+
+/** Delivery dispatches on the peer's runtime, not on the host's. */
+async function deliverTo(
+  codex: CodexEnv,
+  ctx: HostContext,
+  peer: SidePeer,
+  id: string,
+  text: string,
+): Promise<DeliveryOutcome> {
+  if (peer.runtime === 'codex') {
+    const r = await codex.queue(peer.threadId ?? peer.uuid, text);
+    return {
+      delivered: r.ok,
+      method: 'thread/queue/add',
+      ...(r.error !== undefined && { error: r.error }),
+    };
+  }
+
+  const r = await sendToInbox({
+    socketPath: peer.socketPath!,
+    auth: peer.auth as InboxAuth | undefined,
+    text,
+    msgId: id,
+  });
+  return {
+    delivered: r.delivered,
+    method: 'inbox',
+    ...(r.notice !== undefined && { notice: r.notice }),
+    ...(r.error !== undefined && { error: r.error }),
+    ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
+  };
+}
+
+/** Our own Codex thread, so a Codex-hosted instance never lists itself. */
+async function selfThreadId(
+  codex: CodexEnv,
+  ctx: HostContext,
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  try {
+    const live = await codex.liveThreads();
+    const holders = new Map<string, number>();
+    for (const [threadId, info] of live) {
+      if (info.pid !== undefined) holders.set(threadId, info.pid);
+    }
+    const chain = [ctx.pid, ...(await ancestorPids(ctx.pid, parentPidLookup(env)))];
+    return pickSelfThreadId(holders, chain);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

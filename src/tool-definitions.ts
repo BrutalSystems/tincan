@@ -16,8 +16,8 @@ const LABEL: Record<RuntimeName, string> = {
   codex: 'Codex',
 };
 
-export function toolDefinitions(peerRuntime: RuntimeName): ToolDefinition[] {
-  const peer = LABEL[peerRuntime];
+export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
+  const peer = peerRuntimes.map((r) => LABEL[r]).join(' and ');
   return [
     {
       name: 'peers',

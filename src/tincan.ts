@@ -15,7 +15,6 @@ import { detectRuntime, buildSide, claudeRegistryDir } from './runtime.js';
 import { toolDefinitions } from './tool-definitions.js';
 import { createTools, type SendPeerArgs, type MessageLogArgs } from './tools.js';
 import { MessageLog, messagesPath } from './log.js';
-import { Guard } from './guard.js';
 
 function diag(msg: string): void {
   process.stderr.write(`[tincan] ${msg}\n`);
@@ -30,8 +29,8 @@ async function main(): Promise<void> {
   });
 
   const log = new MessageLog(messagesPath(process.env));
-  const tools = createTools(side, log, new Guard(side.limits));
-  const definitions = toolDefinitions(side.peerRuntime);
+  const tools = createTools(side, log);
+  const definitions = toolDefinitions(side.peerRuntimes);
 
   const server = new Server(
     { name: 'tincan', version: '0.1.0' },
@@ -60,7 +59,10 @@ async function main(): Promise<void> {
     }
   });
 
-  diag(`hosted in ${runtime} as "${await side.selfName()}"; peers are ${side.peerRuntime} sessions`);
+  diag(
+    `hosted in ${runtime} as "${await side.selfName()}"; ` +
+      `peers are ${side.peerRuntimes.join(' + ')} sessions`,
+  );
   await server.connect(new StdioServerTransport());
 }
 

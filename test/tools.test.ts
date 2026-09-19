@@ -3,13 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MessageLog } from '../src/log.js';
-import { Guard, CODEX_LIMITS } from '../src/guard.js';
+import { CODEX_LIMITS, CLAUDE_LIMITS } from '../src/guard.js';
 import { createTools, type Side, type SidePeer } from '../src/tools.js';
 
 let dir: string;
 let log: MessageLog;
 
 const peer = (over: Partial<SidePeer> = {}): SidePeer => ({
+  runtime: 'codex',
   rawName: 'Auth refactor',
   uuid: '00000000-0000-0000-0000-0000000007f3',
   cwd: '/src/auth',
@@ -29,8 +30,8 @@ function makeSide(over: Partial<Side> = {}) {
     selfRuntime: 'claude-code',
     selfName: async () => 'billing-api',
     selfCwd: '/src/billing',
-    peerRuntime: 'codex',
-    limits: CODEX_LIMITS,
+    peerRuntimes: ['codex'],
+    limitsFor: (r: 'codex' | 'claude-code') => (r === 'codex' ? CODEX_LIMITS : CLAUDE_LIMITS),
     supportsUrgent: false,
     listPeers: async () => ({ peers: [peer()] }),
     deliver: async (_p, _e, text) => {
@@ -42,7 +43,7 @@ function makeSide(over: Partial<Side> = {}) {
   return { side, delivered };
 }
 
-const tools = (side: Side) => createTools(side, log, new Guard(side.limits));
+const tools = (side: Side) => createTools(side, log);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'tincan-tools-'));
@@ -67,9 +68,9 @@ describe('peers', () => {
     // CANONICAL_ID.md tells consumers to key on the id rather than the name,
     // because canonical_id is not unique. Claude peers must therefore carry one.
     const { side } = makeSide({
-      peerRuntime: 'claude-code',
+      peerRuntimes: ['claude-code'],
       listPeers: async () => ({
-        peers: [peer({ rawName: 'billing-api', uuid: '5af69d42-2214-41d9-b13f-9c3177eb60ce', threadId: undefined })],
+        peers: [peer({ runtime: 'claude-code', rawName: 'billing-api', uuid: '5af69d42-2214-41d9-b13f-9c3177eb60ce', threadId: undefined })],
       }),
     });
     const r = await tools(side).peers();
@@ -86,7 +87,7 @@ describe('peers', () => {
 
   test('every peer carries a durable id, whichever runtime it is', async () => {
     for (const runtime of ['codex', 'claude-code'] as const) {
-      const { side } = makeSide({ peerRuntime: runtime });
+      const { side } = makeSide({ peerRuntimes: [runtime], listPeers: async () => ({ peers: [peer({ runtime, threadId: runtime === 'codex' ? '00000000-0000-0000-0000-0000000007f3' : undefined })] }) });
       const r = await tools(side).peers();
       const p0 = r.peers[0]!;
       expect(p0.thread_id ?? p0.session_id).toBeTruthy();
@@ -106,6 +107,76 @@ describe('peers', () => {
     const { side } = makeSide();
     const r = await tools(side).peers();
     expect(r.notes?.join(' ')).toMatch(/urgent/i);
+  });
+});
+
+describe('mixed-runtime peer lists', () => {
+  const mixed = () =>
+    makeSide({
+      peerRuntimes: ['codex', 'claude-code'],
+      listPeers: async () => ({
+        peers: [
+          peer({ runtime: 'codex', rawName: 'Auth refactor', uuid: '00000000-0000-0000-0000-0000000007f3' }),
+          peer({
+            runtime: 'claude-code',
+            rawName: 'billing-api',
+            uuid: '5af69d42-2214-41d9-b13f-9c3177eb60ce',
+            threadId: undefined,
+          }),
+        ],
+      }),
+    });
+
+  test('names each peer by its own runtime, not the host side', async () => {
+    const r = await tools(mixed().side).peers();
+    expect(r.peers.map((p) => p.canonical_id)).toEqual([
+      'codex:auth-refactor.7f3',
+      'claude-code:billing-api.0ce',
+    ]);
+  });
+
+  test('gives each peer the durable id field of its own runtime', async () => {
+    const r = await tools(mixed().side).peers();
+    expect(r.peers[0]).toHaveProperty('thread_id');
+    expect(r.peers[1]).toHaveProperty('session_id');
+  });
+
+  test('records the delivery method of the peer runtime, not the host', async () => {
+    const { side } = mixed();
+    const t = tools(side);
+    await t.send_peer({ peer: 'auth-refactor', message: 'to codex' });
+    await t.send_peer({ peer: 'billing-api', message: 'to claude' });
+    const methods = log.read({ last_n: 10 }).map((r) => (r.kind === undefined ? r.method : null));
+    expect(methods).toEqual(['thread/queue/add', 'inbox']);
+  });
+
+  test('suffixes a name that collides across runtimes', async () => {
+    const { side } = makeSide({
+      peerRuntimes: ['codex', 'claude-code'],
+      listPeers: async () => ({
+        peers: [
+          peer({ runtime: 'codex', rawName: 'api', uuid: '00000000-0000-0000-0000-000000000aaa' }),
+          peer({ runtime: 'claude-code', rawName: 'api', uuid: '00000000-0000-0000-0000-000000000bbb', threadId: undefined }),
+        ],
+      }),
+    });
+    const r = await tools(side).peers();
+    expect(r.peers.map((p) => p.name)).toEqual(['api.aaa', 'api.bbb']);
+  });
+
+  test('holds each peer to the guard budget of its own runtime', async () => {
+    // Codex is tighter because every send starts a turn.
+    const { side } = mixed();
+    const t = tools(side);
+    for (let i = 0; i < CODEX_LIMITS.perMinute; i++) {
+      await t.send_peer({ peer: 'auth-refactor', message: `codex ${i}` });
+    }
+    const overCodex = await t.send_peer({ peer: 'auth-refactor', message: 'one too many' });
+    expect(overCodex.refusal).toBe('rate_limited');
+
+    // the Claude peer still has budget left
+    const claudeOk = await t.send_peer({ peer: 'billing-api', message: 'still fine' });
+    expect(claudeOk.delivered).toBe(true);
   });
 });
 
@@ -129,6 +200,16 @@ describe('send_peer', () => {
     const { side, delivered } = makeSide();
     await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
     expect(delivered[0]!.logLinesAtDeliveryTime).toBe(1);
+  });
+
+  test('refuses a send to yourself by name, saying so plainly', async () => {
+    // A Codex-hosted instance filters its own thread out of the listing, so a
+    // self-send would otherwise read as "no such peer", which is misleading.
+    const { side } = makeSide({ selfName: async () => 'auth-service' });
+    const r = await tools(side).send_peer({ peer: 'auth-service', message: 'hi' });
+    expect(r.delivered).toBe(false);
+    expect(r.refusal).toBe('peer_unknown');
+    expect(r.detail?.toLowerCase()).toContain('yourself');
   });
 
   test('refuses an unknown peer', async () => {
