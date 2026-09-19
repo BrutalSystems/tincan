@@ -18,6 +18,13 @@ export interface CodexThread {
   canAcceptDirectInput?: boolean;
 }
 
+export interface LiveThreadInfo {
+  /** Working directory of the process holding the lock, when we can read it. */
+  cwd?: string;
+  /** Pid holding the lock — how a Codex-hosted tincan identifies its own thread. */
+  pid?: number;
+}
+
 export interface CodexPeer {
   uuid: string;
   threadId: string;
@@ -30,8 +37,11 @@ export interface CodexEnv {
   /** Is a usable `codex` reachable at all? */
   probe(): Promise<{ ok: boolean; diagnostic?: string }>;
   listThreads(): Promise<CodexThread[]>;
-  /** Thread ids whose writer lock is held by a running process. */
-  liveThreadIds(): Promise<Set<string>>;
+  /**
+   * Threads whose writer lock is held by a running process, with whatever the
+   * holder can tell us. This — not `thread/list` — is the liveness signal.
+   */
+  liveThreads(): Promise<Map<string, LiveThreadInfo>>;
   queue(threadId: string, text: string): Promise<{ ok: boolean; error?: string }>;
 }
 
@@ -51,17 +61,35 @@ export async function listCodexPeers(env: CodexEnv): Promise<CodexListing> {
     };
   }
 
-  const [threads, live] = await Promise.all([env.listThreads(), env.liveThreadIds()]);
+  const [threads, live] = await Promise.all([env.listThreads(), env.liveThreads()]);
+  const byId = new Map(threads.map((t) => [t.id, t]));
 
-  const peers = threads
-    .filter((t) => live.has(t.id))
-    .map((t) => ({
-      uuid: t.id,
-      threadId: t.id,
-      rawName: t.name,
-      cwd: t.cwd,
-      state: stateOf(t),
-    }));
+  // Union, not intersection: a thread reaches thread/list only after its first
+  // turn, but it holds its writer lock from launch. A freshly started session
+  // is a real peer — just not yet a reachable one.
+  const peers = [...live.entries()].map(([id, info]) => {
+    const t = byId.get(id);
+    return {
+      uuid: id,
+      threadId: id,
+      rawName: t?.name ?? null,
+      cwd: t?.cwd ?? info.cwd ?? '',
+      // No thread/list entry means no persisted rollout, and thread/queue/add
+      // fails with "no rollout found". One turn in that session fixes it.
+      state: t === undefined ? ('unreachable' as const) : stateOf(t),
+    };
+  });
+
+  const pending = peers.filter((p) => !byId.has(p.threadId));
+  if (pending.length > 0) {
+    return {
+      peers,
+      diagnostic:
+        `${pending.length} Codex session(s) are open but unreachable until their first turn — ` +
+        `a new thread has no rollout to queue against. Send one prompt in that terminal ` +
+        `and it becomes addressable.`,
+    };
+  }
 
   return { peers };
 }

@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
-import type { CodexEnv, CodexThread } from './discover.js';
+import type { CodexEnv, CodexThread, LiveThreadInfo } from './discover.js';
 
 export interface CodexEnvOptions {
   path?: string;
@@ -147,28 +147,28 @@ export function createCodexEnv(opts: CodexEnvOptions = {}): CodexEnv {
       return Array.isArray(data) ? data.map(toThread) : [];
     },
 
-    async liveThreadIds() {
-      if (!existsSync(lockDir)) return new Set<string>();
-      const paths = readdirSync(lockDir)
-        .filter((f) => f.endsWith('.lock'))
-        .map((f) => join(lockDir, f));
+    async liveThreads() {
+      const live = new Map<string, LiveThreadInfo>();
+      if (!existsSync(lockDir)) return live;
 
-      // A lock file outlives its process; only a real holder means a live session.
-      const alive = new Set<string>();
+      const locks = readdirSync(lockDir).filter((f) => f.endsWith('.lock'));
       await Promise.all(
-        paths.map(
-          (p) =>
-            new Promise<void>((resolve) => {
-              execFile('lsof', ['-t', p], { env, timeout: 10_000 }, (_e, out) => {
-                if (String(out).trim() !== '') {
-                  alive.add(p.split('/').pop()!.replace(/\.lock$/, ''));
-                }
-                resolve();
-              });
-            }),
-        ),
+        locks.map(async (file) => {
+          const threadId = file.replace(/\.lock$/, '');
+          // A lock file outlives its process; only a real holder means a live
+          // session. The holder's cwd names the session for a thread that has
+          // not taken a turn yet and so has no thread/list metadata.
+          const pid = await run('lsof', ['-t', join(lockDir, file)], env);
+          const holder = pid.split('\n')[0]?.trim();
+          if (!holder) return;
+          const cwd = await processCwd(holder, env);
+          live.set(threadId, {
+            ...(cwd !== undefined && { cwd }),
+            ...(Number.isFinite(Number(holder)) && { pid: Number(holder) }),
+          });
+        }),
       );
-      return alive;
+      return live;
     },
 
     async queue(threadId, text) {
@@ -212,4 +212,28 @@ function toThread(raw: unknown): CodexThread {
       canAcceptDirectInput: t.canAcceptDirectInput,
     }),
   };
+}
+
+function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { env, timeout: 10_000 }, (_err, stdout) => resolve(String(stdout)));
+  });
+}
+
+/** Parent pid of a process, for walking up to our Codex host. */
+export function parentPidLookup(env: NodeJS.ProcessEnv) {
+  return async (pid: number): Promise<number | undefined> => {
+    const out = await run('ps', ['-o', 'ppid=', '-p', String(pid)], env);
+    const n = Number(out.trim());
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+}
+
+/** `lsof -Fn` prints the cwd on an `n`-prefixed line. */
+async function processCwd(pid: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const out = await run('lsof', ['-a', '-d', 'cwd', '-p', pid, '-Fn'], env);
+  for (const line of out.split('\n')) {
+    if (line.startsWith('n')) return line.slice(1).trim();
+  }
+  return undefined;
 }

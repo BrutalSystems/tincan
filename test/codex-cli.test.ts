@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { createCodexEnv } from '../src/codex/cli.js';
 
 let dir: string;
@@ -152,5 +153,44 @@ describe('queue', () => {
     const r = await envWithFake().queue('abc-123', 'hello');
     expect(r.ok).toBe(false);
     expect(r.error?.toLowerCase()).toContain('codex');
+  });
+});
+
+describe('liveThreads', () => {
+  test('is empty when the lock directory does not exist', async () => {
+    installFakeCodex();
+    expect((await envWithFake().liveThreads()).size).toBe(0);
+  });
+
+  test('ignores a lock file no process is holding', async () => {
+    installFakeCodex();
+    const locks = join(dir, 'locks');
+    mkdirSync(locks, { recursive: true });
+    writeFileSync(join(locks, '01a0b995-2fbc-7671-9901-77f1832cb3b1.lock'), '');
+    const live = await createCodexEnv({ path: `${dir}:${process.env.PATH}`, lockDir: locks }).liveThreads();
+    expect(live.size).toBe(0);
+  });
+
+  test('reports a lock held by a running process, with that process working directory', async () => {
+    installFakeCodex();
+    const locks = join(dir, 'locks');
+    mkdirSync(locks, { recursive: true });
+    const lockPath = join(locks, '01a0b995-2fbc-7671-9901-77f1832cb3b1.lock');
+    writeFileSync(lockPath, '');
+
+    // A real process holding the file open, with a known cwd.
+    const holder = spawn(
+      process.execPath,
+      ['-e', `const fs=require('fs');fs.openSync(${JSON.stringify(lockPath)},'r');setTimeout(()=>{},10000);`],
+      { cwd: dir, stdio: 'ignore' },
+    );
+    await new Promise((r) => setTimeout(r, 700));
+    try {
+      const live = await createCodexEnv({ path: `${dir}:${process.env.PATH}`, lockDir: locks }).liveThreads();
+      expect([...live.keys()]).toEqual(['01a0b995-2fbc-7671-9901-77f1832cb3b1']);
+      expect(live.get('01a0b995-2fbc-7671-9901-77f1832cb3b1')?.cwd).toContain('tincan-codex-');
+    } finally {
+      holder.kill('SIGKILL');
+    }
   });
 });

@@ -27,7 +27,7 @@ function makeSide(over: Partial<Side> = {}) {
   const delivered: Delivered[] = [];
   const side: Side = {
     selfRuntime: 'claude-code',
-    selfName: 'billing-api',
+    selfName: async () => 'billing-api',
     selfCwd: '/src/billing',
     peerRuntime: 'codex',
     limits: CODEX_LIMITS,

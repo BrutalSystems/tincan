@@ -110,7 +110,25 @@ a leading suffix would disambiguate nothing.
 
 Claude peer names, cwd and idle/busy state come from `~/.claude/sessions/<pid>.json`.
 Codex names are derived thread titles, slugified — so two threads titled
-"Review phase 1" and "Review phase-1" collide, and both get suffixes.
+"Review phase 1" and "Review phase-1" collide, and both get suffixes. `/rename`
+in the Codex TUI gives a thread a short stable name and avoids this entirely.
+
+Tin Can identifies *itself* the same way. Codex exposes no thread-id variable to
+MCP servers, so a Codex-hosted Tin Can finds the thread whose writer lock its
+host process holds, and reports that thread's slug in `from=`. Naming itself
+after its working directory would be wrong the moment two Codex sessions share
+one.
+
+## When a Codex peer is unreachable
+
+A Codex thread reaches `thread/list` only after its **first turn**, but it holds
+its writer lock from launch. Tin Can lists such a session — liveness is the lock,
+not the listing — but marks it `unreachable`, because `thread/queue/add` fails
+with *"no rollout found for thread id …"* until a rollout exists. `peers` says
+so. Send one prompt in that terminal and it becomes addressable.
+
+Also unreachable, and correctly so: ephemeral threads and subagent threads, which
+report `canAcceptDirectInput: false`.
 
 ## What a peer receives
 

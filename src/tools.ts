@@ -27,7 +27,8 @@ export interface DeliveryOutcome {
 /** Everything that differs between being hosted in Claude Code and in Codex. */
 export interface Side {
   selfRuntime: RuntimeName;
-  selfName: string;
+  /** Resolved lazily: the Codex side must derive its own identity at runtime. */
+  selfName(): Promise<string>;
   selfCwd: string;
   peerRuntime: RuntimeName;
   limits: GuardLimits;
@@ -165,7 +166,7 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
 
       const envelope = buildEnvelope({
         id: newMessageId(),
-        from: { runtime: side.selfRuntime, name: side.selfName, cwd: side.selfCwd },
+        from: { runtime: side.selfRuntime, name: await side.selfName(), cwd: side.selfCwd },
         to: {
           runtime: side.peerRuntime,
           name: target.display,

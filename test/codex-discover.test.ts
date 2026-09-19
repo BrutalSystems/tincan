@@ -14,7 +14,7 @@ const thread = (over: Partial<CodexThread> = {}): CodexThread => ({
 const env = (over: Partial<CodexEnv> = {}): CodexEnv => ({
   probe: async () => ({ ok: true }),
   listThreads: async () => [thread()],
-  liveThreadIds: async () => new Set(['00000000-0000-0000-0000-000000000aaa']),
+  liveThreads: async () => new Map([['00000000-0000-0000-0000-000000000aaa', {}]]),
   queue: async () => ({ ok: true }),
   ...over,
 });
@@ -27,7 +27,7 @@ describe('listCodexPeers', () => {
   });
 
   test('omits a saved thread nobody has open — it is history, not a peer', async () => {
-    const { peers } = await listCodexPeers(env({ liveThreadIds: async () => new Set() }));
+    const { peers } = await listCodexPeers(env({ liveThreads: async () => new Map() }));
     expect(peers).toEqual([]);
   });
 
@@ -55,6 +55,57 @@ describe('listCodexPeers', () => {
   test('carries the thread id through for the send path', async () => {
     const { peers } = await listCodexPeers(env());
     expect(peers[0]!.threadId).toBe('00000000-0000-0000-0000-000000000aaa');
+  });
+});
+
+describe('a freshly started session', () => {
+  test('is listed even though thread/list does not know it yet', async () => {
+    // A Codex thread reaches thread/list only after its first turn, but it holds
+    // its writer lock from launch. Liveness is the lock, not the listing.
+    const { peers } = await listCodexPeers(
+      env({
+        listThreads: async () => [],
+        liveThreads: async () => new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', {}]]),
+      }),
+    );
+    expect(peers).toHaveLength(1);
+    expect(peers[0]).toMatchObject({
+      threadId: '01a0b995-2fbc-7671-9901-77f1832cb3b1',
+      rawName: null,
+    });
+  });
+
+  test('is unreachable until its first turn, because it has no rollout to queue against', async () => {
+    const { peers, diagnostic } = await listCodexPeers(
+      env({
+        listThreads: async () => [],
+        liveThreads: async () => new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', {}]]),
+      }),
+    );
+    expect(peers[0]!.state).toBe('unreachable');
+    expect(diagnostic).toMatch(/first turn|no rollout/i);
+  });
+
+  test('takes its working directory from the process holding the lock', async () => {
+    const { peers } = await listCodexPeers(
+      env({
+        listThreads: async () => [],
+        liveThreads: async () =>
+          new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', { cwd: '/Users/mike/Source/brutalsystems' }]]),
+      }),
+    );
+    expect(peers[0]!.cwd).toBe('/Users/mike/Source/brutalsystems');
+  });
+
+  test('prefers thread/list metadata once the thread has one', async () => {
+    const { peers } = await listCodexPeers(
+      env({
+        listThreads: async () => [thread({ id: '01a0b995-2fbc-7671-9901-77f1832cb3b1', name: 'Auth refactor', cwd: '/src/auth' })],
+        liveThreads: async () =>
+          new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', { cwd: '/some/other/place' }]]),
+      }),
+    );
+    expect(peers[0]).toMatchObject({ rawName: 'Auth refactor', cwd: '/src/auth' });
   });
 });
 

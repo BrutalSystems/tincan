@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectRuntime, selfNameFor, buildSide } from '../src/runtime.js';
+import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
 
 let dir: string;
@@ -61,6 +61,16 @@ describe('selfNameFor', () => {
   });
 });
 
+describe('codexSelfNameOf', () => {
+  test('slugifies the thread title, so `from=` matches what a peer must type to reply', () => {
+    expect(codexSelfNameOf('Respond to greeting', '/src/x')).toBe('respond-to-greeting');
+  });
+
+  test('falls back to the directory name when the thread has no title', () => {
+    expect(codexSelfNameOf(null, '/Users/mike/Source/brutalsystems')).toBe('brutalsystems');
+  });
+});
+
 describe('buildSide', () => {
   test('hosted in Claude Code, it exposes Codex peers under the tighter Codex budget', () => {
     const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
@@ -73,6 +83,12 @@ describe('buildSide', () => {
     const side = buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
     expect(side.peerRuntime).toBe('claude-code');
     expect(side.limits).toBe(CLAUDE_LIMITS);
+  });
+
+  test('resolves its own name lazily, since the Codex side must derive it at runtime', async () => {
+    const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/auth-service' });
+    expect(typeof side.selfName).toBe('function');
+    expect(await side.selfName()).toBe('auth-service');
   });
 
   test('reports urgent as unsupported on both sides, because neither peer can be steered', () => {
