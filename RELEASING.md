@@ -86,6 +86,16 @@ npm pack @brutalsystems/tincan@0.1.2 && tar tzf brutalsystems-tincan-0.1.2.tgz
 `prepublishOnly` runs the build and the full suite first, so a broken build
 cannot ship.
 
+**On Mike's machine, use Keep for unattended publishing.** `keep` is a shell
+function loaded by interactive zsh. Unlock only the npm token in a subshell:
+
+```bash
+zsh -ic '(keep unlock NPM_TOKEN && npm publish --//registry.npmjs.org/:_authToken="$NPM_TOKEN" --no-progress)'
+```
+
+Use this flow before interactive authentication. Never print the token or write
+it to a file; the subshell discards the exported value when publishing finishes.
+
 **Interactive** — prompts for a one-time password:
 
 ```bash
