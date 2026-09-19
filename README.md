@@ -317,5 +317,9 @@ npm test          # vitest
 npm run build     # tsc to dist/
 ```
 
+[`CANONICAL_ID.md`](./CANONICAL_ID.md) specifies the address format and is
+normative — a change to it is a breaking release.
+[`RELEASING.md`](./RELEASING.md) covers cutting one.
+
 Both peers are sockets, so both fake cleanly. No test touches a real model or a
 real session.
