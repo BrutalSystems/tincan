@@ -26,9 +26,11 @@ From a Claude Code session, find who is running:
 {
   "peers": [
     { "name": "auth-refactor",  "state": "idle", "cwd": "/src/api",
-      "canonical_id": "codex:auth-refactor.63a" },
+      "canonical_id": "codex:auth-refactor.63a",
+      "thread_id": "019b63ce-…" },
     { "name": "billing-sync",   "state": "busy", "cwd": "/src/billing",
-      "canonical_id": "codex:billing-sync.601" }
+      "canonical_id": "codex:billing-sync.601",
+      "thread_id": "019b7f21-…" }
   ]
 }
 ```
@@ -60,7 +62,7 @@ session's next turn. Both directions are recorded in one log.
 
 | Tool | What it does |
 |---|---|
-| `peers` | Lists the live sessions of the *other* runtime: name, state (`idle` / `busy` / `unreachable`), cwd, and for Codex the thread id. |
+| `peers` | Lists the live sessions of the *other* runtime: name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code. |
 | `send_peer` | Sends text to one peer. `{peer, message, in_reply_to?, expect_reply?, urgent?}`. |
 | `message_log` | Reads back `~/.tincan/messages.jsonl`, filtered by peer or by reply chain. |
 

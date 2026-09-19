@@ -1,6 +1,6 @@
 # Tin Can — Address Format
 
-> **Normative for `@brutalsystems/tincan` 0.1.1.**
+> **Normative for `@brutalsystems/tincan` 0.2.0.**
 >
 > This describes what Tin Can does today, precisely enough for another tool to
 > produce addresses Tin Can will resolve. It is a write-down of shipped
@@ -10,6 +10,11 @@
 > The executable form is [`test/fixtures/canonical-id.json`](test/fixtures/canonical-id.json),
 > asserted by `test/canonical-id.test.ts`. Copy that fixture rather than
 > reimplementing from prose.
+>
+> Its `tincan_version` field records the release the expectations were verified
+> against, and is bumped every release. **A version difference alone is not
+> drift** — compare the file's contents, or its hash, to tell whether the format
+> actually moved.
 >
 > **The implementation is authoritative.** If this document and Tin Can
 > disagree, Tin Can is right and this document has a bug. The fixture is the
@@ -26,6 +31,9 @@ An address is built from two inputs:
 
 Neither name is guaranteed unique, and neither is stable: **a name belongs to a
 process and dies with it.** Key durable records on the id, never on the address.
+
+`peers` exposes that id on every peer — `thread_id` for Codex, `session_id` for
+Claude Code — so a caller never has to derive it from an address.
 
 ## Slugify
 

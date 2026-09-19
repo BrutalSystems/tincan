@@ -63,6 +63,36 @@ describe('peers', () => {
     });
   });
 
+  test('exposes a durable session_id for Claude peers, not just the address', async () => {
+    // CANONICAL_ID.md tells consumers to key on the id rather than the name,
+    // because canonical_id is not unique. Claude peers must therefore carry one.
+    const { side } = makeSide({
+      peerRuntime: 'claude-code',
+      listPeers: async () => ({
+        peers: [peer({ rawName: 'billing-api', uuid: '5af69d42-2214-41d9-b13f-9c3177eb60ce', threadId: undefined })],
+      }),
+    });
+    const r = await tools(side).peers();
+    expect(r.peers[0]).toMatchObject({ session_id: '5af69d42-2214-41d9-b13f-9c3177eb60ce' });
+    expect(r.peers[0]).not.toHaveProperty('thread_id');
+  });
+
+  test('exposes thread_id for Codex peers, and no session_id', async () => {
+    const { side } = makeSide();
+    const r = await tools(side).peers();
+    expect(r.peers[0]).toMatchObject({ thread_id: '00000000-0000-0000-0000-0000000007f3' });
+    expect(r.peers[0]).not.toHaveProperty('session_id');
+  });
+
+  test('every peer carries a durable id, whichever runtime it is', async () => {
+    for (const runtime of ['codex', 'claude-code'] as const) {
+      const { side } = makeSide({ peerRuntime: runtime });
+      const r = await tools(side).peers();
+      const p0 = r.peers[0]!;
+      expect(p0.thread_id ?? p0.session_id).toBeTruthy();
+    }
+  });
+
   test('carries a diagnostic instead of a bare empty list when the far side is absent', async () => {
     const { side } = makeSide({
       listPeers: async () => ({ peers: [], diagnostic: 'No usable `codex` on PATH.' }),

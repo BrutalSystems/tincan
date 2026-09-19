@@ -23,7 +23,8 @@ export function toolDefinitions(peerRuntime: RuntimeName): ToolDefinition[] {
       name: 'peers',
       description:
         `List the live ${peer} sessions on this machine that you can message. ` +
-        `Returns each peer's name, state (idle | busy | unreachable) and working directory. ` +
+        `Returns each peer's name, state (idle | busy | unreachable), working directory, ` +
+        `and a durable id (thread_id for Codex, session_id for Claude Code). ` +
         `Call this before send_peer: names change and sessions come and go.`,
       inputSchema: { type: 'object', properties: {} },
     },

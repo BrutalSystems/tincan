@@ -80,6 +80,7 @@ export interface PeersResult {
     state: PeerState;
     cwd: string;
     thread_id?: string;
+    session_id?: string;
   }>;
   diagnostic?: string;
   notes?: string[];
@@ -116,7 +117,11 @@ export function createTools(side: Side, log: MessageLog, guard: Guard) {
           canonical_id: p.canonicalId,
           state: p.side.state,
           cwd: p.side.cwd,
-          ...(p.side.threadId !== undefined && { thread_id: p.side.threadId }),
+          // Every peer carries a durable id: canonical_id is not unique
+          // (see CANONICAL_ID.md), so it cannot be a caller's primary key.
+          ...(side.peerRuntime === 'codex'
+            ? { thread_id: p.side.threadId ?? p.side.uuid }
+            : { session_id: p.side.uuid }),
         })),
         ...(diagnostic !== undefined && { diagnostic }),
         ...(notes.length > 0 && { notes }),
