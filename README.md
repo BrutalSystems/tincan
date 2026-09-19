@@ -185,7 +185,12 @@ A peer list only contains the other runtime, so names carry no runtime prefix.
   prefix resolves (`auth` works if it is the only match).
 - On a collision only, the suffixed form `auth-refactor.63a` is shown and
   required. Ambiguity is refused with every candidate listed — never guessed.
-- Unnamed Codex threads display as `thread.63a`.
+- Unnamed Codex threads have a `display_label` such as `billing-v2 · 963a`:
+  the working directory's final component plus the last four ID characters.
+  If the directory is unavailable, the runtime is used (e.g. `codex · 963a`).
+  Listings show the full `thread_id` alongside these labels for copying.
+  Their message address (`name`) remains `thread.63a`; use `name` with `send_peer`,
+  not `display_label`. Named sessions use their existing address as the label.
 - Canonical id, used in the log and envelope: `codex:auth-refactor.63a`.
 
 The suffix is the **last** three hex characters of the uuid. Codex thread ids are

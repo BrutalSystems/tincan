@@ -1,6 +1,7 @@
 /** The three tools (§7), identical on both sides. */
 import { z } from 'zod';
-import { assignNames, resolvePeer, type NamedPeer, type RuntimeName } from './naming.js';
+import { basename } from 'node:path';
+import { assignNames, resolvePeer, slugify, type NamedPeer, type RuntimeName } from './naming.js';
 import { buildEnvelope, newMessageId, renderEnvelope, type DeliveryMethod } from './envelope.js';
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
 import { MessageLog, type LogRecord } from './log.js';
@@ -80,6 +81,8 @@ export interface SendPeerResult {
 export interface PeersResult {
   peers: Array<{
     name: string;
+    /** Human-readable label; use name for send_peer. */
+    display_label: string;
     canonical_id: string;
     state: PeerState;
     cwd: string;
@@ -126,6 +129,9 @@ export function createTools(side: Side, log: MessageLog) {
       return {
         peers: list.map((p) => ({
           name: p.display,
+          display_label: slugify(p.rawName ?? '')
+            ? p.display
+            : `${basename(p.side.cwd) || p.runtime} · ${(p.side.threadId ?? p.uuid).slice(-4).toLowerCase()}`,
           canonical_id: p.canonicalId,
           state: p.side.state,
           cwd: p.side.cwd,

@@ -52,11 +52,33 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('peers', () => {
+  test.each([null, '', '   ', '???'])('labels an unnamed session (%j) with its project and trailing id', async (rawName) => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ rawName, cwd: '/src/billing-v2/' })] }),
+    });
+    const r = await tools(side).peers();
+    expect(r.peers[0]).toMatchObject({
+      display_label: 'billing-v2 · 07f3',
+      thread_id: '00000000-0000-0000-0000-0000000007f3',
+    });
+    // The human label must not replace the existing send address.
+    const result = await tools(side).send_peer({ peer: r.peers[0]!.name, message: 'hello' });
+    expect(result.delivered).toBe(true);
+  });
+
+  test.each(['', '/'])('labels an unnamed session without a project using its runtime (%j)', async (cwd) => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ rawName: null, cwd })] }),
+    });
+    expect((await tools(side).peers()).peers[0]).toMatchObject({ display_label: 'codex · 07f3' });
+  });
+
   test('lists the other runtime with display name, state and cwd', async () => {
     const { side } = makeSide();
     const r = await tools(side).peers();
     expect(r.peers[0]).toMatchObject({
       name: 'auth-refactor',
+      display_label: 'auth-refactor',
       canonical_id: 'codex:auth-refactor.7f3',
       state: 'idle',
       cwd: '/src/auth',
