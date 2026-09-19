@@ -231,6 +231,42 @@ Claude Code frames every inbound peer message as coming from "another Claude
 session", which is false when the sender is Codex. See
 [issue #1](https://github.com/BrutalSystems/tincan/issues/1).
 
+## Deliberately not included
+
+These are decisions, not gaps. Each was considered and declined for a reason.
+
+**No CLI.** Tin Can is reachable only as an MCP server. A `tincan peers --json`
+query surface was proposed so another tool's contract test could cross a process
+boundary; it was dropped, because a test-only command is a second code path that
+can pass while the real one breaks — precisely the drift such a test exists to
+catch. A test can speak MCP over stdio to the installed binary in about forty
+lines, and gets a stronger guarantee for it. If a CLI is ever added it should be
+for a human debugging a problem, designed as such, and still read-only.
+
+**Tin Can never spawns a session.** Launching an agent is a privilege-escalation
+primitive: it creates a new process with its own permissions and sandbox, in a
+directory of the caller's choosing. Tin Can is the component that *receives
+instructions from other agents*, so combining the two would build a path from
+"peer message arrives" to "spawn an agent with permissions the receiver lacks".
+Keeping them apart is what makes it safe to install at user scope everywhere.
+
+**No Claude-to-Claude messaging.** `SendMessage` already covers it natively. Two
+logged paths to one destination is worse than one — see
+[Which peers you see](#which-peers-you-see).
+
+**Nothing blocks.** `send_peer` returns when the peer's harness accepts the
+message, never when the peer answers. There is no `await_reply`; the peer may
+have a human who has walked away. `expect_reply` records intent and changes
+nothing.
+
+**No interrupting a running turn.** `urgent` is accepted and has no effect.
+Claude Code has no external interrupt, and Codex's `turn/steer` requires an
+`expectedTurnId` that only the connection owning that turn ever learns.
+
+**Same machine only.** No network listener, no TCP port, no remote transport.
+Both sockets are already restricted to the operating-system user, and Tin Can
+does not widen that.
+
 ## Limits
 
 Enforced in code, per peer:
