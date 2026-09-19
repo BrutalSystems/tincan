@@ -14,10 +14,10 @@
   "author": "Mike Williams",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mainspring/tincan.git"
+    "url": "git+https://github.com/BrutalSystems/tincan.git"
   },
-  "bugs": { "url": "https://github.com/mainspring/tincan/issues" },
-  "homepage": "https://github.com/mainspring/tincan#readme",
+  "bugs": { "url": "https://github.com/BrutalSystems/tincan/issues" },
+  "homepage": "https://github.com/BrutalSystems/tincan#readme",
   "type": "module",
   "bin": { "tincan": "./dist/tincan.js" },
   "files": ["dist", "README.md", "LICENSE"],
