@@ -1,0 +1,161 @@
+{
+  "$comment": "FROZEN. Describes @brutalsystems/tincan address behaviour as shipped. Adding cases is fine; changing an expected value means the address format changed - see CANONICAL_ID.md, 'Changing this format'.",
+  "tincan_version": "0.1.0",
+  "spec": "CANONICAL_ID.md",
+
+  "slugify": [
+    { "case": "spaces and case are folded", "input": "Auth Refactor", "output": "auth-refactor" },
+    { "case": "runs of punctuation collapse to one dash", "input": "auth/refactor (v2)", "output": "auth-refactor-v2" },
+    { "case": "leading and trailing separators are stripped", "input": "  --Auth--  ", "output": "auth" },
+    { "case": "non-ascii is not transliterated, it is a separator", "input": "café ☕ time", "output": "caf-time" },
+    { "case": "digits survive", "input": "123", "output": "123" },
+    { "case": "all-caps folds", "input": "ALLCAPS", "output": "allcaps" },
+    { "case": "a name of only punctuation slugifies to empty", "input": "???", "output": "" },
+    { "case": "empty in, empty out", "input": "", "output": "" }
+  ],
+
+  "suffix": [
+    { "case": "codex thread id (uuidv7): last three hex", "input": "01a0b9b4-a33e-7ab1-80a0-bb715504a0fb", "output": "0fb" },
+    { "case": "claude session id (uuidv4): last three hex", "input": "5af69d42-2214-41d9-b13f-9c3177eb60ce", "output": "0ce" },
+    { "case": "uppercase hex is lowercased", "input": "...ABC", "output": "abc" },
+    { "case": "non-hex characters are stripped before slicing", "input": "z-9", "output": "9" },
+    { "case": "no hex at all yields an empty suffix", "input": "zzzz", "output": "" },
+    { "case": "empty in, empty out", "input": "", "output": "" }
+  ],
+
+  "assign": [
+    {
+      "case": "no collision: display is the bare slug, canonical id is always qualified",
+      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "expect": [ { "display": "auth-refactor", "canonicalId": "codex:auth-refactor.7f3" } ]
+    },
+    {
+      "case": "claude peers are qualified with their runtime",
+      "peers": [ { "runtime": "claude-code", "rawName": "billing-api", "uuid": "5af69d42-2214-41d9-b13f-9c3177eb60ce" } ],
+      "expect": [ { "display": "billing-api", "canonicalId": "claude-code:billing-api.0ce" } ]
+    },
+    {
+      "case": "collision: every colliding peer is suffixed, and only those",
+      "peers": [
+        { "runtime": "codex", "rawName": "Review phase 1 handoff", "uuid": "00000000-0000-0000-0000-000000000aaa" },
+        { "runtime": "codex", "rawName": "Review phase-1 handoff", "uuid": "00000000-0000-0000-0000-000000000bbb" },
+        { "runtime": "codex", "rawName": "Something else", "uuid": "00000000-0000-0000-0000-000000000ccc" }
+      ],
+      "expect": [
+        { "display": "review-phase-1-handoff.aaa", "canonicalId": "codex:review-phase-1-handoff.aaa" },
+        { "display": "review-phase-1-handoff.bbb", "canonicalId": "codex:review-phase-1-handoff.bbb" },
+        { "display": "something-else", "canonicalId": "codex:something-else.ccc" }
+      ]
+    },
+    {
+      "case": "an unnamed thread always carries its suffix, even alone",
+      "peers": [ { "runtime": "codex", "rawName": null, "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "expect": [ { "display": "thread.7f3", "canonicalId": "codex:thread.7f3" } ]
+    },
+    {
+      "case": "KNOWN DEFECT: a name that slugifies to empty displays bare, unlike an unnamed thread",
+      "peers": [ { "runtime": "codex", "rawName": "???", "uuid": "00000000-0000-0000-0000-000000000def" } ],
+      "expect": [ { "display": "thread", "canonicalId": "codex:thread.def" } ]
+    },
+    {
+      "case": "unnamed and slugifies-to-empty collide on 'thread', so both are suffixed",
+      "peers": [
+        { "runtime": "codex", "rawName": null, "uuid": "00000000-0000-0000-0000-000000000aaa" },
+        { "runtime": "codex", "rawName": "???", "uuid": "00000000-0000-0000-0000-000000000bbb" }
+      ],
+      "expect": [
+        { "display": "thread.aaa", "canonicalId": "codex:thread.aaa" },
+        { "display": "thread.bbb", "canonicalId": "codex:thread.bbb" }
+      ]
+    },
+    {
+      "case": "KNOWN DEFECT: canonical_id is not unique when slug and suffix both collide",
+      "peers": [
+        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "11111111-0000-0000-0000-000000000abc" },
+        { "runtime": "codex", "rawName": "auth-refactor", "uuid": "22222222-0000-0000-0000-000000000abc" }
+      ],
+      "expect": [
+        { "display": "auth-refactor.abc", "canonicalId": "codex:auth-refactor.abc" },
+        { "display": "auth-refactor.abc", "canonicalId": "codex:auth-refactor.abc" }
+      ]
+    }
+  ],
+
+  "resolve": [
+    {
+      "case": "exact display name",
+      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "input": "auth-refactor",
+      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+    },
+    {
+      "case": "qualified form, accepted even with no collision",
+      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "input": "auth-refactor.7f3",
+      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+    },
+    {
+      "case": "fully qualified canonical id is accepted as input",
+      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "input": "codex:auth-refactor.7f3",
+      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+    },
+    {
+      "case": "case-insensitive, and input is trimmed",
+      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "input": "  AUTH-REFACTOR.7F3  ",
+      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+    },
+    {
+      "case": "unambiguous prefix resolves",
+      "peers": [
+        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" },
+        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" }
+      ],
+      "input": "auth",
+      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+    },
+    {
+      "case": "ambiguous prefix is refused, listing every candidate in qualified form",
+      "peers": [
+        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" },
+        { "runtime": "codex", "rawName": "Billing report", "uuid": "00000000-0000-0000-0000-000000000b34" }
+      ],
+      "input": "billing",
+      "expect": { "ok": false, "reason": "ambiguous", "candidates": ["billing-report.b34", "billing-sync.b12"] }
+    },
+    {
+      "case": "unknown name is refused, and candidates list every peer in display form",
+      "peers": [
+        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" },
+        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" }
+      ],
+      "input": "zzz",
+      "expect": { "ok": false, "reason": "unknown", "candidates": ["auth-refactor", "billing-sync"] }
+    },
+    {
+      "case": "KNOWN DEFECT: colliding canonical ids refuse with two identical candidates",
+      "peers": [
+        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "11111111-0000-0000-0000-000000000abc" },
+        { "runtime": "codex", "rawName": "auth-refactor", "uuid": "22222222-0000-0000-0000-000000000abc" }
+      ],
+      "input": "codex:auth-refactor.abc",
+      "expect": { "ok": false, "reason": "ambiguous", "candidates": ["auth-refactor.abc", "auth-refactor.abc"] }
+    },
+    {
+      "case": "empty input is a prefix of everything: ambiguous when more than one peer",
+      "peers": [
+        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" },
+        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" }
+      ],
+      "input": "",
+      "expect": { "ok": false, "reason": "ambiguous", "candidates": ["auth-refactor.7f3", "billing-sync.b12"] }
+    },
+    {
+      "case": "KNOWN DEFECT: empty input resolves to the only peer when there is exactly one",
+      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "input": "",
+      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+    }
+  ]
+}

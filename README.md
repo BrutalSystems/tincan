@@ -153,11 +153,14 @@ Codex names are derived thread titles, slugified — so two threads titled
 "Review phase 1" and "Review phase-1" collide, and both get suffixes. `/rename`
 in the Codex TUI gives a thread a short stable name and avoids this entirely.
 
-Tin Can identifies *itself* the same way. Codex exposes no thread-id variable to
-MCP servers, so a Codex-hosted Tin Can finds the thread whose writer lock its
-host process holds, and reports that thread's slug in `from=`. Naming itself
-after its working directory would be wrong the moment two Codex sessions share
-one.
+Names belong to processes and die with them. Re-resolve through `peers` rather
+than caching a name, and key durable records on the thread or session id.
+
+> **[`CANONICAL_ID.md`](./CANONICAL_ID.md) is the normative specification** —
+> exact slugify, suffix and resolution rules, the refusal shapes, and three known
+> defects preserved in 0.1.0. Building a tool that must produce addresses Tin Can
+> resolves? Read that and copy
+> [`test/fixtures/canonical-id.json`](./test/fixtures/canonical-id.json).
 
 ## When a Codex peer is unreachable
 
