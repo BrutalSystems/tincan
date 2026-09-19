@@ -1,14 +1,33 @@
 {
-  "name": "tincan",
+  "name": "@brutalsystems/tincan",
   "version": "0.1.0",
-  "private": true,
+  "description": "Peer messaging between a live Claude Code session and a live Codex session on the same machine. One MCP server, run inside each.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "codex",
+    "agents",
+    "agent-messaging"
+  ],
+  "license": "MIT",
+  "author": "Mike Williams",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mainspring/tincan.git"
+  },
+  "bugs": { "url": "https://github.com/mainspring/tincan/issues" },
+  "homepage": "https://github.com/mainspring/tincan#readme",
   "type": "module",
   "bin": { "tincan": "./dist/tincan.js" },
+  "files": ["dist", "README.md", "LICENSE"],
   "engines": { "node": ">=22" },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

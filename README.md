@@ -23,19 +23,40 @@ no flag; `CLAUDE_CODE_MESSAGING_SOCKET` in the environment decides.
 
 ## Install
 
-Build first:
+```bash
+npm install -g @brutalsystems/tincan
+```
+
+Then register it with both runtimes. Neither reference needs a path — the
+`tincan` command is on `PATH` once installed.
+
+**Claude Code** (user scope, so it works in every project):
+
+```bash
+claude mcp add -s user tincan -- tincan
+```
+
+**Codex**, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.tincan]
+command = "tincan"
+tool_timeout_sec = 30
+```
+
+Restart each session to pick it up — MCP servers are loaded at startup.
+
+To try it without installing, substitute `npx -y @brutalsystems/tincan` for
+`tincan` in both. That re-resolves the package on every session start, so it is
+better for a trial than for daily use.
+
+<details>
+<summary>Running from a clone instead</summary>
 
 ```bash
 npm install && npm run build
+claude mcp add -s user tincan -- node /abs/path/to/tincan/dist/tincan.js
 ```
-
-**Claude Code side:**
-
-```bash
-claude mcp add --transport stdio tincan -- node /abs/path/to/tincan/dist/tincan.js
-```
-
-**Codex side**, in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.tincan]
@@ -43,6 +64,8 @@ command = "node"
 args = ["/abs/path/to/tincan/dist/tincan.js"]
 tool_timeout_sec = 30
 ```
+
+</details>
 
 ### Environment
 
