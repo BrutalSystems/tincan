@@ -46,9 +46,11 @@ process.stdin.on('data', (d) => {
     } else if (m.method === 'thread/list') {
       send({ id: m.id, result: { data: [
         { id: 'aaa00000-0000-0000-0000-000000000aaa', name: 'Auth refactor', cwd: '/src/auth',
-          status: 'idle', ephemeral: false, canAcceptDirectInput: true },
+          status: { type: 'idle' }, ephemeral: false, canAcceptDirectInput: true },
         { id: 'bbb00000-0000-0000-0000-000000000bbb', name: null, cwd: '/src/other',
-          status: 'running', ephemeral: true, canAcceptDirectInput: false },
+          status: { type: 'active', activeFlags: [] }, ephemeral: true, canAcceptDirectInput: false },
+        { id: 'ccc00000-0000-0000-0000-000000000ccc', name: 'Not loaded', cwd: '/src/three',
+          status: { type: 'notLoaded' }, ephemeral: false, canAcceptDirectInput: true },
       ], nextCursor: null } });
     } else if (m.method === 'thread/read') {
       const src = ${JSON.stringify(opts.threadSource ?? 'cli')};
@@ -106,9 +108,17 @@ describe('listThreads', () => {
   test('parses Thread records off the app-server', async () => {
     installFakeCodex();
     const threads = await envWithFake().listThreads();
-    expect(threads.map((t) => t.name)).toEqual(['Auth refactor', null]);
-    expect(threads[0]).toMatchObject({ cwd: '/src/auth', status: 'idle', canAcceptDirectInput: true });
+    expect(threads.map((t) => t.name)).toEqual(['Auth refactor', null, 'Not loaded']);
+    expect(threads[0]).toMatchObject({ cwd: '/src/auth', canAcceptDirectInput: true });
     expect(threads[1]).toMatchObject({ ephemeral: true, canAcceptDirectInput: false });
+  });
+
+  test('reads the tag out of the ThreadStatus union rather than stringifying the object', async () => {
+    // ThreadStatus is {type:"idle"|"active"|"notLoaded"|"systemError"}. Coercing
+    // it with String() yields "[object Object]", which made every peer look busy.
+    installFakeCodex();
+    const threads = await envWithFake().listThreads();
+    expect(threads.map((t) => t.status)).toEqual(['idle', 'active', 'notLoaded']);
   });
 
   test('declares experimentalApi at initialize, which the queue methods require', async () => {

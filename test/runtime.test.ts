@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf } from '../src/runtime.js';
+import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf, makeSelfNameResolver } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
 
 let dir: string;
@@ -58,6 +58,34 @@ describe('selfNameFor', () => {
     expect(selfNameFor('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/auth-service' })).toBe(
       'auth-service',
     );
+  });
+});
+
+describe('self-name resolution timing', () => {
+  test('a directory fallback is not cached, so a later lookup can still find the real name', async () => {
+    // A Codex thread has no title until its first turn, but the MCP server
+    // starts before that and resolves selfName for its startup diagnostic.
+    // Caching that fallback left the session calling itself by its directory
+    // for the rest of its life.
+    let titled = false;
+    const resolve = async () => (titled ? 'respond-to-greeting' : undefined);
+    const cached = makeSelfNameResolver(resolve, '/Users/mike/Source/brutalsystems/tincan');
+
+    expect(await cached()).toBe('tincan'); // before the first turn
+    titled = true;
+    expect(await cached()).toBe('respond-to-greeting'); // after it
+  });
+
+  test('a real name is cached, so the protocol call happens once', async () => {
+    let calls = 0;
+    const resolve = async () => {
+      calls++;
+      return 'auth-refactor';
+    };
+    const cached = makeSelfNameResolver(resolve, '/src/x');
+    await cached();
+    await cached();
+    expect(calls).toBe(1);
   });
 });
 

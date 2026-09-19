@@ -208,13 +208,27 @@ function explain(error: { code: number; message: string }): string {
   return error.message;
 }
 
+/**
+ * ThreadStatus is a tagged union — {type:"idle"|"active"|"notLoaded"|"systemError"}.
+ * Coercing it with String() yields "[object Object]", which read as busy for
+ * every peer.
+ */
+function statusTag(raw: unknown): string | undefined {
+  if (typeof raw === 'string') return raw;
+  if (raw !== null && typeof raw === 'object') {
+    const t = (raw as { type?: unknown }).type;
+    if (typeof t === 'string') return t;
+  }
+  return undefined;
+}
+
 function toThread(raw: unknown): CodexThread {
   const t = raw as Record<string, unknown>;
   return {
     id: String(t.id ?? ''),
     name: typeof t.name === 'string' && t.name !== '' ? t.name : null,
     cwd: String(t.cwd ?? ''),
-    ...(t.status !== undefined && { status: String(t.status) }),
+    ...(statusTag(t.status) !== undefined && { status: statusTag(t.status)! }),
     ...(typeof t.ephemeral === 'boolean' && { ephemeral: t.ephemeral }),
     ...(typeof t.canAcceptDirectInput === 'boolean' && {
       canAcceptDirectInput: t.canAcceptDirectInput,

@@ -90,6 +90,14 @@ created, Tin Can reaches sessions someone else launched.
 Tin Can never lists the session it is running in, and refuses a send addressed
 to it with a message saying so.
 
+**Codex busy-detection is best-effort.** `thread/list` reports a thread's status
+relative to the app-server that asked, and Tin Can spawns its own — so a live
+thread almost always reports `notLoaded` even while its operator is mid-turn.
+Tin Can reads that as `idle`, because the alternative told every sender they
+were interrupting someone. A Codex peer marked `idle` means *reachable and not
+known to be busy*, not *definitely free*. Claude Code peers report real state
+from the session registry.
+
 ### A known gap in the log
 
 Claude↔Claude traffic goes through `SendMessage`, not Tin Can, so **it does not

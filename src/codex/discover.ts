@@ -130,5 +130,19 @@ function reachability(
 function stateOf(t: CodexThread): PeerState {
   // Ephemeral and subagent threads reject queued input (§5): unreachable, not an error.
   if (t.ephemeral === true || t.canAcceptDirectInput === false) return 'unreachable';
-  return t.status === 'idle' || t.status === undefined ? 'idle' : 'busy';
+
+  switch (t.status) {
+    case 'active':
+      return 'busy';
+    case 'systemError':
+      return 'unreachable';
+    // `notLoaded` describes OUR app-server's view, not the owning process's, so
+    // almost every live thread reports it. Treating it as busy told the sender
+    // they were interrupting someone when they were not. Codex busy-detection
+    // is therefore best-effort — see the README.
+    case 'idle':
+    case 'notLoaded':
+    default:
+      return 'idle';
+  }
 }

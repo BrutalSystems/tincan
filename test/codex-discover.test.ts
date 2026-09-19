@@ -32,11 +32,27 @@ describe('listCodexPeers', () => {
     expect(peers).toEqual([]);
   });
 
-  test('reports a busy thread as busy', async () => {
+  test('reports an active thread as busy', async () => {
     const { peers } = await listCodexPeers(
-      env({ listThreads: async () => [thread({ status: 'running' })] }),
+      env({ listThreads: async () => [thread({ status: 'active' })] }),
     );
     expect(peers[0]!.state).toBe('busy');
+  });
+
+  test('treats notLoaded as idle: it reflects OUR app-server, not the owner', async () => {
+    // Every thread is notLoaded to an app-server we spawned, so reading it as
+    // busy told the sender they were interrupting someone when they were not.
+    const { peers } = await listCodexPeers(
+      env({ listThreads: async () => [thread({ status: 'notLoaded' })] }),
+    );
+    expect(peers[0]!.state).toBe('idle');
+  });
+
+  test('reports a thread in systemError as unreachable', async () => {
+    const { peers } = await listCodexPeers(
+      env({ listThreads: async () => [thread({ status: 'systemError' })] }),
+    );
+    expect(peers[0]!.state).toBe('unreachable');
   });
 
   test('treats an ephemeral thread as unreachable rather than an error', async () => {

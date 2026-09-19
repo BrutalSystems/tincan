@@ -62,7 +62,6 @@ function findSessionName(
 
 export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
   const env = ctx.env ?? process.env;
-  const selfName = selfNameFor(runtime, ctx);
   const common = { selfRuntime: runtime, selfCwd: ctx.cwd, supportsUrgent: false };
 
   if (runtime === 'claude-code') {
@@ -93,20 +92,20 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
   // Codex and Claude peers here. The asymmetry with the Claude side is
   // deliberate — see the README.
   const codexForSelf = createCodexEnv();
-  let resolvedName: string | undefined;
   let selfThread: string | undefined;
+  const selfName = makeSelfNameResolver(
+    () => codexThreadName(codexForSelf, ctx, env),
+    ctx.cwd,
+  );
 
   return {
     ...common,
-    selfName: async () => {
-      resolvedName ??= await codexSelfName(codexForSelf, ctx, env);
-      return resolvedName;
-    },
+    selfName,
     peerRuntimes: ['codex', 'claude-code'],
     limitsFor,
 
     async listPeers() {
-      selfThread ??= await selfThreadId(codexForSelf, ctx, env);
+      selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
 
       const [codexListing, claudeSessions] = await Promise.all([
         listCodexPeers(codexForSelf),
@@ -200,7 +199,7 @@ async function deliverTo(
 }
 
 /** Our own Codex thread, so a Codex-hosted instance never lists itself. */
-async function selfThreadId(
+async function selfThreadId_(
   codex: CodexEnv,
   ctx: HostContext,
   env: NodeJS.ProcessEnv,
@@ -219,34 +218,47 @@ async function selfThreadId(
 }
 
 /**
- * Codex sets no thread-id variable for MCP servers, so we find the thread whose
- * writer lock our host process holds. Falling back to the directory name is
- * wrong the moment two Codex sessions share a directory.
+ * Caches only a real answer. A Codex thread has no title until its first turn,
+ * but the MCP server starts before that and resolves its own name for the
+ * startup diagnostic — caching that fallback left a session calling itself by
+ * its directory for the rest of its life.
  */
-async function codexSelfName(
+export function makeSelfNameResolver(
+  resolve: () => Promise<string | undefined>,
+  cwd: string,
+): () => Promise<string> {
+  let cached: string | undefined;
+  return async () => {
+    if (cached !== undefined) return cached;
+    const name = await resolve();
+    if (name === undefined || name === '') return basename(cwd) || 'codex';
+    cached = name;
+    return cached;
+  };
+}
+
+/**
+ * The slugified title of the Codex thread hosting us, or undefined if it does
+ * not have one yet. Undefined rather than a fallback, so the caller can decide
+ * whether the answer is worth caching.
+ */
+async function codexThreadName(
   codex: CodexEnv,
   ctx: HostContext,
   env: NodeJS.ProcessEnv,
-): Promise<string> {
-  const fallback = basename(ctx.cwd) || 'codex';
+): Promise<string | undefined> {
   try {
-    const live = await codex.liveThreads();
-    const holders = new Map<string, number>();
-    for (const [threadId, info] of live) {
-      if (info.pid !== undefined) holders.set(threadId, info.pid);
-    }
-    // Our own pid first: usually tincan is a child of the Codex process, but a
-    // host that runs us in-process would hold the lock itself.
-    const chain = [ctx.pid, ...(await ancestorPids(ctx.pid, parentPidLookup(env)))];
-    const selfThreadId = pickSelfThreadId(holders, chain);
-    if (selfThreadId === undefined) return fallback;
-
+    const id = await selfThreadId_(codex, ctx, env);
+    if (id === undefined) return undefined;
     const threads = await codex.listThreads();
-    return codexSelfNameOf(threads.find((t) => t.id === selfThreadId)?.name ?? null, ctx.cwd);
+    const raw = threads.find((t) => t.id === id)?.name;
+    const slug = raw === undefined || raw === null ? '' : slugify(raw);
+    return slug === '' ? undefined : slug;
   } catch {
-    return fallback;
+    return undefined;
   }
 }
+
 
 /**
  * The name a Codex-hosted tincan puts in `from=`. Slugified, because that is
