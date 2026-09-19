@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
-import type { CodexEnv, CodexThread, LiveThreadInfo } from './discover.js';
+import type { CodexEnv, CodexThread, LiveThreadInfo, ThreadRead } from './discover.js';
 
 export interface CodexEnvOptions {
   path?: string;
@@ -145,6 +145,14 @@ export function createCodexEnv(opts: CodexEnvOptions = {}): CodexEnv {
       const res = await server.call('thread/list', { limit: 50, useStateDbOnly: true });
       const data = res.result?.data;
       return Array.isArray(data) ? data.map(toThread) : [];
+    },
+
+    async readThread(threadId): Promise<ThreadRead> {
+      const res = await server.call('thread/read', { threadId });
+      if (res.error) return { ok: false, error: res.error.message };
+      const thread = (res.result?.thread ?? res.result) as Record<string, unknown> | undefined;
+      const source = thread?.source;
+      return { ok: true, ...(typeof source === 'string' && { source }) };
     },
 
     async liveThreads() {

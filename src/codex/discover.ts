@@ -25,6 +25,8 @@ export interface LiveThreadInfo {
   pid?: number;
 }
 
+export type ThreadRead = { ok: true; source?: string } | { ok: false; error: string };
+
 export interface CodexPeer {
   uuid: string;
   threadId: string;
@@ -37,6 +39,12 @@ export interface CodexEnv {
   /** Is a usable `codex` reachable at all? */
   probe(): Promise<{ ok: boolean; diagnostic?: string }>;
   listThreads(): Promise<CodexThread[]>;
+  /**
+   * Whether the thread store can serve this thread, and what produced it.
+   * This is the reachability test — `thread/list` filters by source and so
+   * omits reachable threads.
+   */
+  readThread(threadId: string): Promise<ThreadRead>;
   /**
    * Threads whose writer lock is held by a running process, with whatever the
    * holder can tell us. This — not `thread/list` — is the liveness signal.
@@ -66,32 +74,57 @@ export async function listCodexPeers(env: CodexEnv): Promise<CodexListing> {
 
   // Union, not intersection: a thread reaches thread/list only after its first
   // turn, but it holds its writer lock from launch. A freshly started session
-  // is a real peer — just not yet a reachable one.
-  const peers = [...live.entries()].map(([id, info]) => {
-    const t = byId.get(id);
-    return {
-      uuid: id,
-      threadId: id,
-      rawName: t?.name ?? null,
-      cwd: t?.cwd ?? info.cwd ?? '',
-      // No thread/list entry means no persisted rollout, and thread/queue/add
-      // fails with "no rollout found". One turn in that session fixes it.
-      state: t === undefined ? ('unreachable' as const) : stateOf(t),
-    };
-  });
+  // is a real peer — just not always a reachable one.
+  const reasons: string[] = [];
+  const peers = await Promise.all(
+    [...live.entries()].map(async ([id, info]) => {
+      const t = byId.get(id);
+      const read = await env.readThread(id);
+      const state = reachability(read, t, reasons);
+      return {
+        uuid: id,
+        threadId: id,
+        rawName: t?.name ?? null,
+        cwd: t?.cwd ?? info.cwd ?? '',
+        state,
+      };
+    }),
+  );
 
-  const pending = peers.filter((p) => !byId.has(p.threadId));
-  if (pending.length > 0) {
-    return {
-      peers,
-      diagnostic:
-        `${pending.length} Codex session(s) are open but unreachable until their first turn — ` +
-        `a new thread has no rollout to queue against. Send one prompt in that terminal ` +
-        `and it becomes addressable.`,
-    };
+  const unique = [...new Set(reasons)];
+  if (unique.length > 0) return { peers, diagnostic: unique.join(' ') };
+  return { peers };
+}
+
+function reachability(
+  read: ThreadRead,
+  t: CodexThread | undefined,
+  reasons: string[],
+): PeerState {
+  if (!read.ok) {
+    reasons.push(
+      /rollout/i.test(read.error)
+        ? 'A Codex session is open but unreachable until its first turn — a new thread ' +
+          'has no rollout to queue against. Send one prompt in that terminal and it ' +
+          'becomes addressable.'
+        : `A Codex thread could not be read: ${read.error}`,
+    );
+    return 'unreachable';
   }
 
-  return { peers };
+  // `codex exec` is fire-once: thread/queue/add succeeds and the text reaches the
+  // thread, but the process exits without ever acting on it. Reporting that as
+  // delivered would be a lie.
+  if (read.source === 'exec') {
+    reasons.push(
+      'A headless `codex exec` run is live but cannot be messaged — it accepts queued ' +
+        'input and exits without reading it. Message an interactive session instead.',
+    );
+    return 'unreachable';
+  }
+
+  if (t !== undefined) return stateOf(t);
+  return 'idle';
 }
 
 function stateOf(t: CodexThread): PeerState {

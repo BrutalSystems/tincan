@@ -22,7 +22,9 @@ const calls = (method: string) => lines().filter((l) => l.msg.method === method)
  * capability the real daemon gates them on, and logs every request with its pid
  * so a test can tell one long-lived server from many short-lived ones.
  */
-function installFakeCodex(opts: { grantExperimental?: boolean; queueError?: number } = {}) {
+function installFakeCodex(
+  opts: { grantExperimental?: boolean; queueError?: number; threadSource?: string } = {},
+) {
   const body = `
 const fs = require('fs');
 const argv = process.argv.slice(2);
@@ -48,6 +50,11 @@ process.stdin.on('data', (d) => {
         { id: 'bbb00000-0000-0000-0000-000000000bbb', name: null, cwd: '/src/other',
           status: 'running', ephemeral: true, canAcceptDirectInput: false },
       ], nextCursor: null } });
+    } else if (m.method === 'thread/read') {
+      const src = ${JSON.stringify(opts.threadSource ?? 'cli')};
+      if (src === 'MISSING') send({ id: m.id, error: { code: -32600,
+        message: 'failed to read thread: no rollout found for thread id ' + m.params.threadId } });
+      else send({ id: m.id, result: { thread: { id: m.params.threadId, source: src } } });
     } else if (m.method === 'thread/queue/add') {
       const forced = ${opts.queueError ?? 0};
       if (forced !== 0) {
@@ -153,6 +160,21 @@ describe('queue', () => {
     const r = await envWithFake().queue('abc-123', 'hello');
     expect(r.ok).toBe(false);
     expect(r.error?.toLowerCase()).toContain('codex');
+  });
+});
+
+describe('readThread', () => {
+  test('reports the source that decides whether a peer can actually be messaged', async () => {
+    installFakeCodex({ threadSource: 'exec' });
+    const r = await envWithFake().readThread('abc-123');
+    expect(r).toEqual({ ok: true, source: 'exec' });
+  });
+
+  test('reports a thread with no rollout as a failed read, carrying the reason', async () => {
+    installFakeCodex({ threadSource: 'MISSING' });
+    const r = await envWithFake().readThread('abc-123');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/no rollout/i);
   });
 });
 

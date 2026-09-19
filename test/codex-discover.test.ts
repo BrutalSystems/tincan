@@ -13,6 +13,7 @@ const thread = (over: Partial<CodexThread> = {}): CodexThread => ({
 
 const env = (over: Partial<CodexEnv> = {}): CodexEnv => ({
   probe: async () => ({ ok: true }),
+  readThread: async () => ({ ok: true, source: 'cli' }),
   listThreads: async () => [thread()],
   liveThreads: async () => new Map([['00000000-0000-0000-0000-000000000aaa', {}]]),
   queue: async () => ({ ok: true }),
@@ -79,6 +80,7 @@ describe('a freshly started session', () => {
     const { peers, diagnostic } = await listCodexPeers(
       env({
         listThreads: async () => [],
+        readThread: async () => ({ ok: false, error: 'no rollout found for thread id 01a0…' }),
         liveThreads: async () => new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', {}]]),
       }),
     );
@@ -106,6 +108,44 @@ describe('a freshly started session', () => {
       }),
     );
     expect(peers[0]).toMatchObject({ rawName: 'Auth refactor', cwd: '/src/auth' });
+  });
+});
+
+describe('reachability comes from thread/read, not thread/list', () => {
+  test('a headless `codex exec` thread is unreachable: it accepts input and never reads it', async () => {
+    const { peers, diagnostic } = await listCodexPeers(
+      env({
+        listThreads: async () => [],
+        readThread: async () => ({ ok: true, source: 'exec' }),
+        liveThreads: async () => new Map([['00000000-0000-0000-0000-000000000aaa', {}]]),
+      }),
+    );
+    expect(peers[0]!.state).toBe('unreachable');
+    expect(diagnostic).toMatch(/exec/i);
+  });
+
+  test('a thread absent from thread/list is still reachable when it reads back fine', async () => {
+    // thread/list filters by source, so absence is not evidence of unreachability.
+    const { peers } = await listCodexPeers(
+      env({
+        listThreads: async () => [],
+        readThread: async () => ({ ok: true, source: 'cli' }),
+        liveThreads: async () => new Map([['00000000-0000-0000-0000-000000000aaa', {}]]),
+      }),
+    );
+    expect(peers[0]!.state).toBe('idle');
+  });
+
+  test('a thread with no rollout yet is unreachable, with the first-turn reason', async () => {
+    const { peers, diagnostic } = await listCodexPeers(
+      env({
+        listThreads: async () => [],
+        readThread: async () => ({ ok: false, error: 'no rollout found for thread id 01a0…' }),
+        liveThreads: async () => new Map([['00000000-0000-0000-0000-000000000aaa', {}]]),
+      }),
+    );
+    expect(peers[0]!.state).toBe('unreachable');
+    expect(diagnostic).toMatch(/first turn/i);
   });
 });
 
