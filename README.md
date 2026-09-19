@@ -79,12 +79,17 @@ Codex does ship collaboration tools — `collaboration.list_agents`,
 `collaboration.send_message`, `spawn_agent` and friends, enabled by the
 `multi_agent` feature. They are **scoped to a spawn tree**: `list_agents`
 describes itself as listing "live agents in the current root thread tree", and
-`send_message` addresses "an agent id or canonical task name *from
-`spawn_agent`*". Verified on a fresh session that had spawned nothing —
-`list_agents` returned only that session itself, and none of three other live
-Codex sessions on the machine.
+`send_message` targets a "relative or canonical task name *from `spawn_agent`*".
 
-So the two are complementary, not competing: Codex's tools reach agents you
+Checked from both sides of that boundary, on two live sessions:
+
+- A session that had spawned nothing saw only itself — `{"agents":[{"agent_name":"/root"}]}`.
+- A session that had spawned a sub-agent saw itself *and* that child, `/root`
+  and `/root/review`.
+- Neither saw any of the other live Codex sessions on the machine.
+
+So `list_agents` does find agents — just only the ones below it in its own tree.
+The two are complementary rather than competing: Codex's tools reach agents you
 created, Tin Can reaches sessions someone else launched.
 
 Tin Can never lists the session it is running in, and refuses a send addressed
