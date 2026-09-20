@@ -270,6 +270,47 @@ doing only half of it is easy to do by accident. Do both, in order:
 3. **Restart opencode.** Both the MCP registration and the plugin load only at
    startup.
 
+4. **Check which plugin actually loaded.** This is the one step people skip,
+   and it is the one that would have caught a stale plugin sitting on disk
+   through five releases:
+
+   ```bash
+   cat ~/.tincan/peers/opencode/ses_*.json | grep plugin_version
+   ```
+
+   Every live opencode session writes a record there. If `plugin_version` is
+   older than the `tincan` binary's own `--version`, the copy in step 2 did
+   not happen or the session predates it. No error appears anywhere else —
+   the session simply never answers peer messages.
+
+#### Installing the plugin from npm instead
+
+The plugin is also published on its own, as
+[`@brutalsystems/tincan-opencode`](https://www.npmjs.com/package/@brutalsystems/tincan-opencode),
+at the same version as the server. opencode can install plugins by npm
+specifier, which would remove the copy step and the staleness with it:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@brutalsystems/tincan-opencode"]
+}
+```
+
+**Verified so far:** opencode resolves and installs that specifier — the
+package lands in `~/.cache/opencode/packages/` — and the published artifact
+runs correctly when opencode loads it, registering its session and appearing
+in other runtimes' `peers` output.
+
+**Not yet verified:** that opencode *executes* a plugin declared this way,
+rather than only fetching it. Until that is confirmed, step 2 above is the
+supported install. If you use the npm form, run step 4 and confirm you see a
+`plugin_version` — an unloaded plugin looks exactly like no plugin at all.
+
+If you launch opencode through [Muster](https://github.com/BrutalSystems/muster),
+neither applies: `muster run opencode --plugin tincan` injects the plugin per
+launch from a path in Muster's own config, so nothing is installed globally.
+
 **Both installs are required for two-way messaging, and each one fails
 silently without the other** — no error appears in either session:
 
