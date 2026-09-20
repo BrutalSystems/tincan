@@ -167,10 +167,11 @@ Two consequences worth knowing:
   that only ever calls v1 never creates that state, but if you have been
   mixing routes, restart the session.
 
-The two earlier explanations in this section are kept in the git history
-rather than here: 0.5.7 claimed an idle session is never scheduled, 0.5.8
-blamed model warmth, and both were wrong while the symptom stayed constant.
-Found and isolated by the Muster session.
+The full evidence — counts, the served control, the reproduction, and the
+three explanations that turned out to be wrong — is in
+[`docs/opencode-v2-prompt-defect.md`](./docs/opencode-v2-prompt-defect.md),
+along with why it has deliberately not been reported upstream. Found and
+isolated by the Muster session.
 
 ### A known gap in the log### A known gap in the log### A known gap in the log### A known gap in the log
 
@@ -283,12 +284,12 @@ doing only half of it is easy to do by accident. Do both, in order:
    not happen or the session predates it. No error appears anywhere else —
    the session simply never answers peer messages.
 
-#### Installing the plugin from npm instead
+#### Installing the plugin from npm (preferred)
 
-The plugin is also published on its own, as
+The plugin is published on its own as
 [`@brutalsystems/tincan-opencode`](https://www.npmjs.com/package/@brutalsystems/tincan-opencode),
-at the same version as the server. opencode can install plugins by npm
-specifier, which would remove the copy step and the staleness with it:
+at the same version as the server. opencode installs plugins by npm specifier,
+which removes the copy step in step 2 — and the staleness with it:
 
 ```json
 {
@@ -297,24 +298,43 @@ specifier, which would remove the copy step and the staleness with it:
 }
 ```
 
-**0.6.1 fetched but never ran.** opencode installed the package and then
-silently did not execute it — no error, indistinguishable from the plugin not
-being configured. The cause was ours, in the manifest. opencode's loader
-(`packages/opencode/src/plugin/shared.ts`, `resolvePackageEntrypoint`) looks
-for `exports["./server"]` and then falls back to `main`; it never reads
-`exports["."]`, which was all 0.6.1 declared. So it resolved to no entry point
-at all. **0.6.2 adds both**, and a test pins them.
+**Prefer this over the hand copy.** A copied file goes stale in silence —
+nothing updates a copy, and a 0.4.0 plugin sat on one machine through five
+releases still posting to a route that does not run messages. A specifier has
+no copy to go stale.
 
-**Verified:** opencode resolves and installs the specifier — the package
-lands in `~/.cache/opencode/packages/` — and the published artifact runs
-correctly when opencode loads it by path, registering its session and
-appearing in other runtimes' `peers` output.
+Verified end to end on 0.6.2: opencode resolves and installs the package,
+executes it, and the session registers, receives a peer message and replies —
+with nothing hand-copied anywhere.
 
-**Still to confirm:** that 0.6.2's entry points make opencode actually execute
-it when declared by specifier. Until someone checks, step 2 above is the
-supported install. If you use the npm form, run step 4 and confirm you see a
-`plugin_version` — an unloaded plugin looks exactly like no plugin at all,
-which is the whole reason this paragraph exists.
+Whichever you use, run step 4 afterwards. An unloaded plugin looks exactly
+like no plugin at all.
+
+> **If you publish an opencode plugin yourself, read this.** 0.6.1 was fetched
+> and never executed — no error, no log line, indistinguishable from not
+> configuring it. opencode's loader
+> (`packages/opencode/src/plugin/shared.ts`, `resolvePackageEntrypoint`) reads
+> `exports["./server"]`, then falls back to `main`. It never reads
+> `exports["."]`, which was all 0.6.1 declared, so the entry resolved to
+> nothing. Declare `exports["./server"]` and `main`. If a specifier-named
+> plugin of yours silently does nothing, check that before looking anywhere
+> else.
+
+#### Choosing an install shape
+
+Both halves can come from npm, or from disk. The trade-offs:
+
+| | Pro | Con |
+|---|---|---|
+| **MCP** via global install (`tincan`) | fast session start; `npm update -g` keeps it current | has to be installed |
+| **MCP** via `npx -y @brutalsystems/tincan` | nothing installed; cannot go stale | re-resolves every session start — latency and a network dependency each launch |
+| **Plugin** via npm specifier | opencode keeps it current; no copy to go stale | needs opencode 1.18.x or newer |
+| **Plugin** via hand copy | works without npm resolution | nothing updates a copy — the failure above |
+
+For daily use the global install plus the npm specifier is the combination
+with no stale-copy failure mode and no per-launch cost. `npx` suits a trial.
+Under [Muster](https://github.com/BrutalSystems/muster) neither applies: see
+below.
 
 If you launch opencode through [Muster](https://github.com/BrutalSystems/muster),
 neither applies: `muster run opencode --plugin tincan` injects the plugin per
