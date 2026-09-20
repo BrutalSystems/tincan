@@ -15,6 +15,16 @@ export interface MessageRecord {
   delivered: boolean;
   expect_reply: boolean;
   in_reply_to?: string;
+  /**
+   * The effective delivery mode requested for this send: `'steer'` only when
+   * `urgent` was set AND the peer's runtime can act on it (opencode today);
+   * `'queue'` otherwise, including every urgent send to a runtime that has no
+   * interrupt (Codex, Claude Code). This is what actually happened to the
+   * peer's turn, not bare `urgent` intent — the two differ for exactly the
+   * runtimes that cannot steer. Optional so records written before this field
+   * existed still parse; absence does not imply `'queue'`.
+   */
+  delivery?: 'queue' | 'steer';
   /** Set by folding a later outcome record; never written directly. */
   notice?: string;
   kind?: undefined;
@@ -62,7 +72,7 @@ export function messagesPath(env: NodeJS.ProcessEnv, home: string = homedir()): 
 export class MessageLog {
   constructor(private readonly path: string) {}
 
-  appendMessage(e: Envelope, delivered: boolean): MessageRecord {
+  appendMessage(e: Envelope, delivered: boolean, delivery?: 'queue' | 'steer'): MessageRecord {
     const rec: MessageRecord = {
       id: e.id,
       at: e.at,
@@ -74,6 +84,7 @@ export class MessageLog {
       delivered,
       expect_reply: e.expect_reply,
       ...(e.in_reply_to !== undefined && { in_reply_to: e.in_reply_to }),
+      ...(delivery !== undefined && { delivery }),
     };
     this.append(rec);
     return rec;

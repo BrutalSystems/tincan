@@ -350,6 +350,31 @@ describe('send_peer', () => {
     expect(r.detail).toContain('thread not found');
     expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivered: false });
   });
+
+  test('logs delivery:"queue" for a normal send', async () => {
+    const { side } = makeSide();
+    await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
+    expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivery: 'queue' });
+  });
+
+  test('logs delivery:"steer" for an urgent send to a peer that can act on it', async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const }),
+    });
+    await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi', urgent: true });
+    expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivery: 'steer' });
+  });
+
+  test(
+    'logs delivery:"queue" — not "steer" — for an urgent send to a peer whose runtime cannot ' +
+      'act on it (Codex, Claude Code): the field records effect, not bare urgent intent',
+    async () => {
+      const { side } = makeSide(); // default peer() is a Codex peer
+      await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi', urgent: true });
+      expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivery: 'queue' });
+    },
+  );
 });
 
 describe('message_log', () => {

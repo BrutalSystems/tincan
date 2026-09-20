@@ -254,8 +254,15 @@ export function createTools(side: Side, log: MessageLog) {
         text: args.message,
       });
 
+      // Effective mode, not bare `urgent` intent: 'steer' only when the peer's
+      // runtime can actually act on it (opencode today). An urgent send to
+      // Codex or Claude Code still queues — recording 'steer' there would be
+      // reporting what was asked for, not what happened to the peer's turn.
+      const delivery: 'queue' | 'steer' =
+        args.urgent && runtimeSupportsUrgent(target.side.runtime) ? 'steer' : 'queue';
+
       // Log before delivering, so a crash mid-send still leaves a record (§8.6).
-      log.appendMessage(envelope, false);
+      log.appendMessage(envelope, false, delivery);
       guard.record(target.canonicalId, args.message);
 
       const outcome = await side.deliver(

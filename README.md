@@ -450,13 +450,20 @@ Three things worth knowing before you rely on them, none of them bugs:
 {"id":"msg_...","at":"2026-09-19T11:58:44.955Z","direction":"out",
  "from":{"runtime":"codex","name":"tincan","cwd":"/src/tincan"},
  "to":{"runtime":"claude-code","name":"billing-api","cwd":"/src/billing"},
- "text":"...","method":"inbox","delivered":false,"expect_reply":true}
+ "text":"...","method":"inbox","delivered":false,"expect_reply":true,"delivery":"queue"}
 {"id":"msg_...","at":"...","kind":"outcome","delivered":true}
 ```
 
 The message is written *before* delivery is attempted, so a crash mid-send still
 leaves a record. The outcome is a separate append; `message_log` folds it onto
 the message so you read one record with the true `delivered` value.
+
+`delivery` is `"queue"` or `"steer"` — the *effective* mode, not bare `urgent`
+intent. It reads `"steer"` only when `urgent` was set on a peer whose runtime
+can act on it (opencode today); an urgent send to Codex or Claude Code still
+logs `"queue"`, because that is what actually happened to the peer's turn.
+Records written before this field existed simply lack it — do not read its
+absence as `"queue"`.
 
 ## Troubleshooting
 

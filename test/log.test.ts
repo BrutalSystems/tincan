@@ -105,6 +105,19 @@ describe('resilience', () => {
   test('reads an absent log as empty', () => {
     expect(new MessageLog(join(dir, 'missing', 'messages.jsonl')).read({ last_n: 5 })).toEqual([]);
   });
+
+  test('reads back a pre-existing record written before the delivery field existed', () => {
+    // Hand-written, as a record from before `delivery` was added would be —
+    // appendMessage always sets it now, so this simulates disk state that
+    // predates the field rather than anything the code itself can produce.
+    // (One real write first, just to create the log's directory.)
+    log.appendMessage(env('msg_a'), true);
+    const legacy = { ...env('msg_legacy'), direction: 'out' as const, delivered: false };
+    appendFileSync(join(dir, 'nested', 'messages.jsonl'), JSON.stringify(legacy) + '\n');
+    const rec = log.read({ last_n: 1 })[0]!;
+    expect(rec).toMatchObject({ id: 'msg_legacy', text: 'text of msg_legacy' });
+    expect((rec as { delivery?: string }).delivery).toBeUndefined();
+  });
 });
 
 describe('outcome folding', () => {
