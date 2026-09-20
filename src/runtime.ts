@@ -15,6 +15,7 @@ import { createCodexEnv, parentPidLookup } from './codex/cli.js';
 import { pickSelfThreadId, ancestorPids } from './codex/self.js';
 import { listOpencodeSessions, type OpencodeSession } from './opencode/discover.js';
 import { sendToInstance } from './opencode/client.js';
+import { selfSessionId } from './opencode/self.js';
 import { runtimeSupportsUrgent } from './tools.js';
 
 export interface HostContext {
@@ -120,12 +121,95 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
       };
     }
 
-    case 'opencode':
-      // TODO(Task 4): opencode has no host-side construction of its own yet.
-      // Fall through to the Codex arm as a workable stand-in — an
-      // opencode-hosted Tin Can would otherwise crash at startup for the
-      // duration of Tasks 2–3.
-      // eslint-disable-next-line no-fallthrough
+    case 'opencode': {
+      // opencode has no native peer messaging of any kind (change notice §4),
+      // so unlike the Claude Code host this side lists all three runtimes —
+      // including its own. That means a Tin Can instance hosted here must
+      // exclude itself from among its opencode siblings too, not merely from
+      // Codex/Claude Code.
+      const registryDir = opencodeRegistryDir(env);
+      const codexForOpencode = createCodexEnv();
+      const peerRuntimes: RuntimeName[] = ['codex', 'claude-code', 'opencode'];
+
+      // Deliberately NOT cached across calls: the caller file is scoped to
+      // the opencode *instance*, and one instance can run several sessions
+      // that each call a Tin Can tool through the same shared MCP subprocess
+      // (SPEC §4). Caching the first answer would freeze "self" to whichever
+      // session happened to call first, misidentifying every later caller.
+      const resolveSelfSession = () => selfSessionId({ registryDir, env });
+
+      return {
+        ...common,
+        selfName: () => opencodeSelfName(registryDir, resolveSelfSession, ctx.cwd),
+        peerRuntimes,
+        supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
+        limitsFor,
+
+        async listPeers() {
+          const [codexListing, claudeSessions, opencodeListing, selfSession] = await Promise.all([
+            listCodexPeers(codexForOpencode),
+            listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
+            listOpencodeSessions({ registryDir }),
+            resolveSelfSession(),
+          ]);
+
+          const codexPeers = codexListing.peers.map(toCodexSidePeer);
+          const claudePeers: SidePeer[] = claudeSessions.map((session) => ({
+            runtime: 'claude-code',
+            rawName: session.rawName,
+            uuid: session.uuid,
+            cwd: session.cwd,
+            state: session.state,
+            socketPath: session.socketPath,
+            auth: session.auth,
+          }));
+
+          // Self-exclusion (change notice §4, corrected by the probe). When
+          // the caller file names our exact session, exclude only it — a
+          // sibling session in the same instance stays addressable, which is
+          // the entire reason the caller file exists rather than just keying
+          // off OPENCODE_PID. When it does not (missing or unreadable caller
+          // file), fall back to excluding every session of our own
+          // instance: over-excluding a sibling is safe, under-excluding
+          // risks a self-send delivering to ourselves.
+          const selfPid = Number(env.OPENCODE_PID);
+          const opencodePeers = opencodeListing.peers
+            .filter((s) => {
+              if (selfSession !== undefined) return s.uuid !== selfSession;
+              if (Number.isInteger(selfPid)) return s.pid !== selfPid;
+              // We cannot identify ourselves at all — OPENCODE_PID itself is
+              // missing or unparseable, so there is no pid to key the
+              // instance-level fallback on either. Exclude every opencode
+              // session rather than risk a self-send: over-excluding here is
+              // safe, listing ourselves is not.
+              return false;
+            })
+            .map(toOpencodeSidePeer);
+
+          const peers = [...codexPeers, ...claudePeers, ...opencodePeers];
+          if (peers.length === 0) {
+            return {
+              peers,
+              diagnostic:
+                opencodeListing.diagnostic ??
+                codexListing.diagnostic ??
+                'No other agent sessions are running. Start a Codex, Claude Code, or ' +
+                  'opencode session.',
+            };
+          }
+          return {
+            peers,
+            ...(codexListing.diagnostic !== undefined && { diagnostic: codexListing.diagnostic }),
+          };
+        },
+
+        deliver: (peer, id, text, urgent) =>
+          deliverTo(codexForOpencode, ctx, peer, id, text, urgent, () =>
+            opencodeSelfName(registryDir, resolveSelfSession, ctx.cwd),
+          ),
+      };
+    }
+
     case 'codex': {
       // Hosted in Codex. Codex's own collaboration.list_agents / send_message
       // are scoped to a spawn tree ("live agents in the current root thread
@@ -300,6 +384,38 @@ async function deliverTo(
     }
     default:
       return assertNever(peer.runtime, 'deliverTo');
+  }
+}
+
+/**
+ * Our own slug: peers address us by whatever `slug` our own `ses_*.json`
+ * advertises (I6), not by our working directory's basename. `isSelfAddress`
+ * (tools.ts) compares a typed address against exactly this value, so getting
+ * it wrong means a self-send typed as our slug is never recognised as self —
+ * it either returns a misleading `peer_unknown`, or, when the caller file is
+ * absent, is not excluded at all and delivers.
+ *
+ * Falls back to the directory name, the same as every other host, whenever a
+ * session cannot be resolved or its record has no slug.
+ */
+async function opencodeSelfName(
+  registryDir: string,
+  resolveSelfSession: () => Promise<string | undefined>,
+  cwd: string,
+): Promise<string> {
+  const sessionId = await resolveSelfSession();
+  const slug = sessionId === undefined ? undefined : readOpencodeSlug(registryDir, sessionId);
+  return slug ?? (basename(cwd) || 'opencode');
+}
+
+function readOpencodeSlug(registryDir: string, sessionId: string): string | undefined {
+  const path = join(registryDir, `${sessionId}.json`);
+  if (!existsSync(path)) return undefined;
+  try {
+    const rec = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    return typeof rec.slug === 'string' && rec.slug.length > 0 ? rec.slug : undefined;
+  } catch {
+    return undefined;
   }
 }
 

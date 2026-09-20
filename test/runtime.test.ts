@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf, makeSelfNameResolver } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
+import { createTools } from '../src/tools.js';
+import { MessageLog } from '../src/log.js';
 import { fakeInbox, fakeOpencodeInstance } from './fakes.js';
 
 let dir: string;
@@ -220,5 +222,195 @@ describe('buildSide', () => {
     expect(
       buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
     ).toBe(false);
+  });
+});
+
+describe('buildSide, hosted in opencode', () => {
+  let home: string;
+  let registryDir: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tincan-oc-self-'));
+    registryDir = join(home, 'peers', 'opencode');
+    mkdirSync(registryDir, { recursive: true });
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  // Two sessions of the SAME opencode instance (same socket, same pid), the
+  // real shape the change notice describes: "one instance commonly runs
+  // several sessions in the same directory."
+  async function writeInstance(instance: Awaited<ReturnType<typeof fakeOpencodeInstance>>) {
+    writeFileSync(
+      join(registryDir, 'ses_self.json'),
+      JSON.stringify({
+        session_id: 'ses_self',
+        slug: 'nimble-wizard',
+        directory: '/repo',
+        state: 'idle',
+        socket: instance.path,
+        instance_id: 'inst-a91f',
+        pid: 41233,
+      }),
+    );
+    writeFileSync(
+      join(registryDir, 'ses_sibling.json'),
+      JSON.stringify({
+        session_id: 'ses_sibling',
+        slug: 'proud-forest',
+        directory: '/repo',
+        state: 'idle',
+        socket: instance.path,
+        instance_id: 'inst-a91f',
+        pid: 41233,
+      }),
+    );
+  }
+
+  test('exposes all three runtimes, unlike the Claude Code host', () => {
+    const side = buildSide('opencode', {
+      registryDir: join(dir, 'sessions'),
+      pid: 1,
+      cwd: '/src/x',
+      env: { OPENCODE_PID: '41233' },
+    });
+    expect(side.peerRuntimes).toEqual(['codex', 'claude-code', 'opencode']);
+  });
+
+  test(
+    'caller file present: excludes exactly our own session, and a sibling session in the ' +
+      'same instance stays addressable — the entire reason the caller file exists rather ' +
+      'than just excluding by OPENCODE_PID',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      try {
+        await writeInstance(instance);
+        writeFileSync(
+          join(registryDir, 'inst-a91f.caller.json'),
+          JSON.stringify({
+            instance_id: 'inst-a91f',
+            session_id: 'ses_self',
+            pid: 41233,
+            tool: 'tincan_send_peer',
+            at: '2026-09-19T14:02:11Z',
+          }),
+        );
+        const side = buildSide('opencode', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
+        });
+        const { peers } = await side.listPeers();
+        const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
+        expect(uuids).not.toContain('ses_self');
+        expect(uuids).toContain('ses_sibling');
+      } finally {
+        await instance.close();
+      }
+    },
+  );
+
+  test(
+    'caller file absent: falls back to excluding every session of our own instance, ' +
+      'including the sibling — over-excluding is safe, under-excluding is not',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      try {
+        await writeInstance(instance);
+        // Deliberately no inst-a91f.caller.json.
+        const side = buildSide('opencode', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
+        });
+        const { peers } = await side.listPeers();
+        const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
+        expect(uuids).not.toContain('ses_self');
+        expect(uuids).not.toContain('ses_sibling');
+      } finally {
+        await instance.close();
+      }
+    },
+  );
+
+  test(
+    'OPENCODE_PID missing or unparseable: excludes every opencode session, since there is ' +
+      'no pid to key even the instance-level fallback on',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      try {
+        await writeInstance(instance);
+        // No caller file, and no usable OPENCODE_PID either.
+        const side = buildSide('opencode', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home, OPENCODE: '1' },
+        });
+        const { peers } = await side.listPeers();
+        expect(peers.filter((p) => p.runtime === 'opencode')).toEqual([]);
+      } finally {
+        await instance.close();
+      }
+    },
+  );
+
+  test('selfName() resolves our own slug from ses_*.json, not the cwd basename', async () => {
+    const instance = await fakeOpencodeInstance();
+    try {
+      await writeInstance(instance);
+      writeFileSync(
+        join(registryDir, 'inst-a91f.caller.json'),
+        JSON.stringify({
+          instance_id: 'inst-a91f',
+          session_id: 'ses_self',
+          pid: 41233,
+          tool: 'tincan_send_peer',
+          at: '2026-09-19T14:02:11Z',
+        }),
+      );
+      const side = buildSide('opencode', {
+        registryDir: join(dir, 'sessions'),
+        pid: 1,
+        cwd: '/src/some-other-directory-name',
+        env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
+      });
+      expect(await side.selfName()).toBe('nimble-wizard');
+    } finally {
+      await instance.close();
+    }
+  });
+
+  test('send_peer addressed to our own slug is refused as a self-send, never delivered', async () => {
+    const instance = await fakeOpencodeInstance();
+    const logDir = mkdtempSync(join(tmpdir(), 'tincan-oc-log-'));
+    try {
+      await writeInstance(instance);
+      writeFileSync(
+        join(registryDir, 'inst-a91f.caller.json'),
+        JSON.stringify({
+          instance_id: 'inst-a91f',
+          session_id: 'ses_self',
+          pid: 41233,
+          tool: 'tincan_send_peer',
+          at: '2026-09-19T14:02:11Z',
+        }),
+      );
+      const side = buildSide('opencode', {
+        registryDir: join(dir, 'sessions'),
+        pid: 1,
+        cwd: '/src/x',
+        env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
+      });
+      const log = new MessageLog(join(logDir, 'messages.jsonl'));
+      const r = await createTools(side, log).send_peer({ peer: 'nimble-wizard', message: 'hi' });
+      expect(r.delivered).toBe(false);
+      expect(r.refusal).toBe('peer_unknown');
+      expect(r.detail?.toLowerCase()).toContain('yourself');
+    } finally {
+      await instance.close();
+      rmSync(logDir, { recursive: true, force: true });
+    }
   });
 });
