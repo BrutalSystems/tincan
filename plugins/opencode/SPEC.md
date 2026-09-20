@@ -206,7 +206,7 @@ clear error rather than letting the bind throw.
 
 ```json
 {
-  "session_id": "ses_f4185535affe0nxzk66nw19ihJ",
+  "session_id": "ses_f41a2b3c4ffeExampleSess01Z",
   "slug": "nimble-wizard",
   "title": "auth refactor",
   "directory": "/Users/mike/Source/brutalsystems/billing",
@@ -242,7 +242,7 @@ reads these at arbitrary times and must never see a partial one.
 ```json
 {
   "instance_id": "inst-a91f",
-  "session_id": "ses_f4185535affe0nxzk66nw19ihJ",
+  "session_id": "ses_f41a2b3c4ffeExampleSess01Z",
   "pid": 41233,
   "tool": "tincan_send_peer",
   "at": "2026-09-19T14:02:11Z"
@@ -361,7 +361,7 @@ written; delivery is acknowledged by the connection being accepted and the
 line parsing.
 
 ```json
-{"to_session":"ses_f4185535affe0nxzk66nw19ihJ","message_from":"billing-api","text":"<enveloped text>","delivery":"queue","message_id":"msg_01J8…"}
+{"to_session":"ses_f41a2b3c4ffeExampleSess01Z","message_from":"billing-api","text":"<enveloped text>","delivery":"queue","message_id":"msg_01J8…"}
 ```
 
 | Field | Required | Notes |
@@ -607,5 +607,5 @@ for the Tin Can end, neither requiring a change:
 - The fixed hex prefix guarantees at least three hex characters, so an opencode
   id can never hit the empty-suffix known defect.
 
-Worked example: `ses_f4185535affe0nxzk66nw19ihJ` → hex-filtered
-`ef4185535affe06619` → suffix `619`.
+Worked example: `ses_f41a2b3c4ffeExampleSess01Z` → hex-filtered
+`ef41a2b3c4ffeEaee01` → suffix `e01`.

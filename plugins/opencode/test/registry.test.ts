@@ -6,7 +6,7 @@ import { composeRecord, sameIgnoringTimestamp, writeRecord, removeRecord, remove
 import type { SessionInfo } from '../tincan-lib/types.js';
 
 const info: SessionInfo = {
-  id: 'ses_f4185535affe0nxzk66nw19ihJ',
+  id: 'ses_f41a2b3c4ffeExampleSess01Z',
   slug: 'nimble-wizard',
   title: 'auth refactor',
   directory: '/Users/mike/Source/billing',
@@ -28,7 +28,7 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 describe('composeRecord', () => {
   it('builds the documented shape', () => {
     expect(composeRecord(info, 'idle', ctx)).toEqual({
-      session_id: 'ses_f4185535affe0nxzk66nw19ihJ',
+      session_id: 'ses_f41a2b3c4ffeExampleSess01Z',
       slug: 'nimble-wizard',
       title: 'auth refactor',
       directory: '/Users/mike/Source/billing',

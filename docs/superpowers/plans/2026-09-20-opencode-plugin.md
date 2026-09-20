@@ -88,7 +88,7 @@ describe('plugin constants', () => {
   });
 
   it('matches opencode session ids and rejects others', () => {
-    expect(SESSION_ID_RE.test('ses_f4185535affe0nxzk66nw19ihJ')).toBe(true);
+    expect(SESSION_ID_RE.test('ses_f41a2b3c4ffeExampleSess01Z')).toBe(true);
     expect(SESSION_ID_RE.test('sess_abc')).toBe(true);
     expect(SESSION_ID_RE.test('msg_abc')).toBe(false);
     expect(SESSION_ID_RE.test('')).toBe(false);
@@ -419,7 +419,7 @@ describe('file and socket paths', () => {
 
 describe('socketPathTooLong', () => {
   it('accepts a realistic default path', () => {
-    const p = socketPath(peersDir({}, '/Users/mike'), 'inst-a91f2c');
+    const p = socketPath(peersDir({}, '/Users/example'), 'inst-a91f2c');
     expect(p.length).toBeLessThan(MAX_UNIX_PATH);
     expect(socketPathTooLong(p)).toBe(false);
   });
@@ -516,7 +516,7 @@ import { describe, it, expect } from 'vitest';
 import { parseLine, MAX_LINE_BYTES } from '../tincan-lib/wire.js';
 
 const good = {
-  to_session: 'ses_f4185535affe0nxzk66nw19ihJ',
+  to_session: 'ses_f41a2b3c4ffeExampleSess01Z',
   message_from: 'billing-api',
   text: '<peer_message from="billing-api">hi</peer_message>',
   delivery: 'queue',
@@ -697,7 +697,7 @@ import { composeRecord, sameIgnoringTimestamp, writeRecord, removeRecord, remove
 import type { SessionInfo } from '../tincan-lib/types.js';
 
 const info: SessionInfo = {
-  id: 'ses_f4185535affe0nxzk66nw19ihJ',
+  id: 'ses_f41a2b3c4ffeExampleSess01Z',
   slug: 'nimble-wizard',
   title: 'auth refactor',
   directory: '/Users/mike/Source/billing',
@@ -719,7 +719,7 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 describe('composeRecord', () => {
   it('builds the documented shape', () => {
     expect(composeRecord(info, 'idle', ctx)).toEqual({
-      session_id: 'ses_f4185535affe0nxzk66nw19ihJ',
+      session_id: 'ses_f41a2b3c4ffeExampleSess01Z',
       slug: 'nimble-wizard',
       title: 'auth refactor',
       directory: '/Users/mike/Source/billing',

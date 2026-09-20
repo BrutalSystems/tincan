@@ -15,7 +15,7 @@ describe('plugin constants', () => {
   });
 
   it('matches opencode session ids and rejects others', () => {
-    expect(SESSION_ID_RE.test('ses_f4185535affe0nxzk66nw19ihJ')).toBe(true);
+    expect(SESSION_ID_RE.test('ses_f41a2b3c4ffeExampleSess01Z')).toBe(true);
     expect(SESSION_ID_RE.test('sess_abc')).toBe(true);
     expect(SESSION_ID_RE.test('msg_abc')).toBe(false);
     expect(SESSION_ID_RE.test('')).toBe(false);

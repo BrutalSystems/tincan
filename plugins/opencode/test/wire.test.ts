@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseLine, MAX_LINE_BYTES, MAX_ID_BYTES } from '../tincan-lib/wire.js';
 
 const good = {
-  to_session: 'ses_f4185535affe0nxzk66nw19ihJ',
+  to_session: 'ses_f41a2b3c4ffeExampleSess01Z',
   message_from: 'billing-api',
   text: '<peer_message from="billing-api">hi</peer_message>',
   delivery: 'queue',

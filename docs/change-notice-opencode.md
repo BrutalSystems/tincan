@@ -141,7 +141,7 @@ No response is written.
 Shape (SPEC §7 is authoritative):
 
 ```json
-{"to_session":"ses_f4185535affe0nxzk66nw19ihJ","message_from":"billing-api","text":"<enveloped text>","delivery":"queue","message_id":"msg_01J8…"}
+{"to_session":"ses_f41a2b3c4ffeExampleSess01Z","message_from":"billing-api","text":"<enveloped text>","delivery":"queue","message_id":"msg_01J8…"}
 ```
 
 Note the socket is **per opencode instance, not per session** — one instance
@@ -224,7 +224,7 @@ So the plugin records it for you, at:
 ```json
 {
   "instance_id": "inst-a91f",
-  "session_id": "ses_f4185535affe0nxzk66nw19ihJ",
+  "session_id": "ses_f41a2b3c4ffeExampleSess01Z",
   "pid": 41233,
   "tool": "tincan_send_peer",
   "at": "2026-09-19T14:02:11Z"
@@ -320,7 +320,7 @@ runtime therefore yields the same token: a lowercase hex triple.
 |---|---|---|
 | Codex | `01a0b9b4-a33e-7ab1-80a0-bb715504a0fb` | `0fb` |
 | Claude Code | UUID session id | last three hex |
-| opencode | `ses_f4185535affe0nxzk66nw19ihJ` | `619` |
+| opencode | `ses_f41a2b3c4ffeExampleSess01Z` | `e01` |
 
 It also works for the right reason. An opencode id is `ses_` + about twelve hex
 characters of descending timestamp + about fourteen base62 random. Taking the

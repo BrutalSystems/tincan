@@ -48,7 +48,7 @@ describe('file and socket paths', () => {
 
 describe('socketPathTooLong', () => {
   it('accepts a realistic default path', () => {
-    const p = socketPath(peersDir({}, '/Users/mike'), 'inst-a91f2c');
+    const p = socketPath(peersDir({}, '/Users/example'), 'inst-a91f2c');
     expect(p.length).toBeLessThan(MAX_UNIX_PATH);
     expect(socketPathTooLong(p)).toBe(false);
   });
