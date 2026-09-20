@@ -6,9 +6,21 @@ import { join } from 'node:path';
  */
 export const MAX_UNIX_PATH = 103;
 
+function tincanHome(env: Record<string, string | undefined>, home: string): string {
+  return env.TINCAN_HOME && env.TINCAN_HOME.length > 0 ? env.TINCAN_HOME : join(home, '.tincan');
+}
+
 export function peersDir(env: Record<string, string | undefined>, home: string): string {
-  const base = env.TINCAN_HOME && env.TINCAN_HOME.length > 0 ? env.TINCAN_HOME : join(home, '.tincan');
-  return join(base, 'peers', 'opencode');
+  return join(tincanHome(env, home), 'peers', 'opencode');
+}
+
+/**
+ * Deliberately BESIDE `peers/`, not inside `peers/opencode/`: that directory
+ * is scanned by Tin Can and swept by `sweepOrphans`, and a log file dropped
+ * in it would confuse both.
+ */
+export function pluginLogPath(env: Record<string, string | undefined>, home: string): string {
+  return join(tincanHome(env, home), 'opencode-plugin.log');
 }
 
 export function sessionFile(dir: string, sessionID: string): string {

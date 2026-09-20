@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { peersDir, sessionFile, socketPath, socketPathTooLong, newInstanceId, MAX_UNIX_PATH } from '../tincan-lib/paths.js';
+import { peersDir, pluginLogPath, sessionFile, socketPath, socketPathTooLong, newInstanceId, MAX_UNIX_PATH } from '../tincan-lib/paths.js';
 
 describe('peersDir', () => {
   it('defaults to ~/.tincan/peers/opencode', () => {
@@ -12,6 +12,27 @@ describe('peersDir', () => {
 
   it('ignores an empty TINCAN_HOME', () => {
     expect(peersDir({ TINCAN_HOME: '' }, '/Users/mike')).toBe('/Users/mike/.tincan/peers/opencode');
+  });
+});
+
+describe('pluginLogPath', () => {
+  it('defaults to ~/.tincan/opencode-plugin.log', () => {
+    expect(pluginLogPath({}, '/Users/mike')).toBe('/Users/mike/.tincan/opencode-plugin.log');
+  });
+
+  it('honours TINCAN_HOME', () => {
+    expect(pluginLogPath({ TINCAN_HOME: '/srv/tc' }, '/Users/mike')).toBe('/srv/tc/opencode-plugin.log');
+  });
+
+  it('ignores an empty TINCAN_HOME', () => {
+    expect(pluginLogPath({ TINCAN_HOME: '' }, '/Users/mike')).toBe('/Users/mike/.tincan/opencode-plugin.log');
+  });
+
+  it('sits beside peers/, not inside peers/opencode/', () => {
+    const env = { TINCAN_HOME: '/srv/tc' };
+    const home = '/Users/mike';
+    expect(pluginLogPath(env, home)).not.toContain(peersDir(env, home));
+    expect(pluginLogPath(env, home).startsWith(peersDir(env, home))).toBe(false);
   });
 });
 
