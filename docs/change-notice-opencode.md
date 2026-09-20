@@ -209,8 +209,24 @@ sessions in the same directory, and the plugin writes the same `directory` on
 all of them. That approach can only identify the instance, which would force
 you to over-exclude every sibling session.
 
-opencode exports no `OPENCODE_SESSION_ID` into tool subprocesses, so the
-environment is no help either. But the plugin's `tool.execute.before` hook does
+opencode exports no `OPENCODE_SESSION_ID`, so the environment cannot name the
+*session*. It does, however, name the *instance*: an MCP subprocess launched by
+opencode 1.18.31 inherits **`OPENCODE=1`** and **`OPENCODE_PID=<pid of the
+opencode process>`** — verified with a stub MCP server, whose reported
+`OPENCODE_PID` matched the `opencode` entry in its own process ancestry. That is
+better than Rev 1's ancestry walk: match `OPENCODE_PID` against the `pid` field
+directly, with no process-tree traversal at all.
+
+> **Order the runtime detection most-specific-first.** An MCP subprocess
+> inherits the environment of whatever launched opencode. In the verification
+> run — opencode started from a shell inside a Claude Code session — the
+> subprocess saw `OPENCODE=1` *and* `CLAUDE_CODE_MESSAGING_SOCKET`,
+> `CLAUDECODE=1` and `CLAUDE_CODE_SESSION_ID` together. `detectRuntime`
+> currently returns `claude-code` the moment it sees that socket, so an
+> opencode-hosted Tin Can would misidentify its own host. Check `OPENCODE`
+> before the Claude Code variables, not after.
+
+But the plugin's `tool.execute.before` hook does
 receive the calling `sessionID`, **including for MCP-provided tools** — verified
 with a stub MCP server, which produced
 `{ tool: "probe_probe_ping", sessionID: "ses_…", callID: "call_…" }`.
@@ -231,9 +247,10 @@ So the plugin records it for you, at:
 }
 ```
 
-Resolve self as: find the caller file whose `pid` is an ancestor of the Tin Can
-process; its `session_id` is the calling session. The `pid` is on the file
-itself, so this works even before any session has been advertised.
+Resolve self as: read `OPENCODE_PID` from the environment, find the caller file
+whose `pid` equals it, and take its `session_id`. The `pid` is on the file
+itself, so this works even before any session has been advertised, and it needs
+no process-tree walk.
 
 Two caveats worth knowing:
 
