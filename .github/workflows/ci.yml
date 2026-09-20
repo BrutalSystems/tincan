@@ -66,21 +66,7 @@ jobs:
 
       - run: npm run build
 
-      # A publish ships whatever `files` resolves to. Catch a stray src/,
-      # test/, or dotfile here rather than in an immutable release.
-      - name: Nothing unexpected in the tarball
-        run: |
-          npm pack --dry-run --json > /tmp/pack.json
-          node -e '
-            const f = require("/tmp/pack.json")[0].files.map(x => x.path);
-            const bad = f.filter(p =>
-              (p.startsWith("src/") ||
-               (p.startsWith("test/") && p !== "test/fixtures/canonical-id.json") ||
-               p.startsWith("node_modules/") ||
-               /(^|\/)\.(env|npmrc|git)/.test(p)));
-            if (bad.length) {
-              console.error("unexpected files in tarball:\n  " + bad.join("\n  "));
-              process.exit(1);
-            }
-            console.log(`tarball ok — ${f.length} files`);
-          '
+      # Same check the publish job runs, on every push — so tarball drift
+      # surfaces when it is introduced, not at release time.
+      - name: Verify the tarball
+        run: node scripts/verify-tarball.mjs

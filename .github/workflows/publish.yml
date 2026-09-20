@@ -1,16 +1,17 @@
 name: Publish
 
-# Tag-driven, matching RELEASING.md step 4. Pushing v0.5.0 publishes 0.5.0.
-# Nothing publishes from a branch push — a release should be a deliberate act.
+# Tag-driven, matching RELEASING.md. Pushing v0.5.0 publishes 0.5.0, and
+# nothing publishes from a branch push — a release should be a deliberate act.
 #
 # Authentication is npm trusted publishing over OIDC: there is no npm token,
 # here or in the repository secrets. The registry trusts this exact repo, this
 # exact workflow FILENAME, and the `npm` environment below. Renaming this file
-# or changing that environment breaks publishing until the trusted publisher is
-# reconfigured on npmjs.com. See RELEASING.md.
+# or that environment breaks publishing until the trusted publisher is
+# reconfigured. See docs/ci-cd-standard.md.
+
 on:
   push:
-    tags: ['v*']
+    tags: ['v*.*.*']
 
 permissions:
   contents: read
@@ -19,12 +20,17 @@ jobs:
   publish:
     runs-on: ubuntu-latest
 
-    # Gives you somewhere to hang a required reviewer in repo settings if you
-    # ever want a human gate. With no protection rules configured it is a no-op.
+    # A fork that pushes a tag gets no run at all. OIDC would refuse it anyway,
+    # but an explicit gate beats a confusing red run in someone else's fork.
+    if: github.repository == 'BrutalSystems/tincan'
+
+    # Part of the trusted-publisher identity, not decoration. Also where a
+    # required reviewer goes, since OIDC widens publish rights from "whoever
+    # holds the token" to "whoever can push a tag".
     environment: npm
 
     permissions:
-      contents: read
+      contents: write # create the GitHub Release
       id-token: write # OIDC: the npm credential itself, and provenance
 
     steps:
@@ -32,19 +38,20 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Trusted publishing needs npm >= 11.5.1, and Node 22 ships npm 10.x.
-          # The engines floor stays >=22 and CI still tests on 22; only the
-          # publishing runner has to be newer.
-          node-version: '24'
+          # The engines floor. The runner stays on it; npm is upgraded below
+          # rather than moving the whole runtime.
+          node-version: '22'
           registry-url: https://registry.npmjs.org
           # No dependency cache in a release build.
           package-manager-cache: false
 
-      - run: npm ci
+      # Node 22 ships npm 10.x; trusted publishing needs >= 11.5.1.
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm -v
 
-      # A published version is immutable and cannot be unpublished after 72
-      # hours. Refuse to ship a tag that disagrees with the manifest rather
-      # than discovering the mismatch in the registry.
+      # Cheapest checks first — fail before installing anything.
       - name: Tag matches package.json
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -53,12 +60,12 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match package.json $pkg"
             exit 1
           fi
-          echo "publishing $pkg"
+          echo "releasing $pkg"
 
-      # A version already on the registry is not an error — a re-pushed tag,
-      # or a release published by hand, should leave this run green with
-      # nothing to do. Shipping the WRONG version is what the tag check above
-      # catches, and that one does fail.
+      # A version already on the registry is not an error — a re-pushed tag, or
+      # a release published by hand, should leave this run green with nothing
+      # to do. Shipping the WRONG version is what the check above catches, and
+      # that one does fail.
       - name: Already published?
         id: published
         run: |
@@ -70,29 +77,71 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # prepublishOnly runs build + typecheck:plugin + test, so a broken
-      # build cannot ship. Running them here too makes the failure legible
-      # in its own step rather than buried in npm's output.
+      - run: npm ci
+        if: steps.published.outputs.skip == 'false'
+
       - run: npm run build
         if: steps.published.outputs.skip == 'false'
+
       - run: npm run typecheck:plugin
         if: steps.published.outputs.skip == 'false'
+
       - run: npm test
         if: steps.published.outputs.skip == 'false'
 
-      # No NODE_AUTH_TOKEN. OIDC supplies the credential, and provenance is
-      # generated automatically because the credential is a trusted publisher.
-      - name: Publish
+      - name: Pack
+        id: pack
         if: steps.published.outputs.skip == 'false'
-        run: npm publish
-
-      - name: Verify against the registry
         run: |
           pkg=$(node -p "require('./package.json').version")
-          for i in 1 2 3 4 5 6; do
-            if [ "$(npm view @brutalsystems/tincan version 2>/dev/null)" = "$pkg" ]; then
-              echo "registry reports $pkg"; exit 0
+          echo "tarball=brutalsystems-tincan-$pkg.tgz" >> "$GITHUB_OUTPUT"
+          npm pack
+
+      - name: Verify the tarball
+        if: steps.published.outputs.skip == 'false'
+        run: node scripts/verify-tarball.mjs
+
+      # Install the packed artifact and run the binary. Nothing else in this
+      # pipeline would notice a broken `bin`, a missing dist file, or a bad
+      # shebang — the unit tests import source, not the package.
+      - name: Smoke-test the packed artifact
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          prefix=$(mktemp -d)
+          npm install -g --prefix "$prefix" "./${{ steps.pack.outputs.tarball }}"
+          out=$("$prefix/bin/tincan" --help 2>&1 | head -3 || true)
+          echo "$out"
+          if [ -z "$out" ]; then
+            echo "::error::the installed binary produced no output"
+            exit 1
+          fi
+
+      # Publish the artifact that was just smoke-tested, not the directory, so
+      # what shipped is exactly what was checked. No NODE_AUTH_TOKEN: OIDC
+      # supplies the credential, and provenance follows from it.
+      - name: Publish
+        if: steps.published.outputs.skip == 'false'
+        run: npm publish "./${{ steps.pack.outputs.tarball }}" --provenance
+
+      - name: Confirm the registry is serving it
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          for i in $(seq 1 10); do
+            if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
+              echo "registry serving $pkg"
+              npm view "@brutalsystems/tincan@$pkg" dist.integrity
+              exit 0
             fi
-            echo "registry not caught up yet (attempt $i), waiting 20s"; sleep 20
+            echo "not yet (attempt $i), waiting 20s"; sleep 20
           done
-          echo "::warning::registry still not reporting $pkg — it lags publishes by 1-2 minutes"
+          echo "::warning::registry still not serving $pkg — publishes lag by 1-2 minutes"
+
+      # Tincan has no RELEASE_NOTES.md; the tag annotation is its release
+      # record. A repo that keeps release notes extracts that version's
+      # section here instead. See docs/ci-cd-standard.md.
+      - name: GitHub Release
+        if: steps.published.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-from-tag --verify-tag

@@ -1,5 +1,9 @@
 # Releasing Tin Can
 
+> The pipeline itself — why it is shaped this way, and what muster shares with
+> it — is [docs/ci-cd-standard.md](./docs/ci-cd-standard.md). This file is the
+> tincan-specific procedure.
+
 ## Before you start
 
 - Publish rights on the `@brutalsystems` npm scope.
@@ -101,7 +105,9 @@ npm pack @brutalsystems/tincan@0.1.2 && tar tzf brutalsystems-tincan-0.1.2.tgz
 **Publishing is tag-driven and runs in CI.** Pushing a `v*` tag triggers
 `.github/workflows/publish.yml`, which refuses the release unless the tag
 matches `package.json`, runs build, plugin typecheck and the full suite, and
-then publishes with npm provenance. Nothing publishes from a branch push.
+packs, verifies the tarball, installs it into a temp prefix and runs the
+binary, then publishes **that tarball** with npm provenance and creates a
+GitHub Release from the tag annotation. Nothing publishes from a branch push.
 
 If the version is already on the registry — a re-pushed tag, or a release
 published by hand — the job says so and finishes green without republishing.
