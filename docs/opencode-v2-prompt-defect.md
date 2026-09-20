@@ -12,8 +12,8 @@ session:
 
 1. admits the message durably — it becomes a real `type:"user"` message
 2. schedules an agent turn, about 70ms later
-3. that turn fails to resolve the session's own model and dies before the
-   agent runs, with `ModelUnavailableError`
+3. that turn dies before the agent runs, with `ModelUnavailableError` naming
+   the session's own model
 4. tells nobody
 
 The endpoint's own OpenAPI summary promises *"Durably admit one session input
@@ -31,6 +31,29 @@ scheduling both happen. Execution does not.
 
 A turn that died is indistinguishable, from outside, from a turn that went
 perfectly. That is what made this take three sessions to characterise.
+
+## What is established, and what is not
+
+**Established**, reproduced with neither Muster nor Tin Can in the path, by
+direct `curl`: the 200, the `admittedSeq`, the drain about 68ms later, the
+`ModelUnavailableError`, and that the TUI path resolves the same model string
+in the same process seconds either side. `opencode serve` runs the message.
+v1 `prompt_async` runs the message.
+
+**Not established:** *why* the drain fails. "It cannot resolve the model" is a
+reading of an error string, not a claim from source — nobody read opencode's
+model-resolution path the way its scheduling path was read. The scheduling
+half is sourced; this half is inference from a log line.
+
+Two loose ends, left loose deliberately:
+
+- **A session that took a v2 failure appeared to stop running anything
+  afterwards, v1 included.** Never isolated. If a v2 failure corrupts session
+  state, then the 20 failures below are fewer independent events than the
+  count suggests.
+- **The `opencode serve` control differed in credentials as well as host
+  type.** It is still the sharpest evidence, because the two failures are at
+  different stages, but it is not a single-variable comparison.
 
 ## Evidence
 
@@ -95,6 +118,16 @@ goes through `SessionPrompt.Service` and simply runs the message. See the
 README, "opencode: why the plugin posts to the v1 route". That change shipped
 in 0.6.0 and the workaround is complete — which is precisely why filing is
 optional rather than urgent.
+
+The single most useful fact here is not the mechanism. It is that **the
+failure is silent from the caller**: a success response, nothing written into
+the session, and only a line in opencode's own log. That is what cost a day,
+far more than the cause did.
+
+Muster keeps its own record of this, scoped to sessions it launches rather
+than to the endpoint — see `CONTRACT_PROVENANCE.md` there. Two records on
+purpose: a maintainer here needs to know why delivery uses v1, and a
+maintainer there needs to not re-derive the behaviour.
 
 Credit: isolated by the Muster session, which supplied the three-way control
 and the tmux reproduction that exonerated Muster's own process management.
