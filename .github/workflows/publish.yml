@@ -34,15 +34,18 @@ jobs:
       id-token: write # OIDC: the npm credential itself, and provenance
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # The engines floor. The runner stays on it; npm is upgraded below
           # rather than moving the whole runtime.
           node-version: '22'
           registry-url: https://registry.npmjs.org
-          # No dependency cache in a release build.
+          # No dependency cache in a release build. Valid from setup-node v5
+          # on; under v4 it was silently ignored with an "Unexpected input"
+          # annotation, so the release built against a warm cache it was
+          # written to avoid.
           package-manager-cache: false
 
       # Node 22 ships npm 10.x; trusted publishing needs >= 11.5.1.
