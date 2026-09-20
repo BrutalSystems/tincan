@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import type { CodexEnv, CodexThread, LiveThreadInfo, ThreadRead } from './discover.js';
+import { VERSION } from '../version.js';
 
 export interface CodexEnvOptions {
   path?: string;
@@ -78,7 +79,7 @@ class AppServer {
       child.on('exit', reset);
 
       await this.send('initialize', {
-        clientInfo: { name: 'tincan', title: 'Tin Can', version: '0.1.0' },
+        clientInfo: { name: 'tincan', title: 'Tin Can', version: VERSION },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
     })();

@@ -107,14 +107,23 @@ jobs:
       - name: Smoke-test the packed artifact
         if: steps.published.outputs.skip == 'false'
         run: |
+          pkg=$(node -p "require('./package.json').version")
           prefix=$(mktemp -d)
           npm install -g --prefix "$prefix" "./${{ steps.pack.outputs.tarball }}"
-          out=$("$prefix/bin/tincan" --help 2>&1 | head -3 || true)
-          echo "$out"
-          if [ -z "$out" ]; then
-            echo "::error::the installed binary produced no output"
+
+          # Assert the version, not merely that something was printed. Until
+          # 0.5.4 the binary ignored argv entirely, so ANY argument produced
+          # the server's startup banner and a "did it print anything" check
+          # passed while the program reported a version three releases stale.
+          got=$("$prefix/bin/tincan" --version 2>&1 | head -1)
+          echo "binary reports: $got"
+          if [ "$got" != "tincan $pkg" ]; then
+            echo "::error::expected 'tincan $pkg', got '$got'"
             exit 1
           fi
+
+          # --help must not start the server, and must exit 0.
+          "$prefix/bin/tincan" --help > /dev/null
 
       # Publish the artifact that was just smoke-tested, not the directory, so
       # what shipped is exactly what was checked. No NODE_AUTH_TOKEN: OIDC

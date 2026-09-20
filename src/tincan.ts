@@ -15,12 +15,32 @@ import { detectRuntime, buildSide, claudeRegistryDir } from './runtime.js';
 import { toolDefinitions } from './tool-definitions.js';
 import { createTools, type SendPeerArgs, type MessageLogArgs } from './tools.js';
 import { MessageLog, messagesPath } from './log.js';
+import { VERSION, versionLine, helpText } from './version.js';
 
 function diag(msg: string): void {
   process.stderr.write(`[tincan] ${msg}\n`);
 }
 
+/**
+ * `--version` and `--help` must print to stdout and exit WITHOUT starting the
+ * server. stdout is the MCP transport (§8.1), so writing to it is only safe
+ * here, where no transport is ever connected.
+ */
+function handleArgv(argv: string[]): boolean {
+  if (argv.includes('--version') || argv.includes('-v')) {
+    process.stdout.write(`${versionLine()}\n`);
+    return true;
+  }
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(`${helpText()}\n`);
+    return true;
+  }
+  return false;
+}
+
 async function main(): Promise<void> {
+  if (handleArgv(process.argv.slice(2))) return;
+
   const runtime = detectRuntime(process.env);
   const side = buildSide(runtime, {
     registryDir: claudeRegistryDir(),
@@ -33,7 +53,7 @@ async function main(): Promise<void> {
   const definitions = toolDefinitions(side.peerRuntimes);
 
   const server = new Server(
-    { name: 'tincan', version: '0.1.0' },
+    { name: 'tincan', version: VERSION },
     { capabilities: { tools: {} } },
   );
 

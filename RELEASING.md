@@ -29,6 +29,11 @@ existing expected value is.
 
 **1. Bump four files, not one.**
 
+The program's own reported version is *not* one of them — `src/version.ts`
+reads it from package.json at runtime, and `test/version.test.ts` pins that.
+It used to be a fifth hardcoded literal and reported `0.1.0` for four
+releases, because nothing checked it.
+
 ```jsonc
 // package.json
 "version": "0.1.2"
