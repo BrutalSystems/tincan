@@ -219,15 +219,18 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
       // Hosted in Codex. Codex's own collaboration.list_agents / send_message
       // are scoped to a spawn tree ("live agents in the current root thread
       // tree") and cannot reach an independently launched session, so Tin Can
-      // exposes BOTH Codex and Claude peers here. The asymmetry with the
-      // Claude side is deliberate — see the README.
+      // exposes Codex, Claude, AND opencode peers here. The asymmetry with the
+      // Claude side is deliberate — see the README. Unlike the opencode host,
+      // a Codex thread has no opencode session of its own to exclude, so
+      // opencode peers need no self-filtering here.
       const codexForSelf = createCodexEnv();
+      const registryDir = opencodeRegistryDir(env);
       let selfThread: string | undefined;
       const selfName = makeSelfNameResolver(
         () => codexThreadName(codexForSelf, ctx, env),
         ctx.cwd,
       );
-      const peerRuntimes: RuntimeName[] = ['codex', 'claude-code'];
+      const peerRuntimes: RuntimeName[] = ['codex', 'claude-code', 'opencode'];
 
       return {
         ...common,
@@ -239,9 +242,10 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
         async listPeers() {
           selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
 
-          const [codexListing, claudeSessions] = await Promise.all([
+          const [codexListing, claudeSessions, opencodeListing] = await Promise.all([
             listCodexPeers(codexForSelf),
             listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
+            listOpencodeSessions({ registryDir }),
           ]);
 
           const codexPeers = codexListing.peers
@@ -258,13 +262,17 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
             auth: session.auth,
           }));
 
-          const peers = [...codexPeers, ...claudePeers];
+          const opencodePeers = opencodeListing.peers.map(toOpencodeSidePeer);
+
+          const peers = [...codexPeers, ...claudePeers, ...opencodePeers];
           if (peers.length === 0) {
             return {
               peers,
               diagnostic:
-                'No other agent sessions are running. Start a Codex or Claude Code ' +
-                'session, or check that it has taken its first turn.',
+                opencodeListing.diagnostic ??
+                codexListing.diagnostic ??
+                'No other agent sessions are running. Start a Codex, Claude Code, or ' +
+                  'opencode session.',
             };
           }
           return {

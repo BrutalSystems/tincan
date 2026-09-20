@@ -192,11 +192,49 @@ describe('buildSide', () => {
     },
   );
 
-  test('hosted in Codex, it exposes both runtimes', () => {
+  test('hosted in Codex, it exposes all three runtimes', () => {
     // Codex's collaboration tools only reach its own spawn tree, so it has no
-    // native path to either an independent Codex session or a Claude one.
+    // native path to an independent Codex session, a Claude one, or an
+    // opencode one — matching change notice §4's table.
     const side = buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
-    expect(side.peerRuntimes).toEqual(['codex', 'claude-code']);
+    expect(side.peerRuntimes).toEqual(['codex', 'claude-code', 'opencode']);
+  });
+
+  test('hosted in Codex, a live opencode session appears in listPeers (change notice §9 row 2)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tincan-oc-codex-'));
+    try {
+      const registryDir = join(home, 'peers', 'opencode');
+      mkdirSync(registryDir, { recursive: true });
+      const inbox = await fakeInbox();
+      try {
+        writeFileSync(
+          join(registryDir, 'ses_a.json'),
+          JSON.stringify({
+            session_id: 'ses_a',
+            slug: 'nimble-wizard',
+            directory: '/repo',
+            state: 'idle',
+            socket: inbox.path,
+            instance_id: 'inst-a91f',
+            pid: 4242,
+          }),
+        );
+        const side = buildSide('codex', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home },
+        });
+        const { peers } = await side.listPeers();
+        expect(peers).toContainEqual(
+          expect.objectContaining({ runtime: 'opencode', uuid: 'ses_a', rawName: 'nimble-wizard' }),
+        );
+      } finally {
+        await inbox.close();
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('budgets are per peer runtime, so Codex stays tighter in a mixed listing', () => {
@@ -211,17 +249,15 @@ describe('buildSide', () => {
     expect(await side.selfName()).toBe('auth-service');
   });
 
-  test('reports urgent as supported once opencode is among the peer runtimes, unsupported otherwise', () => {
-    // claude-code hosted lists opencode peers, which opencode's own wire
-    // format can steer (delivery: "steer"). codex hosted lists only Codex and
-    // Claude Code peers, neither of which exposes any way to interrupt a
-    // running turn.
+  test('reports urgent as supported wherever opencode is among the peer runtimes', () => {
+    // claude-code and codex hosted both list opencode peers, which opencode's
+    // own wire format can steer (delivery: "steer").
     expect(
       buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
     ).toBe(true);
     expect(
       buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
