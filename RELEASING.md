@@ -23,7 +23,7 @@ existing expected value is.
 
 ## Steps
 
-**1. Bump two files, not one.**
+**1. Bump four files, not one.**
 
 ```jsonc
 // package.json
@@ -33,9 +33,24 @@ existing expected value is.
 "tincan_version": "0.1.2"
 ```
 
-The suite asserts these match. That is deliberate: the fixture records which
-Tin Can its expectations were verified against, and consumers use it as a
-staleness check on their copy. A release cannot silently leave it behind.
+```ts
+// plugins/opencode/tincan-lib/types.ts
+export const PLUGIN_VERSION = '0.1.2';
+```
+
+```markdown
+<!-- CANONICAL_ID.md, line 3 -->
+> **Normative for `@brutalsystems/tincan` 0.1.2.**
+```
+
+The suite asserts the first three match. That is deliberate: the fixture
+records which Tin Can its expectations were verified against, and consumers use
+it as a staleness check on their copy; the plugin reports its version to
+opencode, and a plugin claiming a version the server does not have is worse
+than no version at all. A release cannot silently leave any of them behind.
+
+`CANONICAL_ID.md`'s header is **not** asserted by any test — it is prose, and
+the only one of the four you can forget without the build telling you.
 
 **2. Build and test.**
 
