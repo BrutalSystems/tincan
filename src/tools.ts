@@ -212,44 +212,48 @@ export function labelList(runtimes: RuntimeName[]): string {
 }
 
 /**
- * Why a successful opencode send may still never be acted on.
+ * Why a successful opencode send may still never be answered.
  *
- * Not because the turn is never scheduled — 0.5.7 said that, and it was
- * wrong. Read from opencode's own log (1.18.31, 2026-09-20): a peer message
- * admitted at 20:01:13.678 produced a drain at 20:01:13.746, sixty-eight
- * milliseconds later, on a session that had been idle for a minute. The
- * source agrees — `session.prompt` calls `execution.wake` unless
- * `resume === false`, and the run coordinator starts a drain immediately when
- * nothing is active. Admission schedules execution exactly as the endpoint's
- * OpenAPI summary promises.
+ * Third revision of this comment, and the previous two were wrong in
+ * instructive ways. Recorded so nobody re-derives them:
  *
- * What actually happened is that the scheduled turn *failed*
- * (`ModelUnavailableError`), and the failure reached nobody who could act on
- * it: the POST had already returned 200 with an `admittedSeq`, no error
- * message was written into the session, and the only trace was a single ERROR
- * line in `~/.local/share/opencode/log`. A turn can die after admission and
- * look exactly like a turn that went perfectly.
+ *  - 0.5.7: "an idle session is never scheduled". False — inferred from the
+ *    absence of a reply, before anyone read opencode's log.
+ *  - 0.5.8: "a scheduled turn sometimes fails". True but vague, and the
+ *    warmth theory behind it (an idle local model unloading) was wrong: TUI
+ *    success and drain failure alternate on the same model seconds apart,
+ *    which no cold start can do.
  *
- * Tin Can sees even less than that. `client.ts` writes a line to the plugin's
- * socket and never reads a response, so `delivered` on this leg means "the
- * plugin accepted the line" — two layers above the thing that decides whether
- * an agent ever answers. So: still delivered, because the message is durably
- * there, plus a notice that says what cannot be known. The same shape as the
- * Claude inbox hold receipt — a notice, not a failure.
+ * What is actually happening, isolated by the Muster session on stock
+ * opencode 1.18.31 with no muster involved and a globally authenticated
+ * provider: in a TUI-hosted session, a turn started from the TUI resolves the
+ * session's model and streams, while a drain started from an admitted prompt
+ * cannot resolve that same model and dies with ModelUnavailableError before
+ * the agent runs. Same session, same model string, same process, seconds
+ * apart. Corroborated here by 17 drain failures across a different provider
+ * entirely. A session hosted by `opencode serve` does resolve its model and
+ * runs the turn.
  *
- * Every opencode peer, regardless of state. 0.5.7 exempted busy ones on the
- * theory that idle sessions were never scheduled; both are scheduled and
- * neither can be confirmed, so the peer's state was never the thing that
- * mattered.
+ * So for a TUI-hosted peer this is not "might not be answered", it is "was
+ * not, in every case observed". Tin Can still cannot say that outright,
+ * because it has no signal distinguishing a TUI-hosted session from a served
+ * one — both register identically — and `client.ts` never reads a response
+ * anyway, so `delivered` means "the plugin accepted the line". The notice
+ * therefore states the observed failure and its one known exception, and
+ * leaves the reader to know which they have.
+ *
+ * Every opencode peer regardless of state: peer state was never the
+ * discriminator, host type is, and we cannot read host type.
  */
 export function admissionNotice(runtime: RuntimeName, _state: PeerState): string | undefined {
   if (runtime !== 'opencode') return undefined;
   return (
-    'Tin Can cannot confirm that an opencode peer acted on this. The message is durably ' +
-    'admitted and opencode does schedule a turn for it, but that turn can fail after ' +
-    'admission — an unresolvable model, for instance — and the failure reaches neither this ' +
-    'result nor the peer\u2019s session; it appears only in opencode\u2019s own log. Check the peer ' +
-    'if the answer matters.'
+    'Tin Can cannot confirm an opencode peer acted on this, and cannot tell which kind of ' +
+    'session it is. The message is durably admitted and opencode does schedule a turn. But ' +
+    'in a TUI-hosted session that turn has, in every case observed on opencode 1.18.31, ' +
+    'failed to resolve the session\u2019s model and died before the agent ran — so the peer very ' +
+    'likely will not answer. Sessions hosted by `opencode serve` do run the turn. Nothing ' +
+    'surfaces the difference: check the peer if the answer matters.'
   );
 }
 

@@ -121,45 +121,46 @@ from the session registry. opencode peers report real state too, pushed live
 by the plugin from opencode's own event bus — Tin Can never has to probe an
 opencode peer to know whether it is busy.
 
-### opencode: delivery cannot be confirmed
+### opencode: a TUI-hosted peer very likely will not answer
 
-**A successful send to an opencode peer may still never be answered**, and Tin
-Can cannot tell the difference. Investigated against opencode 1.18.31 on
-2026-09-20.
+**Isolated on stock opencode 1.18.31.** In a TUI-hosted session, a turn started
+from the TUI resolves the session's model and streams normally, while a turn
+scheduled from a message admitted through `/api/session/{id}/prompt` cannot
+resolve that same model and dies with `ModelUnavailableError` before the agent
+runs — same session, same model string, same process, seconds apart. A session
+hosted by `opencode serve` resolves its model and runs the turn.
 
-Tin Can's plugin POSTs to `/api/session/{id}/prompt`, which returns 200 with an
-`admittedSeq` and makes the text a real `type:"user"` message. opencode then
-**does** schedule a turn — that part works, exactly as the endpoint's OpenAPI
-summary promises. In the case we traced, a message admitted at 20:01:13.678
-produced a drain 68ms later, on a session that had been idle for a minute.
+| Target | Admitted | Turn scheduled | Turn runs |
+|---|---|---|---|
+| opencode, TUI-hosted | yes | yes | **no** — dies resolving the model |
+| opencode, `opencode serve` | yes | yes | yes |
+| Codex, Claude Code | — | — | yes — queue and inbox both run it |
 
-The turn then failed, with `ModelUnavailableError`. And that failure reached
-nobody who could act on it:
+Nothing surfaces that failure to anyone who could act on it. The POST has
+already returned 200 with an `admittedSeq`; no error is written into the
+session; the only trace is one `ERROR "Failed to drain Session"` line in
+`~/.local/share/opencode/log`. A turn that died looks, from outside, exactly
+like a turn that went perfectly.
 
-| Who could have learned the turn died | What they saw |
-|---|---|
-| The HTTP caller (our plugin) | 200 and an `admittedSeq`, already returned |
-| The peer's session | nothing — no error message is written into it |
-| A human reading the session | a user message with no reply |
-| `~/.local/share/opencode/log` | one `ERROR "Failed to drain Session"` line |
-
-So a turn that dies after admission is indistinguishable, from outside, from a
-turn that went perfectly.
-
-Tin Can sees less again: `src/opencode/client.ts` writes a line to the
-plugin's socket and never reads a response, so what it knows is "the plugin
-accepted the line" — two layers above whatever decides that an agent answers.
 `send_peer` to any opencode peer therefore returns `delivered: true` with a
-`notice` saying execution cannot be confirmed, and the same caveat is written
-to `~/.tincan/messages.jsonl`. Not a failure: the message really is there.
+`notice` carrying the above, and the same caveat is written to
+`~/.tincan/messages.jsonl`. It is not reported as a failure, because the
+message genuinely is in the session and a human who opens it will see it. Tin
+Can cannot narrow the notice to the TUI case, because a TUI-hosted session and
+a served one register identically — and `src/opencode/client.ts` never reads a
+response from the plugin anyway, so what Tin Can knows is "the plugin accepted
+the line".
 
-**An earlier version of this section (0.5.7) claimed opencode admits the
-message without ever scheduling a turn.** That was wrong — it was inferred from
-the absence of a reply, before anyone read opencode's log or its scheduling
-code. The observable symptom is the same; the mechanism is not. Corrected in
-0.5.8.
+**This section has been wrong twice; both versions are recorded so the
+mistakes are not re-derived.** 0.5.7 said an idle session is never scheduled —
+false, inferred from the absence of a reply rather than read from opencode's
+log. 0.5.8 said a scheduled turn sometimes fails, which is true but vague, and
+rested on a model-warmth theory that is also false: TUI success and drain
+failure alternate on the same model seconds apart, which no cold start can do.
+The symptom never changed; the explanation did, twice. Found and isolated by
+the Muster session.
 
-### A known gap in the log### A known gap in the log
+### A known gap in the log### A known gap in the log### A known gap in the log
 
 Claude↔Claude traffic goes through `SendMessage`, not Tin Can, so **it does not
 appear in `~/.tincan/messages.jsonl`**. The log is a complete record of what

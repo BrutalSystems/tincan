@@ -482,6 +482,23 @@ describe('opencode admission is not execution', () => {
     expect(r.notice).toMatch(/cannot confirm/i);
   });
 
+  test('names the TUI-hosted failure and the served contrast', async () => {
+    // Isolated by the Muster session on stock 1.18.31, no muster involved:
+    // same session, same model string, 24s apart — a turn started in the TUI
+    // streams fine, a drain from an admitted prompt cannot resolve the model.
+    // Corroborated here by 17 drain failures across a different provider.
+    const n = (await sendTo('idle')).notice!;
+    expect(n).toMatch(/TUI/);
+    expect(n).toMatch(/opencode serve/);
+  });
+
+  test('does not overclaim: Tin Can cannot tell which kind of host this is', async () => {
+    // Third revision of this text. "Will not run" would be wrong for a served
+    // peer, and Tin Can has no signal that distinguishes one from the other.
+    const n = (await sendTo('idle')).notice!;
+    expect(n).toMatch(/cannot tell|cannot confirm/i);
+  });
+
   test('does not claim the turn was never scheduled — it is', async () => {
     // The mechanism 0.5.7 asserted was wrong. opencode schedules on
     // admission; the turn can then fail silently. Saying otherwise taught
