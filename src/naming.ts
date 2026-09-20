@@ -1,6 +1,6 @@
 /** Peer naming per the handoff §7: slug for humans, canonical id for the log. */
 
-export type RuntimeName = 'claude-code' | 'codex';
+export type RuntimeName = 'claude-code' | 'codex' | 'opencode';
 
 export interface PeerBase {
   runtime: RuntimeName;

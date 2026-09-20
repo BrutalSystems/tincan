@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf, makeSelfNameResolver } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
+import { fakeInbox } from './fakes.js';
 
 let dir: string;
 beforeEach(() => {
@@ -100,11 +101,49 @@ describe('codexSelfNameOf', () => {
 });
 
 describe('buildSide', () => {
-  test('hosted in Claude Code, it exposes Codex peers only', () => {
-    // Claude Code reaches its own sessions natively via SendMessage.
+  test('hosted in Claude Code, it exposes Codex and opencode peers', () => {
+    // Claude Code reaches its own sessions natively via SendMessage, so its
+    // own kind is the only runtime excluded.
     const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
     expect(side.selfRuntime).toBe('claude-code');
-    expect(side.peerRuntimes).toEqual(['codex']);
+    expect(side.peerRuntimes).toEqual(['codex', 'opencode']);
+  });
+
+  test('honours TINCAN_HOME when discovering opencode peers, matching the plugin', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tincan-oc-home-'));
+    try {
+      const registryDir = join(home, 'peers', 'opencode');
+      mkdirSync(registryDir, { recursive: true });
+      const inbox = await fakeInbox();
+      try {
+        writeFileSync(
+          join(registryDir, 'ses_a.json'),
+          JSON.stringify({
+            session_id: 'ses_a',
+            slug: 'nimble-wizard',
+            directory: '/repo',
+            state: 'idle',
+            socket: inbox.path,
+            instance_id: 'inst-a91f',
+            pid: 4242,
+          }),
+        );
+        const side = buildSide('claude-code', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home },
+        });
+        const { peers } = await side.listPeers();
+        expect(peers).toContainEqual(
+          expect.objectContaining({ runtime: 'opencode', uuid: 'ses_a', rawName: 'nimble-wizard' }),
+        );
+      } finally {
+        await inbox.close();
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('hosted in Codex, it exposes both runtimes', () => {

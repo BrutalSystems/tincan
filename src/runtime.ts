@@ -13,6 +13,7 @@ import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
 import { createCodexEnv, parentPidLookup } from './codex/cli.js';
 import { pickSelfThreadId, ancestorPids } from './codex/self.js';
+import { listOpencodeSessions, type OpencodeSession } from './opencode/discover.js';
 
 export interface HostContext {
   registryDir: string;
@@ -23,6 +24,15 @@ export interface HostContext {
 
 export function claudeRegistryDir(home: string = homedir()): string {
   return join(home, '.claude', 'sessions');
+}
+
+/** Mirrors the plugin's peersDir. Keep these two in step. */
+export function opencodeRegistryDir(
+  env: NodeJS.ProcessEnv,
+  home: string = homedir(),
+): string {
+  const base = env.TINCAN_HOME && env.TINCAN_HOME.length > 0 ? env.TINCAN_HOME : join(home, '.tincan');
+  return join(base, 'peers', 'opencode');
 }
 
 export function detectRuntime(env: NodeJS.ProcessEnv): RuntimeName {
@@ -65,23 +75,37 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
   const common = { selfRuntime: runtime, selfCwd: ctx.cwd, supportsUrgent: false };
 
   if (runtime === 'claude-code') {
-    // Hosted in Claude Code, so the peers are Codex threads.
+    // Hosted in Claude Code, so the peers are Codex threads and opencode
+    // sessions. (Claude Code's own sessions are reached natively via
+    // SendMessage, so Tin Can deliberately does not duplicate that path.)
     const codex = createCodexEnv();
     const name = selfNameFor(runtime, ctx);
+    const registryDir = opencodeRegistryDir(env);
     return {
       ...common,
       selfName: async () => name,
-      peerRuntimes: ['codex'],
+      peerRuntimes: ['codex', 'opencode'],
       limitsFor,
       async listPeers() {
-        // Claude Code reaches its own sessions natively via SendMessage, so
-        // Tin Can deliberately does not duplicate that path.
-        const { peers, diagnostic } = await listCodexPeers(codex);
+        const [codexListing, opencodeListing] = await Promise.all([
+          listCodexPeers(codex),
+          listOpencodeSessions({ registryDir }),
+        ]);
+        const peers = [
+          ...codexListing.peers.map(toCodexSidePeer),
+          ...opencodeListing.peers.map(toOpencodeSidePeer),
+        ];
+        const diagnostic =
+          peers.length === 0
+            ? (opencodeListing.diagnostic ?? codexListing.diagnostic)
+            : codexListing.diagnostic;
         return {
-          peers: peers.map(toCodexSidePeer),
+          peers,
           ...(diagnostic !== undefined && { diagnostic }),
         };
       },
+      // An opencode peer is not deliverable yet — Task 3. `deliver` is
+      // unchanged and only ever called for a Codex peer from this side.
       deliver: (peer, id, text) => deliverTo(codex, ctx, peer, id, text),
     };
   }
@@ -163,6 +187,17 @@ function toCodexSidePeer(p: {
     cwd: p.cwd,
     state: p.state,
     threadId: p.threadId,
+  };
+}
+
+function toOpencodeSidePeer(p: OpencodeSession): SidePeer {
+  return {
+    runtime: 'opencode',
+    rawName: p.rawName,
+    uuid: p.uuid,
+    cwd: p.cwd,
+    state: p.state,
+    socketPath: p.socketPath,
   };
 }
 

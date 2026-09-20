@@ -14,6 +14,7 @@ export interface ToolDefinition {
 const LABEL: Record<RuntimeName, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
+  opencode: 'opencode',
 };
 
 export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
