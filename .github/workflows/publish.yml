@@ -135,40 +135,6 @@ jobs:
         if: steps.published.outputs.skip == 'false'
         run: npm publish "./${{ steps.pack.outputs.tarball }}" --provenance
 
-      - name: Confirm the registry is serving it
-        id: served
-        if: steps.published.outputs.skip == 'false'
-        run: |
-          pkg=$(node -p "require('./package.json').version")
-          for i in $(seq 1 10); do
-            if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
-              echo "registry serving $pkg"
-              npm view "@brutalsystems/tincan@$pkg" dist.integrity
-              echo "served=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "not yet (attempt $i), waiting 20s"; sleep 20
-          done
-          echo "served=false" >> "$GITHUB_OUTPUT"
-          echo "::warning::registry still not serving $pkg — publishes lag by 1-2 minutes"
-
-      # Everything above inspects a local build. This is the only check that
-      # sees what a consumer actually downloads. Skipped, not failed, when the
-      # registry has not caught up — the publish itself already succeeded.
-      - name: Verify the PUBLISHED artifact
-        if: steps.published.outputs.skip == 'false' && steps.served.outputs.served == 'true'
-        run: |
-          pkg=$(node -p "require('./package.json').version")
-          mkdir -p /tmp/published
-          npm pack "@brutalsystems/tincan@$pkg" --pack-destination /tmp/published >/dev/null
-          tar tzf "/tmp/published/brutalsystems-tincan-$pkg.tgz" | sed 's|^package/||' | grep -v '/$' | sort > /tmp/remote.txt
-          tar tzf "./${{ steps.pack.outputs.tarball }}"          | sed 's|^package/||' | grep -v '/$' | sort > /tmp/local.txt
-          if ! diff -u /tmp/local.txt /tmp/remote.txt; then
-            echo "::error::the published tarball does not match what this run packed"
-            exit 1
-          fi
-          echo "published artifact matches — $(wc -l < /tmp/remote.txt) files"
-
       # The opencode plugin ships as its own package so opencode can install
       # it by npm specifier ("plugin": ["@brutalsystems/tincan-opencode"])
       # instead of the user copying files into ~/.config/opencode/ by hand. A
@@ -222,6 +188,59 @@ jobs:
       - name: Publish the plugin package
         if: steps.plugin_published.outputs.skip == 'false'
         run: npm publish "./${{ steps.plugin_pack.outputs.tarball }}" --provenance
+
+      - name: Confirm the registry is serving it
+        id: served
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          for i in $(seq 1 10); do
+            if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
+              echo "registry serving $pkg"
+              npm view "@brutalsystems/tincan@$pkg" dist.integrity
+              echo "served=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "not yet (attempt $i), waiting 20s"; sleep 20
+          done
+          echo "served=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::registry still not serving $pkg — publishes lag by 1-2 minutes"
+
+      # Everything above inspects a local build. This is the only check that
+      # sees what a consumer actually downloads. Skipped, not failed, when the
+      # registry has not caught up — the publish itself already succeeded.
+      # Advisory, and ordered after everything irreversible on purpose. It is
+      # the only check that inspects what a consumer downloads, but it runs
+      # against a CDN that lags the publish — `npm view` can answer while
+      # `npm pack` still 404s, which is not a disagreement about content, just
+      # two endpoints catching up at different speeds. On 0.6.3 that race
+      # failed this step and skipped the plugin publish and the GitHub
+      # Release behind it, leaving the two packages at different versions —
+      # precisely the skew the split exists to prevent. So: retry, and treat
+      # a download that never arrives as a warning. Only a real file-list
+      # difference fails the run.
+      - name: Verify the PUBLISHED artifact
+        if: steps.published.outputs.skip == 'false' && steps.served.outputs.served == 'true'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          mkdir -p /tmp/published
+          for i in $(seq 1 6); do
+            if npm pack "@brutalsystems/tincan@$pkg" --pack-destination /tmp/published >/dev/null 2>&1; then
+              got=yes; break
+            fi
+            echo "tarball not downloadable yet (attempt $i), waiting 20s"; sleep 20
+          done
+          if [ "${got:-no}" != "yes" ]; then
+            echo "::warning::registry never served a downloadable $pkg tarball — publish succeeded, contents unverified"
+            exit 0
+          fi
+          tar tzf "/tmp/published/brutalsystems-tincan-$pkg.tgz" | sed 's|^package/||' | grep -v '/$' | sort > /tmp/remote.txt
+          tar tzf "./${{ steps.pack.outputs.tarball }}"          | sed 's|^package/||' | grep -v '/$' | sort > /tmp/local.txt
+          if ! diff -u /tmp/local.txt /tmp/remote.txt; then
+            echo "::error::the published tarball does not match what this run packed"
+            exit 1
+          fi
+          echo "published artifact matches — $(wc -l < /tmp/remote.txt) files"
 
       # Tincan has no RELEASE_NOTES.md; the tag annotation is its release
       # record. A repo that keeps release notes extracts that version's
