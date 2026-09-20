@@ -68,9 +68,9 @@ check 2 and search for message text in check 11.
 10. **Socket permissions.** `stat -f %Sp` on the socket reads `srw-------`, and
     `stat -f %Sp` on `~/.tincan/peers/opencode` reads `drwx------`.
 
-11. **No message text in logs.** Search `~/.tincan/opencode-plugin.log` for a
-    distinctive string from check 2's envelope. No match. (Opencode's own log
-    is also searched to confirm the message text does not leak there either.)
+11. **No message text in logs.** Search `~/.tincan/opencode-plugin.log` for
+    the string `GOLDFISH` (from check 2's default envelope). No match. (Opencode's
+    own log is also searched to confirm the message text does not leak there either.)
 
 12. **Caller identity.** With Tin Can registered as an MCP server in this
     opencode (see the Change Notice §5), invoke any Tin Can tool from the

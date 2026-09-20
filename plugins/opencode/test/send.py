@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 """Send one Tin Can wire line to an opencode instance socket.
 
-Usage: send.py <socket> <session-id> [message-id] [text]
+Usage:
+  send.py <socket> <session-id>
+    Generates a unique message_id (msg_smoke<epoch-millis>) and sends the
+    default test envelope asking for reply "GOLDFISH".
 
-If message-id is omitted, a unique one is generated. Each injection must have a
-unique message_id; opencode treats a re-submitted id with different content as a
-409 ConflictError (mismatched re-submit), not a delivery retry.
+  send.py <socket> <session-id> --id <message-id>
+    Uses the provided message_id instead of generating one.
+
+  send.py <socket> <session-id> --text <custom-text>
+    Sends custom text body (and generates a unique message_id).
+
+  send.py <socket> <session-id> --id <message-id> --text <custom-text>
+    Both explicit id and custom text.
+
+Each injection must have a unique message_id; opencode treats a re-submitted id
+with different content as a 409 ConflictError (mismatched re-submit), not a
+delivery retry.
 """
 import json
 import socket
@@ -18,19 +30,33 @@ if len(sys.argv) < 3:
 
 sock_path, session = sys.argv[1], sys.argv[2]
 
-# Generate or use provided message_id
-if len(sys.argv) > 3 and not sys.argv[3].startswith('<'):
-    message_id = sys.argv[3]
-    text_arg_idx = 4
-else:
-    # Generate unique id: msg_smoke<epoch-millis>
-    message_id = f"msg_smoke{int(time.time() * 1000)}"
-    text_arg_idx = 3
+# Parse optional flags
+message_id = None
+text = None
+i = 3
+while i < len(sys.argv):
+    if sys.argv[i] == "--id":
+        if i + 1 >= len(sys.argv):
+            print("error: --id requires an argument", file=sys.stderr)
+            sys.exit(1)
+        message_id = sys.argv[i + 1]
+        i += 2
+    elif sys.argv[i] == "--text":
+        if i + 1 >= len(sys.argv):
+            print("error: --text requires an argument", file=sys.stderr)
+            sys.exit(1)
+        text = sys.argv[i + 1]
+        i += 2
+    else:
+        print(f"error: unknown argument {sys.argv[i]}", file=sys.stderr)
+        sys.exit(1)
 
-# Use provided text or default envelope
-if len(sys.argv) > text_arg_idx:
-    text = sys.argv[text_arg_idx]
-else:
+# Generate message_id if not provided
+if message_id is None:
+    message_id = f"msg_smoke{int(time.time() * 1000)}"
+
+# Use default envelope if no custom text provided
+if text is None:
     text = (
         f'<peer_message from="acceptance" id="{message_id}">\n'
         'Reply with exactly the word GOLDFISH and nothing else.\n'
@@ -45,8 +71,21 @@ payload = json.dumps({
     "message_id": message_id,
 })
 
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(sock_path)
-s.sendall((payload + "\n").encode())
-s.close()
-print(f"sent {message_id} -> {session}")
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(sock_path)
+    s.sendall((payload + "\n").encode())
+    s.close()
+    print(f"sent {message_id} -> {session}")
+except FileNotFoundError:
+    print(f"error: socket not found: {sock_path}", file=sys.stderr)
+    sys.exit(1)
+except ConnectionRefusedError:
+    print(f"error: connection refused: {sock_path} (instance is gone)", file=sys.stderr)
+    sys.exit(1)
+except OSError as e:
+    print(f"error: cannot connect to socket: {sock_path}", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(1)
