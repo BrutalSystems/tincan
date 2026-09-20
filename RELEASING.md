@@ -77,7 +77,7 @@ git tag -a v0.1.2 -m "0.1.2"
 git push origin main --tags
 ```
 
-**5. Publish.** See below.
+**5. Push the tag — that publishes.** See [Publishing](#publishing).
 
 **6. Verify against the registry, not against your working copy.**
 
@@ -98,8 +98,35 @@ npm pack @brutalsystems/tincan@0.1.2 && tar tzf brutalsystems-tincan-0.1.2.tgz
 
 ## Publishing
 
+**Publishing is tag-driven and runs in CI.** Pushing a `v*` tag triggers
+`.github/workflows/publish.yml`, which refuses the release unless the tag
+matches `package.json`, refuses to republish a version already on the
+registry, runs build, plugin typecheck and the full suite, and then publishes
+with npm provenance. Nothing publishes from a branch push.
+
+So the normal release is steps 1-4 and then nothing — watch the run:
+
+```bash
+git push origin main --tags
+gh run watch --repo BrutalSystems/tincan
+```
+
+The token lives in the repository secret `NPM_TOKEN`. It must be a **granular
+automation token** scoped to `@brutalsystems`: a token that requires a one-time
+password cannot publish unattended, and the run fails with `EOTP`.
+
+**Who can publish, now that CI can:** anyone able to push a tag to this
+repository. That is a wider set than "whoever has the npm token", which is the
+point of the `npm` environment on the publish job — add a required reviewer
+there in repo settings if that set should be smaller.
+
 `prepublishOnly` runs the build and the full suite first, so a broken build
-cannot ship.
+cannot ship, whether from CI or a laptop.
+
+### Publishing by hand
+
+Still supported, and the fallback when CI is unavailable. Everything below
+assumes you have done steps 1-4 already.
 
 **On Mike's machine, use Keep for unattended publishing.** `keep` is a shell
 function loaded by interactive zsh. Unlock only the npm token in a subshell:

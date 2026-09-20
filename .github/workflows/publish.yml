@@ -1,0 +1,77 @@
+name: Publish
+
+# Tag-driven, matching RELEASING.md step 4. Pushing v0.5.0 publishes 0.5.0.
+# Nothing publishes from a branch push — a release should be a deliberate act.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    # Gives you somewhere to hang a required reviewer in repo settings if you
+    # ever want a human gate. With no protection rules configured it is a no-op.
+    environment: npm
+
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # A published version is immutable and cannot be unpublished after 72
+      # hours. Refuse to ship a tag that disagrees with the manifest rather
+      # than discovering the mismatch in the registry.
+      - name: Tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json $pkg"
+            exit 1
+          fi
+          echo "publishing $pkg"
+
+      - name: Refuse to republish an existing version
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
+            echo "::error::@brutalsystems/tincan@$pkg is already on the registry"
+            exit 1
+          fi
+
+      # prepublishOnly runs build + typecheck:plugin + test, so a broken
+      # build cannot ship. Running them here too makes the failure legible
+      # in its own step rather than buried in npm's output.
+      - run: npm run build
+      - run: npm run typecheck:plugin
+      - run: npm test
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify against the registry
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          for i in 1 2 3 4 5 6; do
+            if [ "$(npm view @brutalsystems/tincan version 2>/dev/null)" = "$pkg" ]; then
+              echo "registry reports $pkg"; exit 0
+            fi
+            echo "registry not caught up yet (attempt $i), waiting 20s"; sleep 20
+          done
+          echo "::warning::registry still not reporting $pkg — it lags publishes by 1-2 minutes"

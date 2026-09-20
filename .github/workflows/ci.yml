@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the engines floor; 24 is what development happens on.
+        # Both must stay green or the floor is a fiction.
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck the opencode plugin
+        run: npm run typecheck:plugin
+
+      - name: Test
+        run: npm test
+
+      # The four version locations are asserted by the suite for three of
+      # them; this catches the fourth, which is prose. See RELEASING.md.
+      - name: CANONICAL_ID.md header matches package.json
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if ! grep -qF "Normative for \`@brutalsystems/tincan\` $pkg." CANONICAL_ID.md; then
+            echo "::error file=CANONICAL_ID.md,line=3::header does not name version $pkg"
+            sed -n '3p' CANONICAL_ID.md
+            exit 1
+          fi
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # A publish ships whatever `files` resolves to. Catch a stray src/,
+      # test/, or dotfile here rather than in an immutable release.
+      - name: Nothing unexpected in the tarball
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e '
+            const f = require("/tmp/pack.json")[0].files.map(x => x.path);
+            const bad = f.filter(p =>
+              (p.startsWith("src/") ||
+               (p.startsWith("test/") && p !== "test/fixtures/canonical-id.json") ||
+               p.startsWith("node_modules/") ||
+               /(^|\/)\.(env|npmrc|git)/.test(p)));
+            if (bad.length) {
+              console.error("unexpected files in tarball:\n  " + bad.join("\n  "));
+              process.exit(1);
+            }
+            console.log(`tarball ok — ${f.length} files`);
+          '
