@@ -2,6 +2,12 @@ name: Publish
 
 # Tag-driven, matching RELEASING.md step 4. Pushing v0.5.0 publishes 0.5.0.
 # Nothing publishes from a branch push — a release should be a deliberate act.
+#
+# Authentication is npm trusted publishing over OIDC: there is no npm token,
+# here or in the repository secrets. The registry trusts this exact repo, this
+# exact workflow FILENAME, and the `npm` environment below. Renaming this file
+# or changing that environment breaks publishing until the trusted publisher is
+# reconfigured on npmjs.com. See RELEASING.md.
 on:
   push:
     tags: ['v*']
@@ -19,16 +25,20 @@ jobs:
 
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write # OIDC: the npm credential itself, and provenance
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: npm
+          # Trusted publishing needs npm >= 11.5.1, and Node 22 ships npm 10.x.
+          # The engines floor stays >=22 and CI still tests on 22; only the
+          # publishing runner has to be newer.
+          node-version: '24'
           registry-url: https://registry.npmjs.org
+          # No dependency cache in a release build.
+          package-manager-cache: false
 
       - run: npm ci
 
@@ -60,10 +70,10 @@ jobs:
       - run: npm run typecheck:plugin
       - run: npm test
 
+      # No NODE_AUTH_TOKEN. OIDC supplies the credential, and provenance is
+      # generated automatically because the credential is a trusted publisher.
       - name: Publish
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish
 
       - name: Verify against the registry
         run: |

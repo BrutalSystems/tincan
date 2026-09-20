@@ -111,14 +111,42 @@ git push origin main --tags
 gh run watch --repo BrutalSystems/tincan
 ```
 
-The token lives in the repository secret `NPM_TOKEN`. It must be a **granular
-automation token** scoped to `@brutalsystems`: a token that requires a one-time
-password cannot publish unattended, and the run fails with `EOTP`.
+**There is no npm token.** Authentication is npm trusted publishing over
+OIDC: the registry trusts this repository, this workflow *filename*, and the
+`npm` environment, and issues a short-lived credential to the run. Nothing
+long-lived is stored in GitHub, so there is nothing to rotate, nothing to
+expire unnoticed, and nothing to leak from a public repository's secret store.
+Provenance is generated automatically as a consequence.
+
+Three things break it:
+
+- **Renaming `.github/workflows/publish.yml`.** The trust is pinned to the
+  filename. Rename it and publishing fails until the trusted publisher is
+  reconfigured on npmjs.com.
+- **Removing `environment: npm` from the job**, or renaming that environment.
+  It is part of the trust, not decoration.
+- **Publishing on a runner with npm < 11.5.1.** Node 22 ships npm 10.x, so the
+  publish job pins Node 24. The `engines` floor stays `>=22` and CI still tests
+  on 22 — only the publishing runner has to be newer.
 
 **Who can publish, now that CI can:** anyone able to push a tag to this
-repository. That is a wider set than "whoever has the npm token", which is the
-point of the `npm` environment on the publish job — add a required reviewer
-there in repo settings if that set should be smaller.
+repository. npm says so out loud when trust is established — *"anyone with
+GitHub repository write access can publish"*. That is a wider set than
+"whoever holds the npm token", which is the point of the `npm` environment on
+the publish job: add a required reviewer there in repo settings if that set
+should be smaller.
+
+### Establishing trust (once, and after any rename above)
+
+Requires 2FA — npm refuses this operation to a token that bypasses it, so it
+cannot be scripted with a stored credential. Either on npmjs.com under the
+package's Settings → Trusted Publisher, or:
+
+```bash
+npm login                     # interactive, prompts for the OTP
+npm trust github @brutalsystems/tincan \
+  --file publish.yml --repo BrutalSystems/tincan --env npm
+```
 
 `prepublishOnly` runs the build and the full suite first, so a broken build
 cannot ship, whether from CI or a laptop.
