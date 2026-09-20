@@ -164,6 +164,14 @@ change to slugify, suffix derivation, collision handling, or resolution produces
 addresses that resolve in one tool and fail silently in the other — no error,
 just a message delivered nowhere.
 
+**Who is built against this today:**
+[Muster](https://github.com/BrutalSystems/muster) launches agent sessions and
+returns a peer record Tin Can must resolve. It does not import Tin Can — the two
+agree on this document and on `test/fixtures/canonical-id.json`, which Muster
+copies verbatim. So a change here is not local to this repo, and the person
+making it is responsible for coordinating the release, not for discovering
+afterwards that the other tool disagreed.
+
 So:
 
 - **A change to any behaviour described here is a breaking change**, and ships
