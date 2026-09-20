@@ -175,37 +175,61 @@ the environment name changes.
 is published from the same workflow and the same `npm` environment, but npm
 will refuse it until it has been trusted under its own name:
 
-**A not-yet-published package can be trusted.** Trust for
-`@brutalsystems/tincan-opencode` was created on 2026-09-20 — id
-`4dada70c-bc50-4639-9f08-7a9fec1959a7`, permissions publish + stage publish —
-while the name had no published versions at all, and still has none. So there
-is no hand-publish bootstrap: register trust, then let the workflow make the
-first release, with provenance from the very first version.
+Bootstrapping a new package took two steps, in this order:
 
 ```bash
-npm login                     # interactive, prompts for the OTP
+# 1. One hand publish, to create the name. publishConfig.access is "public"
+#    in that manifest; a new scoped package is restricted by default.
+( cd plugins/opencode && npm publish )
+
+# 2. npm login if you are not already, then attach trust.
 npm trust github @brutalsystems/tincan-opencode \
   --file publish.yml --repo BrutalSystems/tincan --env npm --allow-publish
 ```
 
 The `npm` environment already exists, so there is no `gh api -X PUT` step.
 
-**If it answers `E404 ... /trust - Package not found`, you are not
-authenticated yet.** That is what the error means here, not what it says. The
-first attempt failed this way while the CLI was still printing "Authenticate
-your account at: ..." — the 404 arrived before the browser login completed.
-Finish `npm login` and run it again. An earlier revision of this file read
-that error as "the package must be published first" and prescribed a hand
-publish; that was wrong, and would have cost the first version its provenance
-for no reason.
+That first hand-published version has **no provenance** — it cannot, not
+coming from a workflow run. `@brutalsystems/tincan-opencode` 0.6.0 (hand,
+21:34) has none; 0.6.1 (CI, 21:39) is signed, as is everything after it. If
+you mind that, publish a throwaway `0.0.0` to claim the name and let the real
+first version come from CI.
 
-`npm trust list <package>` is how to check: it prints the registration even
-when the package has no versions. `npm access list packages @brutalsystems`
-will also show the name, because registering trust claims it — so that
-listing is **not** evidence that anything was published. Only a packument is:
-`curl -s -o /dev/null -w '%{http_code}' https://registry.npmjs.org/@brutalsystems%2ftincan-opencode`.
+Trying step 2 first gives:
 
-Done. The first release publishing both packages is the test of it.
+```
+npm error code E404
+npm error 404 Not Found - POST .../@brutalsystems%2ftincan-opencode/trust - Package not found
+```
+
+Whether that is strictly "the package must exist" is **not established** — the
+attempt that failed was also still mid-`npm login`, printing "Authenticate
+your account at: ...", so unfinished auth may be the real cause. Publishing
+first works either way; that is why the order above is the order.
+
+### A 404 from the registry proves nothing for several minutes
+
+**`npm publish` is asynchronous.** It says so: *"Your package is being
+processed and may take a few minutes to become available."* Here the
+packument 404'd for **90 seconds** after a publish that had already signed its
+provenance to the transparency log.
+
+So a 404 — from `npm view`, or from `curl` straight at
+`registry.npmjs.org`, cache bypassed — is **not** evidence that nothing was
+published. Nor is its absence from a listing evidence either way:
+`npm access list packages <scope>` shows a name once trust claims it, and
+`npm trust list <package>` prints a registration regardless.
+
+To actually know, use the timeline, which is authoritative the moment it
+exists:
+
+```bash
+npm view @brutalsystems/tincan-opencode time --json
+```
+
+This cost a wrong edit to this file: a 404 two minutes after a successful
+publish was read as "never published", and the bootstrap above was briefly
+rewritten to say no hand publish was needed.
 
 `prepublishOnly` runs the build and the full suite first, so a broken build
 cannot ship, whether from CI or a laptop.
