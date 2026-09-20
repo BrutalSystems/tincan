@@ -459,6 +459,63 @@ describe('buildSide, hosted in opencode', () => {
   });
 
   test(
+    'excludes our own Claude Code session when CLAUDE_CODE_SESSION_ID is in the ' +
+      'environment: detectRuntime checks OPENCODE first, so this is the one arm that ' +
+      'can be entered with a live Claude session wrapped around us',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      const inbox = await fakeInbox();
+      try {
+        await writeInstance(instance);
+        const selfUuid = '5af69d42-2214-41d9-b13f-9c3177eb60ce';
+        const peerUuid = '01a0b9b4-a33e-7ab1-80a0-bb715504a0fb';
+        writeFileSync(
+          join(dir, 'sessions', '777.json'),
+          JSON.stringify({
+            pid: 777,
+            sessionId: selfUuid,
+            name: 'our-own-claude-session',
+            cwd: '/src/x',
+            status: 'idle',
+            messagingSocketPath: inbox.path,
+          }),
+        );
+        writeFileSync(
+          join(dir, 'sessions', '888.json'),
+          JSON.stringify({
+            pid: 888,
+            sessionId: peerUuid,
+            name: 'a-genuine-peer',
+            cwd: '/src/y',
+            status: 'idle',
+            messagingSocketPath: inbox.path,
+          }),
+        );
+
+        const side = buildSide('opencode', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: {
+            TINCAN_HOME: home,
+            OPENCODE_PID: '41233',
+            CLAUDE_CODE_SESSION_ID: selfUuid,
+          },
+        });
+        const { peers } = await side.listPeers(await side.resolveSelf());
+        const claude = peers.filter((p) => p.runtime === 'claude-code').map((p) => p.uuid);
+        // listClaudeSessions can only drop `pid === selfPid`, and selfPid is
+        // Tin Can's own MCP subprocess pid — never the session's.
+        expect(claude).not.toContain(selfUuid);
+        expect(claude).toContain(peerUuid);
+      } finally {
+        await inbox.close();
+        await instance.close();
+      }
+    },
+  );
+
+  test(
     'resolves self exactly once per tool call: the envelope from= and the wire ' +
       'message_from name the same session even when every read of the caller file ' +
       'answers differently (the change notice §4 race, in its sharpest form)',

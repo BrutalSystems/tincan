@@ -175,15 +175,33 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           ]);
 
           const codexPeers = codexListing.peers.map(toCodexSidePeer);
-          const claudePeers: SidePeer[] = claudeSessions.map((session) => ({
-            runtime: 'claude-code',
-            rawName: session.rawName,
-            uuid: session.uuid,
-            cwd: session.cwd,
-            state: session.state,
-            socketPath: session.socketPath,
-            auth: session.auth,
-          }));
+          // `listClaudeSessions` can only drop `pid === selfPid`, and selfPid
+          // is `ctx.pid` — Tin Can's own MCP subprocess, never the session's
+          // (see selfNameFor's comment). On the Codex arm that construct is
+          // provably safe, because detectRuntime cannot return `codex` while
+          // CLAUDE_CODE_MESSAGING_SOCKET is set. This arm is the first that
+          // *can* be entered with that socket present, since §4 deliberately
+          // orders OPENCODE first — so if a Claude Code session's environment
+          // leaks in around us, our own session would otherwise be listed as
+          // an ordinary peer and a self-send would deliver over its inbox.
+          // Normalised to undefined when absent or empty: a Claude record
+          // with no sessionId reads back as '' and must not be mistaken for
+          // us on the strength of two empty strings matching.
+          const selfClaudeSession =
+            env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
+              ? env.CLAUDE_CODE_SESSION_ID
+              : undefined;
+          const claudePeers: SidePeer[] = claudeSessions
+            .filter((session) => session.uuid !== selfClaudeSession)
+            .map((session) => ({
+              runtime: 'claude-code',
+              rawName: session.rawName,
+              uuid: session.uuid,
+              cwd: session.cwd,
+              state: session.state,
+              socketPath: session.socketPath,
+              auth: session.auth,
+            }));
 
           // Self-exclusion (change notice §4, corrected by the probe). When
           // the caller file names our exact session, exclude only it — a
