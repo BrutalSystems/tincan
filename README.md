@@ -136,6 +136,22 @@ hosted by `opencode serve` resolves its model and runs the turn.
 | opencode, `opencode serve` | yes | yes | yes |
 | Codex, Claude Code | — | — | yes — queue and inbox both run it |
 
+The tally behind "in every case observed": **14** distinct TUI-hosted sessions
+produced a `ModelUnavailableError` drain, **20** such failures in all, across
+**2** unrelated providers (`muster-local`, `fireworks-ai`). TUI-hosted drains
+observed to succeed: **0**.
+
+The sharpest evidence is the control. A served session's drain *also* failed
+in the same log on the same day — but with
+`LLM.Error: RequestExecutor.execute: Provider request failed with HTTP 401`,
+not `ModelUnavailableError`. It resolved the model and got as far as an HTTP
+request to the provider, failing only on credentials that were never supplied.
+So resolution demonstrably succeeds in a served session and demonstrably never
+succeeds in a TUI-hosted one, on the same machine, same day — two different
+failures at two different stages, not one flaky thing.
+
+This is a consistent observation, not a proof about every configuration.
+
 Nothing surfaces that failure to anyone who could act on it. The POST has
 already returned 200 with an `admittedSeq`; no error is written into the
 session; the only trace is one `ERROR "Failed to drain Session"` line in
