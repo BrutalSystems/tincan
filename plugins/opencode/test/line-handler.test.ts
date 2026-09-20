@@ -99,8 +99,17 @@ describe('makeLineHandler', () => {
     await expect(harness(post)(line())).resolves.toBeUndefined();
   });
 
+  it('drops a line whose text is not enveloped, without calling the transport', async () => {
+    const post = vi.fn();
+    await harness(post)(line({ text: 'bare text, no envelope' }));
+    expect(post).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toContain('missing envelope');
+  });
+
   it('never writes message text to the log on any path', async () => {
-    const secret = 'TOP SECRET BODY';
+    // Enveloped, because an unenveloped body is now dropped at the wire —
+    // this test is about the delivered / rejected / threw paths.
+    const secret = `<peer_message from="billing-api" id="msg_01J8">TOP SECRET BODY</peer_message>`;
     for (const post of [
       vi.fn().mockResolvedValue(admitted),
       vi.fn().mockResolvedValue({ response: { status: 404 }, error: { _tag: 'SessionNotFoundError', message: 'x' } }),

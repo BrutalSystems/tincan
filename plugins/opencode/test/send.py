@@ -10,7 +10,9 @@ Usage:
     Uses the provided message_id instead of generating one.
 
   send.py <socket> <session-id> --text <custom-text>
-    Sends custom text body (and generates a unique message_id).
+    Sends custom text body (and generates a unique message_id). The text must
+    contain a <peer_message ...> envelope; the plugin drops anything else with
+    reason "missing envelope".
 
   send.py <socket> <session-id> --id <message-id> --text <custom-text>
     Both explicit id and custom text.
@@ -83,9 +85,9 @@ except FileNotFoundError:
 except ConnectionRefusedError:
     print(f"error: connection refused: {sock_path} (instance is gone)", file=sys.stderr)
     sys.exit(1)
-except OSError as e:
+except OSError:
     print(f"error: cannot connect to socket: {sock_path}", file=sys.stderr)
     sys.exit(1)
-except Exception as e:
+except Exception as e:  # noqa: BLE001 - a smoke tool reports anything it hits
     print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
     sys.exit(1)

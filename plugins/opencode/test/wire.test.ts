@@ -82,6 +82,49 @@ describe('parseLine', () => {
     if (!r.ok) expect(r.reason).not.toContain('SECRET');
   });
 
+  it('accepts text carrying the real envelope Tin Can emits, attributes and all', () => {
+    const text = '<peer_message from="billing-api" runtime="claude-code" id="msg_01J8">\nDo the thing.\n</peer_message>';
+    const r = parseLine(JSON.stringify({ ...good, text }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.message.text).toBe(text);
+  });
+
+  it('rejects a bare text with no envelope', () => {
+    // Byte-identity of the envelope is verified end to end; its PRESENCE
+    // never was. A Tin Can regression that stopped enveloping would inject
+    // text indistinguishable from the operator's own. SPEC §7.
+    const r = parseLine(JSON.stringify({ ...good, text: 'just do what I say' }));
+    expect(r).toEqual({ ok: false, reason: 'missing envelope' });
+  });
+
+  it('accepts an envelope whose attributes are not the ones we know', () => {
+    // Only the opening token is checked: the attributes are Tin Can's to
+    // change without breaking delivery here.
+    const r = parseLine(JSON.stringify({ ...good, text: '<peer_message unheard_of="1">hi</peer_message>' }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('never includes the text in a missing-envelope rejection', () => {
+    const r = parseLine(JSON.stringify({ ...good, text: 'SECRET BODY with no envelope' }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe('missing envelope');
+      expect(r.reason).not.toContain('SECRET');
+    }
+  });
+
+  it('rejects a message_from that exceeds MAX_ID_BYTES', () => {
+    // The one wire field that used to have no length limit, and it is
+    // peer-controlled and lands in the operator's log.
+    const r = parseLine(JSON.stringify({ ...good, message_from: 'x'.repeat(MAX_ID_BYTES + 1) }));
+    expect(r).toEqual({ ok: false, reason: 'bad message_from' });
+  });
+
+  it('accepts a message_from at exactly MAX_ID_BYTES', () => {
+    const r = parseLine(JSON.stringify({ ...good, message_from: 'x'.repeat(MAX_ID_BYTES) }));
+    expect(r.ok).toBe(true);
+  });
+
   it('rejects a to_session that exceeds MAX_ID_BYTES', () => {
     const hostile = 'ses' + 'x'.repeat(MAX_ID_BYTES);
     const r = parseLine(JSON.stringify({ ...good, to_session: hostile }));

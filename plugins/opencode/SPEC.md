@@ -368,7 +368,7 @@ line parsing.
 |---|---|---|
 | `to_session` | yes | Must match `^ses`. Unknown id → drop and log |
 | `message_from` | yes | Sender's Tin Can name, for logging only |
-| `text` | yes | **Already enveloped by Tin Can. Pass through verbatim** |
+| `text` | yes | **Already enveloped by Tin Can. Pass through verbatim.** Must contain `<peer_message`; unenveloped → drop and log |
 | `delivery` | yes | `"queue"` or `"steer"` |
 | `message_id` | yes | **Must match `^msg_`.** Becomes opencode's message id |
 
@@ -422,6 +422,18 @@ This was checked end to end, not just at the call site: the injected message
 appears in the session transcript as a `user` message whose `text` is
 byte-identical to what went in, and the agent acted on its instruction.
 [verified]
+
+**But require it.** Not trimming the envelope is not the same as knowing it
+was there: byte-identity is verified end to end while *presence* never was, so
+a Tin Can regression that stopped enveloping would inject text
+indistinguishable from the operator's own and nothing on this path would
+notice. `parseLine` therefore rejects a `text` that does not contain the
+opening token `<peer_message`, with reason `missing envelope`. The token only
+— not the full tag shape — because the attributes (`from`, `runtime`, `id`)
+are Tin Can's to change. This is a presence check and nothing more: the
+plugin still never reads, trims, summarises or conditions on the envelope's
+contents, which remain Tin Can's responsibility. Requiring the control is not
+the same as conditioning on it, and this section forbids only the second.
 
 **`message_id` must match `^msg_`.** The server enforces it and returns a clean
 400 `InvalidRequestError` — *"Expected a string starting with \"msg_\""* —
