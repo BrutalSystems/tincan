@@ -21,8 +21,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "main": "./tincan.ts",
   "exports": {
-    ".": "./tincan.ts"
+    ".": "./tincan.ts",
+    "./server": "./tincan.ts"
   },
   "files": [
     "tincan.ts",

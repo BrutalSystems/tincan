@@ -297,15 +297,24 @@ specifier, which would remove the copy step and the staleness with it:
 }
 ```
 
-**Verified so far:** opencode resolves and installs that specifier — the
-package lands in `~/.cache/opencode/packages/` — and the published artifact
-runs correctly when opencode loads it, registering its session and appearing
-in other runtimes' `peers` output.
+**0.6.1 fetched but never ran.** opencode installed the package and then
+silently did not execute it — no error, indistinguishable from the plugin not
+being configured. The cause was ours, in the manifest. opencode's loader
+(`packages/opencode/src/plugin/shared.ts`, `resolvePackageEntrypoint`) looks
+for `exports["./server"]` and then falls back to `main`; it never reads
+`exports["."]`, which was all 0.6.1 declared. So it resolved to no entry point
+at all. **0.6.2 adds both**, and a test pins them.
 
-**Not yet verified:** that opencode *executes* a plugin declared this way,
-rather than only fetching it. Until that is confirmed, step 2 above is the
+**Verified:** opencode resolves and installs the specifier — the package
+lands in `~/.cache/opencode/packages/` — and the published artifact runs
+correctly when opencode loads it by path, registering its session and
+appearing in other runtimes' `peers` output.
+
+**Still to confirm:** that 0.6.2's entry points make opencode actually execute
+it when declared by specifier. Until someone checks, step 2 above is the
 supported install. If you use the npm form, run step 4 and confirm you see a
-`plugin_version` — an unloaded plugin looks exactly like no plugin at all.
+`plugin_version` — an unloaded plugin looks exactly like no plugin at all,
+which is the whole reason this paragraph exists.
 
 If you launch opencode through [Muster](https://github.com/BrutalSystems/muster),
 neither applies: `muster run opencode --plugin tincan` injects the plugin per
