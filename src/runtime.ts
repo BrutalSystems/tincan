@@ -455,7 +455,7 @@ async function deliverTo(
       });
       return {
         delivered: r.delivered,
-        method: 'opencode/prompt',
+        method: 'opencode/prompt_async',
         ...(r.error !== undefined && { error: r.error }),
         ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
       };

@@ -313,13 +313,14 @@ describe('buildSide', () => {
   });
 
   test('urgent support is derived from the peer runtimes, not carried as a second flag', () => {
-    // claude-code and codex hosted both list opencode peers, which opencode's
-    // own wire format can steer (delivery: "steer"). `runtimeSupportsUrgent`
-    // is the single source of truth for that; `Side` deliberately carries no
-    // `supportsUrgent` boolean alongside it.
+    // No runtime is steerable any more: opencode was the last, through the v2
+    // prompt route's delivery:"steer", and that route does not run the
+    // message on a TUI-hosted session. What this test still guards is the
+    // structure — `runtimeSupportsUrgent` is the single source of truth and
+    // `Side` carries no `supportsUrgent` boolean alongside it.
     for (const host of ['claude-code', 'codex'] as const) {
       const side = buildSide(host, { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
-      expect(side.peerRuntimes.some(runtimeSupportsUrgent)).toBe(true);
+      expect(side.peerRuntimes.some(runtimeSupportsUrgent)).toBe(false);
       expect(side).not.toHaveProperty('supportsUrgent');
     }
   });

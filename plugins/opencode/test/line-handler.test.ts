@@ -19,7 +19,8 @@ const record: RegistryRecord = {
   plugin_version: '1.0.0', opencode_version: '1.18.31', updated_at: '2026-09-19T14:02:11Z',
 };
 
-const admitted = { response: { status: 200 }, data: { data: { admittedSeq: 16 } } };
+/** prompt_async answers 204 with an empty body. */
+const admitted = { response: { status: 204 } };
 
 let logs: string[];
 let known: Map<string, RegistryRecord>;
@@ -41,8 +42,8 @@ describe('makeLineHandler', () => {
     const post = vi.fn().mockResolvedValue(admitted);
     await harness(post)(line());
     expect(post).toHaveBeenCalledWith({
-      url: '/api/session/ses_a/prompt',
-      body: { prompt: { text: envelope }, delivery: 'queue', id: 'msg_01J8TESTAAAAAAAAAAAAAAAA' },
+      url: '/session/ses_a/prompt_async',
+      body: { parts: [{ type: 'text', text: envelope }], messageID: 'msg_01J8TESTAAAAAAAAAAAAAAAA' },
     });
     expect(logs.join('\n')).toContain('event=delivered');
   });

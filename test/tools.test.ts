@@ -175,50 +175,21 @@ describe('peers', () => {
     expect(r.notes?.join(' ')).not.toContain('claude-code');
   });
 
-  test('emits no urgent note when every listed peer runtime can be steered', async () => {
-    // An opencode host, not the default Claude Code one: this asserts the
-    // note array is *empty*, so the side must also be one that lists its own
-    // kind and therefore earns no scope note either.
+  test('says urgent has no effect for opencode either, now that nothing is steerable', async () => {
+    // opencode was the last steerable runtime, via the v2 prompt route's
+    // delivery:"steer". That route does not run the message on a TUI-hosted
+    // session, so the plugin moved to v1 prompt_async, which has no delivery
+    // mode. The note must now name opencode too rather than exempting it.
     const { side } = makeSide({
       selfRuntime: 'opencode',
       peerRuntimes: ['opencode'],
       listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
     });
     const r = await tools(side).peers();
-    expect(r.notes ?? []).toEqual([]);
+    expect(r.notes?.join(' ')).toMatch(/urgent/i);
+    expect(r.notes?.join(' ')).toContain('opencode');
   });
 
-  test('says the host’s own kind is missing from the list', async () => {
-    // The Claude Code host lists Codex and opencode only. Nothing in the rows
-    // says so, so a model reports a three-row list as the whole machine.
-    const { side } = makeSide({ peerRuntimes: ['codex', 'opencode'] });
-    const r = await tools(side).peers();
-    const scope = (r.notes ?? []).join(' ');
-    expect(scope).toContain('Claude Code');
-    expect(scope).toContain('SendMessage');
-    // The human label everywhere, as with the urgent note above.
-    expect(scope).not.toContain('claude-code');
-  });
-
-  test('says so even when no peers are listed at all', async () => {
-    // The case that misleads most: an empty list plus no explanation reads as
-    // "nothing is running", when a dozen Claude Code sessions may be.
-    const { side } = makeSide({
-      peerRuntimes: ['codex', 'opencode'],
-      listPeers: async () => ({ peers: [] }),
-    });
-    const r = await tools(side).peers();
-    expect((r.notes ?? []).join(' ')).toContain('SendMessage');
-  });
-
-  test('emits no scope note on a side that lists its own kind', async () => {
-    const { side } = makeSide({
-      selfRuntime: 'codex',
-      peerRuntimes: ['codex', 'claude-code', 'opencode'],
-    });
-    const r = await tools(side).peers();
-    expect((r.notes ?? []).join(' ')).not.toContain('SendMessage');
-  });
 });
 
 describe('mixed-runtime peer lists', () => {
@@ -434,13 +405,17 @@ describe('send_peer', () => {
     expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivery: 'queue' });
   });
 
-  test('logs delivery:"steer" for an urgent send to a peer that can act on it', async () => {
+  test('logs delivery:"queue" for an urgent send to opencode — v1 has no steer', async () => {
+    // Was 'steer'. The v2 route that accepted delivery:"steer" is the one
+    // that does not run the message on a TUI-hosted session; v1 prompt_async
+    // runs it and has no delivery mode. Logging 'steer' would record an
+    // intent the wire no longer carries.
     const { side } = makeSide({
       listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
-      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt_async' as const }),
     });
     await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi', urgent: true });
-    expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivery: 'steer' });
+    expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivery: 'queue' });
   });
 
   test(
@@ -454,115 +429,42 @@ describe('send_peer', () => {
   );
 });
 
-describe('opencode admission is not execution', () => {
-  // Reproduced 2026-09-20 against opencode 1.18.31, then corrected by reading
-  // opencode's own log: a turn IS scheduled, 68ms after admission, even on an
-  // idle session. What failed was the turn — ModelUnavailableError — and that
-  // failure reached nobody: the POST had already returned 200, the session got
-  // no error message, and the only trace was one ERROR line in a log file.
-  // Tin Can sees even less: client.ts never reads a response, so `delivered`
-  // means "the plugin accepted the line", nothing more. Hence a notice on
-  // every opencode send, not a claim about scheduling.
-  const ocPeer = (state: 'idle' | 'busy') =>
-    peer({ runtime: 'opencode', rawName: 'witty-orchid', socketPath: '/tmp/x.sock', state, threadId: undefined });
+describe('opencode delivery, after the move to v1 prompt_async', () => {
+  // The notice this block used to assert is gone. It existed because the v2
+  // route admitted a message and then failed to run it on a TUI-hosted
+  // session. v1 prompt_async runs it — verified on stock 1.18.31, three
+  // sends, three turns, three answers — so opencode is now in the same
+  // position as Codex and Claude Code: `delivered` means the peer's harness
+  // accepted it, which is all it ever meant for them either.
+  const ocPeer = () =>
+    peer({ runtime: 'opencode', rawName: 'witty-orchid', socketPath: '/tmp/x.sock', state: 'idle', threadId: undefined });
 
-  const sendTo = async (state: 'idle' | 'busy') => {
+  const send = async () => {
     const { side } = makeSide({
-      selfRuntime: 'claude-code',
       peerRuntimes: ['codex', 'opencode'],
-      listPeers: async () => ({ peers: [ocPeer(state)] }),
-      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const }),
+      listPeers: async () => ({ peers: [ocPeer()] }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt_async' as const }),
     });
     return tools(side).send_peer({ peer: 'witty-orchid', message: 'hello' });
   };
 
-  test('warns that Tin Can cannot confirm an opencode peer acted on it', async () => {
-    const r = await sendTo('idle');
+  test('carries no notice — there is no longer a caveat to give', async () => {
+    const r = await send();
     expect(r.delivered).toBe(true);
-    expect(r.notice).toMatch(/cannot confirm/i);
+    expect(r.notice).toBeUndefined();
   });
 
-  test('names the TUI-hosted failure and the served contrast', async () => {
-    // Isolated by the Muster session on stock 1.18.31, no muster involved:
-    // same session, same model string, 24s apart — a turn started in the TUI
-    // streams fine, a drain from an admitted prompt cannot resolve the model.
-    // Corroborated here by 17 drain failures across a different provider.
-    const n = (await sendTo('idle')).notice!;
-    expect(n).toMatch(/TUI/);
-    expect(n).toMatch(/opencode serve/);
+  test('reports the v1 method, so the log says which route carried it', async () => {
+    expect((await send()).method).toBe('opencode/prompt_async');
   });
 
-  test('does not overclaim: Tin Can cannot tell which kind of host this is', async () => {
-    // Third revision of this text. "Will not run" would be wrong for a served
-    // peer, and Tin Can has no signal that distinguishes one from the other.
-    const n = (await sendTo('idle')).notice!;
-    expect(n).toMatch(/cannot tell|cannot confirm/i);
-  });
-
-  test('does not claim the turn was never scheduled — it is', async () => {
-    // The mechanism 0.5.7 asserted was wrong. opencode schedules on
-    // admission; the turn can then fail silently. Saying otherwise taught
-    // readers a false model of the system.
-    const r = await sendTo('idle');
-    expect(r.notice).not.toMatch(/not schedul|never schedul|no agent turn/i);
-  });
-
-  test('still reports delivered — the plugin did accept it', async () => {
-    // Not a failure: the message is durably admitted and a human opening that
-    // session sees it. Calling this delivered:false would be as wrong as
-    // calling it silently fine.
-    expect((await sendTo('idle')).delivered).toBe(true);
-    expect((await sendTo('idle')).refusal).toBeUndefined();
-  });
-
-  test('warns for a busy opencode peer too', async () => {
-    // 0.5.7 exempted busy peers, on the theory that idle ones were never
-    // scheduled. Both are scheduled; neither can be confirmed. The state was
-    // never the thing that mattered.
-    expect((await sendTo('busy')).notice).toMatch(/cannot confirm/i);
-  });
-
-  test('does not warn for Codex or Claude Code peers', async () => {
-    // Their queue and inbox both genuinely run the message.
-    for (const runtime of ['codex', 'claude-code'] as const) {
-      const { side } = makeSide({
-        selfRuntime: 'opencode',
-        peerRuntimes: ['codex', 'claude-code'],
-        listPeers: async () => ({
-          peers: [peer({ runtime, rawName: 'other', state: 'idle', ...(runtime === 'claude-code' ? { threadId: undefined } : {}) })],
-        }),
-      });
-      const r = await tools(side).send_peer({ peer: 'other', message: 'hello' });
-      expect(r.notice).toBeUndefined();
-    }
-  });
-
-  test('records the caveat in the message log, not only in the tool result', async () => {
-    // A log line reading "delivered" with no detail, beside a tool result
-    // that hedges, is the drift this codebase keeps closing. Before the fix
-    // the log took outcome.notice, which is undefined on this path.
+  test('still surfaces a notice the delivery itself produced', async () => {
     const { side } = makeSide({
       peerRuntimes: ['codex', 'opencode'],
-      listPeers: async () => ({ peers: [ocPeer('idle')] }),
-      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const }),
+      listPeers: async () => ({ peers: [ocPeer()] }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt_async' as const, notice: 'held by the peer' }),
     });
-    await tools(side).send_peer({ peer: 'witty-orchid', message: 'hello' });
-    // read() folds the outcome onto the sent record as `notice`.
-    const records = log.read({ last_n: 10 }) as Array<{ delivered?: boolean; notice?: string }>;
-    const rec = records.at(-1);
-    expect(rec?.delivered).toBe(true);
-    expect(rec?.notice).toMatch(/cannot confirm/i);
-  });
-
-  test('does not clobber a notice the delivery itself produced', async () => {
-    const { side } = makeSide({
-      peerRuntimes: ['codex', 'opencode'],
-      listPeers: async () => ({ peers: [ocPeer('idle')] }),
-      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const, notice: 'held by the peer' }),
-    });
-    const r = await tools(side).send_peer({ peer: 'witty-orchid', message: 'hello' });
-    expect(r.notice).toContain('held by the peer');
-    expect(r.notice).toMatch(/cannot confirm/i);
+    expect((await tools(side).send_peer({ peer: 'witty-orchid', message: 'x' })).notice).toBe('held by the peer');
   });
 });
 

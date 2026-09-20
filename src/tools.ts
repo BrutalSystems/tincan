@@ -159,17 +159,22 @@ export function durableIdOf(p: SidePeer): { thread_id: string } | { session_id: 
 
 /**
  * Whether a peer on this runtime can have a running turn interrupted at all.
- * Only opencode's wire protocol exposes that (`delivery: "steer"`); Codex's
- * queue and the Claude Code inbox have no such notion.
  *
- * The single source of truth, deliberately: both the `peers` note below and
- * `tool-definitions.ts` derive from this function rather than from a flag
- * computed alongside it. `Side` used to carry a `supportsUrgent` boolean as
- * well — nothing read it, and three parallel derivations of one fact is how
- * drift starts.
+ * Nothing, as of 0.6.0. opencode was the only one, through the v2 prompt
+ * route's `delivery: "steer"`. That route admits a message and then, on a
+ * TUI-hosted session, fails to run it — so the steer was a promise about a
+ * turn that never happened. The plugin now posts to v1 `prompt_async`, which
+ * actually runs the message and has no delivery mode at all.
+ *
+ * A reliable send with no steer beats a steer into a session that never
+ * answers, so this is a deliberate trade rather than a regression waiting to
+ * be undone. Kept as a function, not deleted, because the honest place to
+ * describe "urgent does nothing" is still one place — tool-definitions.ts and
+ * the peers note both derive from it, and three parallel derivations of one
+ * fact is how drift starts.
  */
-export function runtimeSupportsUrgent(runtime: RuntimeName): boolean {
-  return runtime === 'opencode';
+export function runtimeSupportsUrgent(_runtime: RuntimeName): boolean {
+  return false;
 }
 
 /**
@@ -211,52 +216,6 @@ export function labelList(runtimes: RuntimeName[]): string {
   return `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
 }
 
-/**
- * Why a successful opencode send may still never be answered.
- *
- * Third revision of this comment, and the previous two were wrong in
- * instructive ways. Recorded so nobody re-derives them:
- *
- *  - 0.5.7: "an idle session is never scheduled". False — inferred from the
- *    absence of a reply, before anyone read opencode's log.
- *  - 0.5.8: "a scheduled turn sometimes fails". True but vague, and the
- *    warmth theory behind it (an idle local model unloading) was wrong: TUI
- *    success and drain failure alternate on the same model seconds apart,
- *    which no cold start can do.
- *
- * What is actually happening, isolated by the Muster session on stock
- * opencode 1.18.31 with no muster involved and a globally authenticated
- * provider: in a TUI-hosted session, a turn started from the TUI resolves the
- * session's model and streams, while a drain started from an admitted prompt
- * cannot resolve that same model and dies with ModelUnavailableError before
- * the agent runs. Same session, same model string, same process, seconds
- * apart. Corroborated here by 17 drain failures across a different provider
- * entirely. A session hosted by `opencode serve` does resolve its model and
- * runs the turn.
- *
- * So for a TUI-hosted peer this is not "might not be answered", it is "was
- * not, in every case observed". Tin Can still cannot say that outright,
- * because it has no signal distinguishing a TUI-hosted session from a served
- * one — both register identically — and `client.ts` never reads a response
- * anyway, so `delivered` means "the plugin accepted the line". The notice
- * therefore states the observed failure and its one known exception, and
- * leaves the reader to know which they have.
- *
- * Every opencode peer regardless of state: peer state was never the
- * discriminator, host type is, and we cannot read host type.
- */
-export function admissionNotice(runtime: RuntimeName, _state: PeerState): string | undefined {
-  if (runtime !== 'opencode') return undefined;
-  return (
-    'Tin Can cannot confirm an opencode peer acted on this, and cannot tell which kind of ' +
-    'session it is. The message is durably admitted and opencode does schedule a turn. But ' +
-    'in a TUI-hosted session that turn has, in every case observed on opencode 1.18.31, ' +
-    'failed to resolve the session\u2019s model and died before the agent ran — so the peer very ' +
-    'likely will not answer. Sessions hosted by `opencode serve` do run the turn. Nothing ' +
-    'surfaces the difference: check the peer if the answer matters.'
-  );
-}
-
 export function methodFor(runtime: RuntimeName): DeliveryMethod {
   switch (runtime) {
     case 'codex':
@@ -264,7 +223,7 @@ export function methodFor(runtime: RuntimeName): DeliveryMethod {
     case 'claude-code':
       return 'inbox';
     case 'opencode':
-      return 'opencode/prompt';
+      return 'opencode/prompt_async';
     default:
       return assertNever(runtime, 'methodFor');
   }
@@ -434,23 +393,10 @@ export function createTools(side: Side, log: MessageLog) {
         args.urgent,
       );
 
-      // Both, when both apply: the delivery's own notice describes what the
-      // peer's harness said, the admission notice what it did not say.
-      // Computed before the log is written, not after, so `message_log` and
-      // the tool result carry the same caveat — a log that says "delivered"
-      // with no note, beside a result that hedges, is the drift this file
-      // keeps trying to avoid.
-      const notice = [
-        outcome.notice,
-        outcome.delivered ? admissionNotice(target.side.runtime, target.side.state) : undefined,
-      ]
-        .filter((n): n is string => n !== undefined && n !== '')
-        .join(' ');
-
       log.appendOutcome(
         envelope.id,
         outcome.delivered,
-        notice !== '' ? notice : outcome.delivered ? undefined : outcome.error,
+        outcome.notice ?? (outcome.delivered ? undefined : outcome.error),
       );
 
       return {
@@ -458,7 +404,7 @@ export function createTools(side: Side, log: MessageLog) {
         method: outcome.method,
         peer_state: target.side.state,
         message_id: envelope.id,
-        ...(notice !== '' && { notice }),
+        ...(outcome.notice !== undefined && { notice: outcome.notice }),
         ...(!outcome.delivered && {
           refusal: 'delivery_failed' as const,
           detail: outcome.error ?? 'The peer runtime did not accept the message.',

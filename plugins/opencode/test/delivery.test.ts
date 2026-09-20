@@ -11,50 +11,66 @@ const msg: InboundMessage = {
   message_id: 'msg_01J8TESTAAAAAAAAAAAAAAAA',
 };
 
-const admitted = (seq: number): TransportResponse => ({
-  response: { status: 200 },
-  data: { data: { admittedSeq: seq, id: msg.message_id, sessionID: 'ses_a', prompt: { text: envelope }, delivery: 'queue', timeCreated: 1 } },
-});
+/** prompt_async answers 204 with an empty body. There is no admittedSeq. */
+const accepted = (): TransportResponse => ({ response: { status: 204 } });
 
 describe('promptUrl', () => {
-  it('uses the /api prefix — without it opencode returns 200 and SPA HTML', () => {
-    expect(promptUrl('ses_a')).toBe('/api/session/ses_a/prompt');
+  // The v2 route /api/session/{id}/prompt admits the message and schedules a
+  // turn that, on a TUI-hosted session, dies resolving the model. This one
+  // runs. Verified on stock 1.18.31: three consecutive sends, three turns,
+  // three answers. NOT the /api surface — that is a different HttpApi.
+  it('posts to the v1 prompt_async route, with no /api prefix', () => {
+    expect(promptUrl('ses_a')).toBe('/session/ses_a/prompt_async');
   });
 });
 
 describe('promptBody', () => {
-  it('passes delivery explicitly and reuses message_id as the idempotency key', () => {
-    expect(promptBody(msg)).toEqual({ prompt: { text: envelope }, delivery: 'queue', id: msg.message_id });
+  // PromptPayload is PromptInput minus sessionID (groups/session.ts:70).
+  // `parts` is the only required field; a text part needs only type and text.
+  it('sends the envelope as a single text part', () => {
+    expect(promptBody(msg)).toEqual({
+      parts: [{ type: 'text', text: envelope }],
+      messageID: msg.message_id,
+    });
   });
 
-  it('passes text through byte-identically', () => {
-    const body = promptBody(msg);
-    expect(Buffer.from(body.prompt.text)).toEqual(Buffer.from(envelope));
+  it('passes text through byte-identically — SPEC \u00a77, the envelope is provenance', () => {
+    expect(Buffer.from(promptBody(msg).parts[0]!.text)).toEqual(Buffer.from(envelope));
   });
 
-  it('never omits delivery, because opencode would default to steer', () => {
-    expect(Object.keys(promptBody({ ...msg, delivery: 'steer' }))).toContain('delivery');
-    expect(promptBody({ ...msg, delivery: 'steer' }).delivery).toBe('steer');
+  it('carries message_id as messageID so our log ids match opencode\u2019s', () => {
+    expect(promptBody(msg).messageID).toBe(msg.message_id);
+  });
+
+  it('sends no delivery field — v1 has no steer/queue, and inventing one would 400', () => {
+    expect(promptBody({ ...msg, delivery: 'steer' })).not.toHaveProperty('delivery');
+    expect(promptBody({ ...msg, delivery: 'steer' })).toEqual(promptBody({ ...msg, delivery: 'queue' }));
   });
 });
 
 describe('interpret', () => {
-  it('treats a JSON admission as delivered', () => {
-    expect(interpret(admitted(16), false)).toEqual({ kind: 'delivered', admittedSeq: 16, replay: false });
+  it('treats 204 as delivered', () => {
+    expect(interpret(accepted(), false)).toEqual({ kind: 'delivered', replay: false });
   });
 
   it('flags a previously sent id as a replay', () => {
-    expect(interpret(admitted(16), true)).toEqual({ kind: 'delivered', admittedSeq: 16, replay: true });
+    expect(interpret(accepted(), true)).toEqual({ kind: 'delivered', replay: true });
+  });
+
+  it('treats a 200 as broken — this route must answer 204', () => {
+    // A 200 here means we reached something other than prompt_async. The old
+    // v2 route answered 200, so this is the check that catches a half-applied
+    // upgrade rather than letting it read as success.
+    const res: TransportResponse = { response: { status: 200 }, data: { data: { admittedSeq: 16 } } };
+    expect(interpret(res, false)).toEqual({
+      kind: 'transport-broken',
+      detail: 'expected 204 from prompt_async, got 200',
+    });
   });
 
   it('treats a 200 with SPA HTML as a broken transport, not a delivery', () => {
     const res: TransportResponse = { response: { status: 200 }, data: '<!doctype html>\n<html lang="en">' };
     expect(interpret(res, false)).toEqual({ kind: 'transport-broken', detail: 'html response — wrong route prefix?' });
-  });
-
-  it('treats a 200 with no admittedSeq as broken', () => {
-    const res: TransportResponse = { response: { status: 200 }, data: { data: {} } };
-    expect(interpret(res, false)).toEqual({ kind: 'transport-broken', detail: 'no admittedSeq in 200 response' });
   });
 
   it('reports a 404 with its tag', () => {
@@ -63,8 +79,10 @@ describe('interpret', () => {
   });
 
   it('reports a 400 with its tag', () => {
-    const res: TransportResponse = { response: { status: 400 }, error: { _tag: 'InvalidRequestError', message: 'Expected a string starting with "msg_"' } };
-    expect(interpret(res, false)).toEqual({ kind: 'rejected', status: 400, tag: 'InvalidRequestError', detail: 'Expected a string starting with "msg_"' });
+    // What a wrong body shape looks like: an empty body answers
+    // 'Missing key at ["parts"]'.
+    const res: TransportResponse = { response: { status: 400 }, error: { _tag: 'InvalidRequestError', message: 'Missing key at ["parts"]' } };
+    expect(interpret(res, false)).toEqual({ kind: 'rejected', status: 400, tag: 'InvalidRequestError', detail: 'Missing key at ["parts"]' });
   });
 
   it('reports a 409 as rejected so the caller can treat it as already delivered', () => {
@@ -79,20 +97,23 @@ describe('interpret', () => {
 });
 
 describe('deliver', () => {
-  it('posts to the prefixed URL with the documented body', async () => {
-    const post = vi.fn().mockResolvedValue(admitted(16));
+  it('posts to the v1 route with the documented body', async () => {
+    const post = vi.fn().mockResolvedValue(accepted());
     const transport = { post, get: vi.fn() } as unknown as Transport;
     const out = await deliver(transport, msg, new Set());
-    expect(post).toHaveBeenCalledWith({ url: '/api/session/ses_a/prompt', body: { prompt: { text: envelope }, delivery: 'queue', id: msg.message_id } });
-    expect(out).toEqual({ kind: 'delivered', admittedSeq: 16, replay: false });
+    expect(post).toHaveBeenCalledWith({
+      url: '/session/ses_a/prompt_async',
+      body: { parts: [{ type: 'text', text: envelope }], messageID: msg.message_id },
+    });
+    expect(out).toEqual({ kind: 'delivered', replay: false });
   });
 
   it('marks a second send of the same id as a replay', async () => {
-    const transport = { post: vi.fn().mockResolvedValue(admitted(16)), get: vi.fn() } as unknown as Transport;
+    const transport = { post: vi.fn().mockResolvedValue(accepted()), get: vi.fn() } as unknown as Transport;
     const sent = new Set<string>();
     await deliver(transport, msg, sent);
     const second = await deliver(transport, msg, sent);
-    expect(second).toEqual({ kind: 'delivered', admittedSeq: 16, replay: true });
+    expect(second).toEqual({ kind: 'delivered', replay: true });
   });
 
   it('turns a thrown transport error into transport-broken instead of propagating', async () => {

@@ -65,6 +65,6 @@ export interface Transport {
 }
 
 export type DeliveryOutcome =
-  | { kind: 'delivered'; admittedSeq: number; replay: boolean }
+  | { kind: 'delivered'; replay: boolean }
   | { kind: 'rejected'; status: number; tag: string; detail: string }
   | { kind: 'transport-broken'; detail: string };

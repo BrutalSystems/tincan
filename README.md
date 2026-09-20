@@ -121,62 +121,58 @@ from the session registry. opencode peers report real state too, pushed live
 by the plugin from opencode's own event bus — Tin Can never has to probe an
 opencode peer to know whether it is busy.
 
-### opencode: a TUI-hosted peer very likely will not answer
+### opencode: why the plugin posts to the v1 route
 
-**Isolated on stock opencode 1.18.31.** In a TUI-hosted session, a turn started
-from the TUI resolves the session's model and streams normally, while a turn
-scheduled from a message admitted through `/api/session/{id}/prompt` cannot
-resolve that same model and dies with `ModelUnavailableError` before the agent
-runs — same session, same model string, same process, seconds apart. A session
-hosted by `opencode serve` resolves its model and runs the turn.
+opencode has two prompt APIs, and they are different engines. Tin Can's plugin
+uses the v1 one — `POST /session/{id}/prompt_async`, answering 204 — and must
+keep using it.
 
-| Target | Admitted | Turn scheduled | Turn runs |
-|---|---|---|---|
-| opencode, TUI-hosted | yes | yes | **no** — dies resolving the model |
-| opencode, `opencode serve` | yes | yes | yes |
-| Codex, Claude Code | — | — | yes — queue and inbox both run it |
+| | v2 `/api/session/{id}/prompt` | v1 `/session/{id}/prompt_async` |
+|---|---|---|
+| Engine | admit + wake + run coordinator | `SessionPrompt.Service` |
+| Answers | 200 with an `admittedSeq` | 204, empty body |
+| TUI-hosted session | admits, schedules a turn, **the turn dies resolving the model** | **runs** |
+| `opencode serve` | runs | runs |
+| Failure visibility | log file only | publishes `Session.Event.Error` into the session |
+| Steer / queue | `delivery` field | none |
 
-The tally behind "in every case observed": **14** distinct TUI-hosted sessions
-produced a `ModelUnavailableError` drain, **20** such failures in all, across
-**2** unrelated providers (`muster-local`, `fireworks-ai`). TUI-hosted drains
-observed to succeed: **0**.
+The v2 route was the obvious choice and it is the wrong one. On a TUI-hosted
+session it admits the message durably — the text really does become a
+`type:"user"` message — schedules a turn within about 70ms, and that turn then
+fails to resolve the session's own model and dies before the agent runs. 20
+observed failures across two unrelated providers, zero successes, while a turn
+started from the TUI itself streams that same model fine seconds later. And
+nothing surfaces it: the POST has already answered 200, no error is written
+into the session, and the only trace is one `ERROR "Failed to drain Session"`
+line in `~/.local/share/opencode/log`.
 
-The sharpest evidence is the control. A served session's drain *also* failed
-in the same log on the same day — but with
-`LLM.Error: RequestExecutor.execute: Provider request failed with HTTP 401`,
-not `ModelUnavailableError`. It resolved the model and got as far as an HTTP
-request to the provider, failing only on credentials that were never supplied.
-So resolution demonstrably succeeds in a served session and demonstrably never
-succeeds in a TUI-hosted one, on the same machine, same day — two different
-failures at two different stages, not one flaky thing.
+The v1 route simply runs the message. Verified on stock opencode 1.18.31 in a
+plain TUI session: three sends, three turns, three answers in the pane.
+`Intelligent-Internet/opencode-a2a`, the reference A2A integration, posts to
+this route too — though it only ever runs `opencode serve`, so it would never
+have discovered the difference.
 
-This is a consistent observation, not a proof about every configuration.
+**Do not "fix" the URL back to `/api/`.** It is not the v2 path with a prefix
+dropped; it is a different route on a different `HttpApi`. The v2 surface
+describes itself in its own OpenAPI annotation as an *"Experimental HttpApi
+surface for selected instance routes"*, and `prompt_async` does not appear in
+its `/doc` output at all.
 
-Nothing surfaces that failure to anyone who could act on it. The POST has
-already returned 200 with an `admittedSeq`; no error is written into the
-session; the only trace is one `ERROR "Failed to drain Session"` line in
-`~/.local/share/opencode/log`. A turn that died looks, from outside, exactly
-like a turn that went perfectly.
+Two consequences worth knowing:
 
-`send_peer` to any opencode peer therefore returns `delivered: true` with a
-`notice` carrying the above, and the same caveat is written to
-`~/.tincan/messages.jsonl`. It is not reported as a failure, because the
-message genuinely is in the session and a human who opens it will see it. Tin
-Can cannot narrow the notice to the TUI case, because a TUI-hosted session and
-a served one register identically — and `src/opencode/client.ts` never reads a
-response from the plugin anyway, so what Tin Can knows is "the plugin accepted
-the line".
+- **`urgent` no longer does anything for opencode peers.** v1 has no
+  `delivery` field. See the limits section above.
+- **One observation we did not chase:** after a failed v2 admission, later v1
+  sends to that same session returned 204 and ran nothing either. A Tin Can
+  that only ever calls v1 never creates that state, but if you have been
+  mixing routes, restart the session.
 
-**This section has been wrong twice; both versions are recorded so the
-mistakes are not re-derived.** 0.5.7 said an idle session is never scheduled —
-false, inferred from the absence of a reply rather than read from opencode's
-log. 0.5.8 said a scheduled turn sometimes fails, which is true but vague, and
-rested on a model-warmth theory that is also false: TUI success and drain
-failure alternate on the same model seconds apart, which no cold start can do.
-The symptom never changed; the explanation did, twice. Found and isolated by
-the Muster session.
+The two earlier explanations in this section are kept in the git history
+rather than here: 0.5.7 claimed an idle session is never scheduled, 0.5.8
+blamed model warmth, and both were wrong while the symptom stayed constant.
+Found and isolated by the Muster session.
 
-### A known gap in the log### A known gap in the log### A known gap in the log
+### A known gap in the log### A known gap in the log### A known gap in the log### A known gap in the log
 
 Claude↔Claude traffic goes through `SendMessage`, not Tin Can, so **it does not
 appear in `~/.tincan/messages.jsonl`**. The log is a complete record of what
@@ -249,6 +245,11 @@ doing only half of it is easy to do by accident. Do both, in order:
 
    Without this, the session has no `peers`, `send_peer` or `message_log`
    tools at all — it can be messaged, but it cannot message anyone.
+
+> **Upgrading from 0.5.x?** The plugin is copied to disk, so `npm update -g`
+> does **not** update it. Re-run the copy below after every upgrade. 0.6.0
+> changed the endpoint the plugin posts to, and an 0.5.x plugin left in place
+> will keep using the route that does not run your messages.
 
 2. **Install the plugin.** This is the *receive* half — it is what makes an
    opencode session show up in anyone else's `peers` list at all:
@@ -460,18 +461,18 @@ message, never when the peer answers. There is no `await_reply`; the peer may
 have a human who has walked away. `expect_reply` records intent and changes
 nothing.
 
-**No interrupting a running turn — for Codex and Claude Code.** `urgent` is
-accepted and has no effect on either: Claude Code has no external interrupt,
-and Codex's `turn/steer` requires an `expectedTurnId` that only the connection
-owning that turn ever learns. Every message to those two runtimes queues,
-regardless of `urgent`.
+**No interrupting a running turn, on any runtime.** `urgent` is accepted and
+has no effect anywhere. Claude Code has no external interrupt, and Codex's
+`turn/steer` requires an `expectedTurnId` that only the connection owning that
+turn ever learns. Every message queues.
 
-opencode is the exception, because its wire protocol takes an explicit
-`delivery: "steer" | "queue"`. `urgent: true` maps to `steer`, which promotes
-the message into the peer's *running* turn at the next step boundary rather
-than waiting for the turn to finish. Leave `urgent` unset (or `false`) and an
-opencode peer queues exactly like the other two. `peers` reports, per peer,
-whether `urgent` does anything for it — believe that output over this
+opencode used to be the exception, through the v2 prompt route's
+`delivery: "steer" | "queue"`. **That is gone as of 0.6.0, deliberately.** The
+route that accepted `steer` is the one that admits a message and then does not
+run it on a TUI-hosted session (below); the v1 route that does run it has no
+delivery mode. A reliable send with no steer beats a steer into a session that
+never answers, so the capability was traded rather than kept. `peers` reports
+per peer whether `urgent` does anything — believe that output over this
 paragraph if the two ever disagree.
 
 **Same machine only.** No network listener, no TCP port, no remote transport.

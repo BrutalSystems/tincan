@@ -355,6 +355,21 @@ The plugin cannot guarantee cleanup, so the format survives its absence.
 
 ## 7. Wire format
 
+> **Superseded in 0.6.0 for the HTTP leg.** Everything below describing the v2
+> route `/api/session/{id}/prompt` — the `{prompt:{text},delivery,id}` body,
+> the 200 response, `admittedSeq`, the idempotent re-submit semantics, and
+> `delivery: "steer" | "queue"` — documents what the plugin *used* to post.
+> It now posts to the v1 route `/session/{id}/prompt_async` with
+> `{"parts":[{"type":"text","text": …}],"messageID": …}` and expects **204**
+> with an empty body. There is no `admittedSeq` and no delivery mode.
+>
+> The reason is in the README under "opencode: why the plugin posts to the v1
+> route": the v2 route admits a message on a TUI-hosted session and then fails
+> to run it. This section is kept because the socket half of the wire, the
+> envelope rules (§7 below), and the registry contract are all unchanged, and
+> because the v2 semantics are still what you will meet if you read
+> opencode's `/doc`.
+
 Tin Can connects to the instance socket, writes **one JSON object on one
 line**, and closes. No auth line — the socket is owner-only. No response is
 written; delivery is acknowledged by the connection being accepted and the

@@ -35,7 +35,7 @@ describe('detectRuntime', () => {
 
 describe('methodFor', () => {
   test('opencode is opencode/prompt', () => {
-    expect(methodFor('opencode')).toBe('opencode/prompt');
+    expect(methodFor('opencode')).toBe('opencode/prompt_async');
   });
 
   test('codex and claude-code are unchanged', () => {
