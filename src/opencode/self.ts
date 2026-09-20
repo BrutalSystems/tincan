@@ -34,6 +34,22 @@ export interface SelfSessionParams {
  * share this function rather than re-deriving it — that duplication is
  * exactly how this guard's tightening in one place failed to reach the other.
  */
+/**
+ * A well-formed opencode session id.
+ *
+ * SPEC §7 already makes a `^ses` prefix a hard requirement on the wire, so
+ * this rejects nothing legitimate. It exists because a session id read out of
+ * a registry or caller file is *file content*, and both readers turn it into a
+ * path: `../../../victim` would otherwise name `<registryDir>/../../../victim.json`.
+ * Shared by `discover.ts` and `selfSessionId` below for the same reason
+ * `parseOpencodePid` is shared — one guard, tightened in one place.
+ */
+const SESSION_ID = /^ses_[A-Za-z0-9_-]+$/;
+
+export function isOpencodeSessionId(value: unknown): value is string {
+  return typeof value === 'string' && SESSION_ID.test(value);
+}
+
 export function parseOpencodePid(env: NodeJS.ProcessEnv): number | undefined {
   const pid = Number(env.OPENCODE_PID);
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
@@ -82,7 +98,9 @@ export async function selfSessionId(params: SelfSessionParams): Promise<string |
       continue;
     }
 
-    if (rec.pid === selfPid && typeof rec.session_id === 'string' && rec.session_id.length > 0) {
+    // The id is turned into a registry path by runtime.ts's slug lookup, so
+    // it is validated here rather than trusted as written.
+    if (rec.pid === selfPid && isOpencodeSessionId(rec.session_id)) {
       return rec.session_id;
     }
   }

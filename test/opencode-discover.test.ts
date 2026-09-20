@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { listOpencodeSessions } from '../src/opencode/discover.js';
 
 const record = (over: Record<string, unknown> = {}) => ({
@@ -59,15 +59,79 @@ describe('listOpencodeSessions', () => {
     expect(peers.map((p) => p.uuid)).toEqual(['ses_a']);
   });
 
-  it('reports a refused session as unreachable, and prunes its record', async () => {
+  it('reports a refused session unreachable once, and prunes it only on a second confirming refusal', async () => {
     write('ses_dead.json', record({ session_id: 'ses_dead' }));
-    const { peers } = await listOpencodeSessions({ registryDir: dir, probe: async () => false });
-    expect(peers).toHaveLength(1);
-    expect(peers[0]!.state).toBe('unreachable');
-    // Reported once, then gone — change notice §2.
+
+    const first = await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+    expect(first.peers).toHaveLength(1);
+    expect(first.peers[0]!.state).toBe('unreachable');
+    // One refused 250ms probe is not proof of death, and the plugin only
+    // rewrites a record on an event (SPEC §5) — so deleting here makes an
+    // idle-but-slow instance invisible until someone types into it.
+    expect(existsSync(join(dir, 'ses_dead.json'))).toBe(true);
+
+    const second = await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+    expect(second.peers).toEqual([]); // reported exactly once — change notice §2
     expect(existsSync(join(dir, 'ses_dead.json'))).toBe(false);
-    const again = await listOpencodeSessions({ registryDir: dir, probe: async () => false });
-    expect(again.peers).toEqual([]);
+
+    const third = await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+    expect(third.peers).toEqual([]);
+  });
+
+  it('a slow instance that answers the next probe keeps its record, and its mark is cleared', async () => {
+    write('ses_slow.json', record({ session_id: 'ses_slow' }));
+
+    expect(
+      (await listOpencodeSessions({ registryDir: dir, probe: async () => false })).peers[0]!.state,
+    ).toBe('unreachable');
+    expect(
+      (await listOpencodeSessions({ registryDir: dir, probe: async () => true })).peers[0]!.state,
+    ).toBe('idle');
+    expect(existsSync(join(dir, 'ses_slow.json'))).toBe(true);
+
+    // The earlier mark is gone, so a genuine death later is still reported
+    // once before it is pruned rather than being deleted on sight.
+    const later = await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+    expect(later.peers[0]!.state).toBe('unreachable');
+    expect(existsSync(join(dir, 'ses_slow.json'))).toBe(true);
+  });
+
+  it('never deletes a file outside the registry, however the session_id is spelled', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'tc-oc-victim-'));
+    const victim = join(outside, 'victim.json');
+    writeFileSync(victim, JSON.stringify({ keep: true }));
+    try {
+      // The prune used to unlink `${registryDir}/${record.session_id}.json`,
+      // with session_id read verbatim out of the file's own contents.
+      const escape = relative(dir, join(outside, 'victim'));
+      write('ses_evil.json', record({ session_id: escape }));
+      await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+      await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+      expect(existsSync(victim)).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a record whose session_id is not a ^ses_ id, exactly like a malformed one', async () => {
+    // SPEC §7 already requires `^ses` on the wire, so this rejects nothing
+    // legitimate.
+    write('ses_evil.json', record({ session_id: '../../../victim' }));
+    write('ses_ok2.json', record({ session_id: 'ses_ok2' }));
+    const { peers } = await listOpencodeSessions({ registryDir: dir, probe: async () => true });
+    expect(peers.map((p) => p.uuid)).toEqual(['ses_ok2']);
+  });
+
+  it('prunes by the directory entry name, not by the session_id inside the record', async () => {
+    // If the plugin ever names a file anything but `<session_id>.json`, an
+    // unlink derived from the contents silently misses and "report unreachable
+    // once" becomes "report it forever".
+    write('ses_filename.json', record({ session_id: 'ses_inside' }));
+    write('ses_inside.json', 'not a record'); // decoy: must survive untouched
+    await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+    await listOpencodeSessions({ registryDir: dir, probe: async () => false });
+    expect(existsSync(join(dir, 'ses_filename.json'))).toBe(false);
+    expect(existsSync(join(dir, 'ses_inside.json'))).toBe(true);
   });
 
   it('names the plugin when the registry directory does not exist', async () => {

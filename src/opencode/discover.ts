@@ -7,9 +7,10 @@
  * See plugins/opencode/SPEC.md §4.
  */
 import { readdir, readFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import net from 'node:net';
 import type { PeerState } from '../claude/discover.js';
+import { isOpencodeSessionId } from './self.js';
 
 export interface OpencodeSession {
   uuid: string;          // session_id
@@ -32,7 +33,22 @@ export interface ListParams {
   /** Injected so tests need no real sockets. Defaults to a real connect probe. */
   probe?: (socketPath: string, timeoutMs: number) => Promise<boolean>;
   probeMs?: number;
+  /**
+   * Records already reported unreachable by an earlier listing, keyed by
+   * absolute record path. A record is pruned only on the *second* consecutive
+   * refusal (see `listOpencodeSessions`), so the mark has to outlive one call.
+   *
+   * Defaults to a process-wide set, which is what a long-lived MCP server
+   * wants; tests may pass their own for isolation.
+   */
+  unreachableMarks?: Set<string>;
 }
+
+/**
+ * Records this process has already reported unreachable once. Not a cache of
+ * anything — it is the first of the two observations the prune requires.
+ */
+const reportedUnreachable = new Set<string>();
 
 /** The liveness test the whole staleness model rests on: a dead instance's
  *  socket refuses the connection. SPEC §6. */
@@ -52,6 +68,21 @@ export function probeSocket(socketPath: string, timeoutMs = 250): Promise<boolea
   });
 }
 
+/**
+ * A record plus the directory entry it came from.
+ *
+ * `file` is the only thing the prune is ever allowed to unlink. A path built
+ * from the record's *contents* is attacker-controlled — a `session_id` of
+ * `../../../victim` deleted `<registryDir>/../../../victim.json` — and it is
+ * also simply wrong the moment the plugin names a file anything other than
+ * `<session_id>.json`, because the unlink then silently misses and "report
+ * unreachable once" becomes "report it forever".
+ */
+interface RegistryEntry {
+  file: string;
+  session: OpencodeSession;
+}
+
 function readRecord(raw: string): OpencodeSession | null {
   let r: Record<string, unknown>;
   try { r = JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
@@ -63,7 +94,11 @@ function readRecord(raw: string): OpencodeSession | null {
   // claude/discover.ts does. SPEC §12 notes slug is undeclared in opencode's
   // schema, so a build without it is plausible; dropping a live, reachable
   // session over a missing name would make it invisible with no diagnostic.
-  if (!str(r.session_id) || !str(r.directory) || !str(r.socket)) return null;
+  // `session_id` is held to SPEC §7's `^ses` requirement, not merely to being
+  // a non-empty string: it is content that later becomes a path (runtime.ts's
+  // slug lookup) and an address on the wire. A record that fails it is skipped
+  // exactly like a malformed one.
+  if (!isOpencodeSessionId(r.session_id) || !str(r.directory) || !str(r.socket)) return null;
   if (!str(r.instance_id) || typeof r.pid !== 'number') return null;
   return {
     uuid: r.session_id,
@@ -79,7 +114,12 @@ function readRecord(raw: string): OpencodeSession | null {
 }
 
 export async function listOpencodeSessions(params: ListParams): Promise<OpencodeListing> {
-  const { registryDir, probe = probeSocket, probeMs = 250 } = params;
+  const {
+    registryDir,
+    probe = probeSocket,
+    probeMs = 250,
+    unreachableMarks: marks = reportedUnreachable,
+  } = params;
   let names: string[];
   try {
     names = await readdir(registryDir);
@@ -100,7 +140,7 @@ export async function listOpencodeSessions(params: ListParams): Promise<Opencode
     };
   }
 
-  const found: OpencodeSession[] = [];
+  const found: RegistryEntry[] = [];
   for (const name of names) {
     // Session records only. inst-*.caller.json, inst-*.sock and the atomic
     // writer's *.tmp files live in the same directory.
@@ -112,13 +152,13 @@ export async function listOpencodeSessions(params: ListParams): Promise<Opencode
       continue; // The plugin deletes concurrently; a vanished file is normal.
     }
     const rec = readRecord(raw);
-    if (rec !== null) found.push(rec);
+    if (rec !== null) found.push({ file: name, session: rec });
   }
 
   // One probe per instance, not per session: an instance serves many sessions
   // behind one socket. Probed in parallel so N dead instances cost one timeout,
   // not N.
-  const sockets = [...new Set(found.map((s) => s.socketPath))];
+  const sockets = [...new Set(found.map((e) => e.session.socketPath))];
   const results = await Promise.all(
     sockets.map(async (sock) => {
       try { return [sock, await probe(sock, probeMs)] as const; }
@@ -127,18 +167,48 @@ export async function listOpencodeSessions(params: ListParams): Promise<Opencode
   );
   const alive = new Map(results);
 
-  // A refused socket means the instance is gone. Report the peer once as
-  // unreachable rather than dropping it — that is what makes tools.ts's
+  // A refused socket means the instance is *probably* gone. Report the peer
+  // once as unreachable rather than dropping it — that is what makes tools.ts's
   // `peer_unreachable` refusal reachable, and it mirrors claude/discover.ts:74.
-  // Then unlink the record so the next listing does not repeat it (change
-  // notice §2: "report the peer unreachable once rather than repeatedly").
-  const peers = found.map((s) =>
-    alive.get(s.socketPath) === true ? s : { ...s, state: 'unreachable' as const },
-  );
-  await Promise.all(
-    peers
-      .filter((s) => s.state === 'unreachable')
-      .map((s) => unlink(join(registryDir, `${s.uuid}.json`)).catch(() => {})),
-  );
+  //
+  // Removal takes a second, confirming refusal. One refused 250ms probe is not
+  // proof: the plugin only rewrites a record on an event (SPEC §5), so a
+  // wrongly pruned instance that is idle and stays idle does not "self-heal on
+  // the next state write" — it is invisible in every peer list until someone
+  // types into it. The mark is held in memory rather than written into the
+  // record, so nothing here ever writes to a file the plugin owns.
+  //
+  // User-visible behaviour is unchanged: the peer is reported unreachable
+  // exactly once (on the first refusal), and never appears again.
+  const peers: OpencodeSession[] = [];
+  const prune: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of found) {
+    const key = join(registryDir, entry.file);
+    seen.add(key);
+    if (alive.get(entry.session.socketPath) === true) {
+      marks.delete(key); // a slow instance that answered is not dying
+      peers.push(entry.session);
+      continue;
+    }
+    if (marks.has(key)) {
+      marks.delete(key);
+      prune.push(entry.file);
+      continue;
+    }
+    marks.add(key);
+    peers.push({ ...entry.session, state: 'unreachable' });
+  }
+
+  // Marks for records that have since vanished (the plugin's own sweep, a
+  // `session.deleted`) would otherwise accumulate for the life of the process.
+  // Scoped by prefix: the default set is process-wide and a second registry
+  // directory's marks are none of this call's business.
+  const prefix = registryDir.endsWith(sep) ? registryDir : registryDir + sep;
+  for (const key of marks) {
+    if (key.startsWith(prefix) && !seen.has(key)) marks.delete(key);
+  }
+
+  await Promise.all(prune.map((file) => unlink(join(registryDir, file)).catch(() => {})));
   return { peers };
 }
