@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startPlugin, type PluginDeps } from '../tincan-lib/plugin.js';
@@ -115,6 +115,16 @@ describe('startPlugin — registry lifecycle', () => {
     await hooks.dispose();
   });
 
+  it('removes the record on session.deleted even when the payload omits version', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    expect(existsSync(join(dir, 'ses_a.json'))).toBe(true);
+    const { version: _drop, ...noVersion } = info;
+    await hooks.event({ event: { type: 'session.deleted', properties: { info: noVersion } } });
+    expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
+    await hooks.dispose();
+  });
+
   it('does not rewrite the file when nothing but the clock changed', async () => {
     const hooks = await startPlugin(deps());
     await hooks.event({ event: { type: 'session.created', properties: { info } } });
@@ -141,6 +151,41 @@ describe('startPlugin — registry lifecycle', () => {
     const hooks = await startPlugin(deps());
     await expect((hooks.event as unknown as (i: unknown) => Promise<void>)(null)).resolves.toBeUndefined();
     await expect(hooks.event({ event: { type: 'session.created', properties: {} } })).resolves.toBeUndefined();
+    await hooks.dispose();
+  });
+});
+
+describe('startPlugin — serialised registry mutation', () => {
+  it('leaves no file behind when a status event and a delete overlap', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    // Deliberately NOT awaited in turn: opencode dispatches events without
+    // waiting for the previous one to settle. Unserialised, the status
+    // event's write lands after the delete's unlink and the file survives
+    // with state:"busy" — and because `known` no longer holds it, nothing
+    // ever rewrites or removes it again.
+    const status = hooks.event({ event: { type: 'session.status', properties: { sessionID: 'ses_a', status: { type: 'busy' } } } });
+    const deleted = hooks.event({ event: { type: 'session.deleted', properties: { info } } });
+    await Promise.all([status, deleted]);
+    expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
+    await hooks.dispose();
+  });
+
+  it('does not skip the next identical event after a failed write', async () => {
+    const hooks = await startPlugin(deps());
+    // A directory at the record's path makes the atomic rename fail. Nothing
+    // is mocked: this is the real write path failing the way a full disk or
+    // a permissions change would.
+    mkdirSync(join(dir, 'ses_a.json'));
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    expect(logs.join('\n')).toContain('event=event.failed');
+
+    rmSync(join(dir, 'ses_a.json'), { recursive: true, force: true });
+    // The identical event must be retried, not deduped against a memory
+    // entry for a write that never landed.
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    expect(statSync(join(dir, 'ses_a.json')).isFile()).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, 'ses_a.json'), 'utf8')).slug).toBe('nimble-wizard');
     await hooks.dispose();
   });
 });

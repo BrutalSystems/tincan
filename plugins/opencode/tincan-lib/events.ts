@@ -35,8 +35,14 @@ export function effectOf(event: unknown): EventEffect {
       return info ? { kind: 'upsert', info } : IGNORE;
     }
     case 'session.deleted': {
-      const info = readInfo(props.info);
-      return info ? { kind: 'remove', sessionID: info.id } : IGNORE;
+      // Read leniently: a delete needs nothing but the id. Demanding the full
+      // create/update shape here means a payload missing (say) `version`
+      // returns `ignore`, so the record is never removed — and Tin Can then
+      // sees a peer whose socket is alive, so its liveness prune never fires
+      // and every message to it is dropped as `unknown session`. A peer that
+      // looks healthy and swallows input is worse than a stale one.
+      const id = (props.info as { id?: unknown } | undefined)?.id;
+      return typeof id === 'string' ? { kind: 'remove', sessionID: id } : IGNORE;
     }
     case 'session.idle': {
       const id = props.sessionID;

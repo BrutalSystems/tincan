@@ -8,7 +8,7 @@ import {
   sameIgnoringTimestamp, sweepOrphans, writeRecord, type RecordContext,
 } from './registry.js';
 import { listenLines, probeSocket, type ServerHandle } from './server.js';
-import { PLUGIN_VERSION, type RegistryRecord, type SessionState, type Transport } from './types.js';
+import { PLUGIN_VERSION, type RegistryRecord, type SessionInfo, type SessionState, type Transport } from './types.js';
 import { parseLine } from './wire.js';
 
 export interface LineHandlerDeps {
@@ -132,17 +132,50 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
     }
   }
 
-  /** Write only when something other than the timestamp changed: session.updated
-   *  fires repeatedly while the model rewrites the title. SPEC §5. */
-  const apply = async (sessionID: string, state: SessionState, incoming?: RegistryRecord): Promise<void> => {
-    const base = incoming ?? known.get(sessionID);
-    if (!base) return; // Never announced, so not addressable. SPEC §5.
-    const candidate: RegistryRecord = { ...base, state, updated_at: isoStamp(ctx.now()) };
-    const prev = known.get(sessionID);
-    if (prev && sameIgnoringTimestamp(prev, candidate)) return;
-    known.set(sessionID, candidate);
-    await writeRecord(deps.dir, candidate);
+  /**
+   * Every mutation of `known` and of the registry directory runs through this
+   * one chain. opencode dispatches events without awaiting the previous one,
+   * and unserialised `set`-then-write against `delete`-then-unlink interleaves
+   * into a deleted session whose file survives with a live-looking state —
+   * which `known` no longer holds, so nothing ever rewrites or removes it
+   * again. `then(fn, fn)` rather than `then(fn)`: a rejected link must not
+   * stall the chain behind it.
+   */
+  let queue: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = queue.then(fn, fn);
+    queue = next;
+    return next;
   };
+
+  /** Write only when something other than the timestamp changed: session.updated
+   *  fires repeatedly while the model rewrites the title. SPEC §5.
+   *
+   *  `known` is updated only AFTER the write lands. Updating it first makes a
+   *  failed write poison the dedup cache: the next identical event compares
+   *  equal against memory and is skipped, leaving disk permanently stale. */
+  const applyRecord = async (candidate: RegistryRecord): Promise<void> => {
+    const prev = known.get(candidate.session_id);
+    if (prev && sameIgnoringTimestamp(prev, candidate)) return;
+    await writeRecord(deps.dir, candidate);
+    known.set(candidate.session_id, candidate);
+  };
+
+  const applyInfo = (info: SessionInfo): Promise<void> => serial(async () => {
+    const state = known.get(info.id)?.state ?? 'idle';
+    await applyRecord(composeRecord(info, state, ctx));
+  });
+
+  const applyState = (sessionID: string, state: SessionState): Promise<void> => serial(async () => {
+    const base = known.get(sessionID);
+    if (!base) return; // Never announced, so not addressable. SPEC §5.
+    await applyRecord({ ...base, state, updated_at: isoStamp(ctx.now()) });
+  });
+
+  const applyRemove = (sessionID: string): Promise<void> => serial(async () => {
+    known.delete(sessionID);
+    await removeRecord(deps.dir, sessionID);
+  });
 
   return {
     event: async (input: { event: unknown }): Promise<void> => {
@@ -157,17 +190,14 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
         const event = (input as { event?: unknown } | null)?.event ?? input;
         const effect = effectOf(event);
         switch (effect.kind) {
-          case 'upsert': {
-            const state = known.get(effect.info.id)?.state ?? 'idle';
-            await apply(effect.info.id, state, composeRecord(effect.info, state, ctx));
+          case 'upsert':
+            await applyInfo(effect.info);
             return;
-          }
           case 'state':
-            await apply(effect.sessionID, effect.state);
+            await applyState(effect.sessionID, effect.state);
             return;
           case 'remove':
-            known.delete(effect.sessionID);
-            await removeRecord(deps.dir, effect.sessionID);
+            await applyRemove(effect.sessionID);
             return;
           default:
             return;
@@ -190,20 +220,24 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
     },
 
     dispose: async (): Promise<void> => {
+      // Order matters. Stop accepting work BEFORE removing anything: a
+      // closed ServerHandle is still a truthy object, and the event hook's
+      // only gate is `if (!server) return`, so a fire-and-forget onLine
+      // dispatch racing dispose could otherwise resurrect a registry file
+      // pointing at a socket that no longer exists — exactly the
+      // undeliverable-entry state the self-check exists to prevent. Removing
+      // first left the same window open for an event already in flight.
+      // Idempotent: a second dispose() finds server already null.
+      const handle = server;
+      server = null;
+      known.clear();
       try {
-        await removeAllForInstance(deps.dir, deps.instanceId);
-        if (server) await server.close();
+        if (handle) await handle.close();
+        // Through the chain, so any write already queued lands before the
+        // sweep rather than after it.
+        await serial(() => removeAllForInstance(deps.dir, deps.instanceId));
       } catch (e) {
         log({ event: 'dispose.failed', detail: String(e) });
-      } finally {
-        // A closed ServerHandle is still a truthy object, and the event hook's
-        // only gate is `if (!server) return`. Without clearing these, a
-        // fire-and-forget onLine dispatch racing dispose could resurrect a
-        // deleted registry file pointing at a socket that no longer exists —
-        // exactly the undeliverable-entry state the self-check exists to
-        // prevent. Idempotent: a second dispose() finds server already null.
-        server = null;
-        known.clear();
       }
     },
   };
