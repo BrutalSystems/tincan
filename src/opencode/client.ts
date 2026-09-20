@@ -22,6 +22,13 @@ export interface SendToInstanceParams {
   delivery: 'queue' | 'steer';
   /** Must match ^msg_ — opencode's server enforces this and 400s otherwise. */
   messageId: string;
+  /**
+   * How long to wait for the peer to close its side (SPEC §7's implicit ack)
+   * before falling back to a written-or-not verdict rather than hanging
+   * forever. Exposed only so tests can shrink it; production keeps the
+   * default.
+   */
+  fallbackMs?: number;
 }
 
 export interface SendToInstanceResult {
@@ -30,11 +37,22 @@ export interface SendToInstanceResult {
   unreachable?: boolean;
 }
 
-export function sendToInstance(params: SendToInstanceParams): Promise<SendToInstanceResult> {
-  const { socketPath, toSession, from, text, delivery, messageId } = params;
+export function sendToInstance(
+  params: SendToInstanceParams,
+  // `connect` exists only so a test can double a socket that never fires
+  // 'connect' at all — the "contested accept queue" half of the fallback
+  // this function relies on cannot be reproduced deterministically with a
+  // real AF_UNIX socket (Node/libuv drain the kernel accept queue eagerly
+  // regardless of backlog size, so a real connect either succeeds or fails
+  // near-instantly; it does not hang). Production never passes this.
+  deps: { connect?: (socketPath: string) => net.Socket } = {},
+): Promise<SendToInstanceResult> {
+  const { socketPath, toSession, from, text, delivery, messageId, fallbackMs = 500 } = params;
+  const { connect = net.createConnection } = deps;
 
   return new Promise((resolve) => {
     let settled = false;
+    let wrote = false;
     const finish = (r: SendToInstanceResult) => {
       if (settled) return;
       settled = true;
@@ -47,15 +65,27 @@ export function sendToInstance(params: SendToInstanceParams): Promise<SendToInst
       resolve(r);
     };
 
-    const conn = net.createConnection(socketPath);
+    const conn = connect(socketPath);
 
     // A courteous end() rather than a destroy(): with the default
     // allowHalfOpen:false, the peer closes its own side once it has read our
     // line, which is what the 'close' handler below resolves on — a
     // deterministic signal that the bytes actually reached the peer's socket
-    // buffer, rather than merely our local write completing. The fallback
-    // timer exists only in case a peer implementation never closes its side.
-    const fallback = setTimeout(() => finish({ delivered: true }), 500);
+    // buffer, rather than merely our local write completing.
+    //
+    // The fallback timer covers two distinct stalls under one deadline: a
+    // connection that never completes at all (a contested accept queue is
+    // plausible — one instance socket serves many sessions and can take
+    // concurrent deliveries), and one that connects and is written to but
+    // whose peer never closes its side. `wrote` is what tells those apart:
+    // only a completed write may count as delivered when the deadline hits.
+    // Resolving `delivered: true` unconditionally here would report success
+    // for a message that was never even written to the socket — a false
+    // positive that nothing downstream (Tin Can's own log included) could
+    // ever contradict.
+    const fallback = setTimeout(() => {
+      finish(wrote ? { delivered: true } : { delivered: false, unreachable: true });
+    }, fallbackMs);
 
     conn.on('connect', () => {
       const line =
@@ -67,6 +97,7 @@ export function sendToInstance(params: SendToInstanceParams): Promise<SendToInst
           message_id: messageId,
         }) + '\n';
       conn.end(line);
+      wrote = true;
     });
 
     conn.on('close', () => finish({ delivered: true }));

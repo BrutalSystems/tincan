@@ -87,6 +87,51 @@ export async function fakeOpencodeInstance(): Promise<FakeOpencodeInstance> {
 }
 
 /**
+ * A stand-in for a peer that accepts a connection, reads the line, but never
+ * closes its side — the case sendToInstance's fallback timer exists for.
+ * Requires `allowHalfOpen: true`: the default (false) makes Node close the
+ * server's side automatically the moment the client's end() is received,
+ * which is exactly the behaviour this fake must not have.
+ */
+export async function fakeOpencodeInstanceNeverCloses(): Promise<FakeOpencodeInstance> {
+  const dir = mkdtempSync(join(tmpdir(), 'tincan-oc-hang-'));
+  const path = join(dir, 'inst-hang.sock');
+  const rawLines: string[] = [];
+
+  const open = new Set<net.Socket>();
+  const server = net.createServer({ allowHalfOpen: true }, (conn) => {
+    open.add(conn);
+    conn.on('close', () => open.delete(conn));
+    let buf = '';
+    conn.on('data', (d) => {
+      buf += d.toString();
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        rawLines.push(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+      }
+    });
+    conn.on('error', () => {});
+    // Deliberately never conn.end() / conn.destroy() here.
+  });
+
+  await new Promise<void>((res) => server.listen(path, res));
+
+  return {
+    path,
+    rawLines,
+    close: () =>
+      new Promise<void>((res) => {
+        // net.Server#close() waits for every open connection to end, which
+        // never happens here by design — destroy them ourselves so cleanup
+        // doesn't hang.
+        for (const conn of open) conn.destroy();
+        server.close(() => res());
+      }),
+  };
+}
+
+/**
  * A socket path that refuses connections because the process behind it is
  * gone — the real "stale socket after a crash" case (SPEC §6), not merely an
  * unbound path. Achieved by spawning a child that binds the socket, then
