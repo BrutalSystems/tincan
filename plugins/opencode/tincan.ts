@@ -6,12 +6,16 @@
  * and never a `default`. All logic lives in ./tincan-lib/. See SPEC.md §2.
  */
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { newInstanceId, peersDir, pluginLogPath } from './tincan-lib/paths.js';
 import { startPlugin } from './tincan-lib/plugin.js';
 import type { Transport } from './tincan-lib/types.js';
+
+/** Rotates to `<log>.1` past this. Small enough to stay cheap to read, big
+ *  enough to hold a long session's diagnostics. */
+const MAX_LOG_BYTES = 4 * 1024 * 1024;
 
 export const TinCan = async (input: { client: { _client?: unknown } }) => {
   // console.error would land in the TUI's own terminal — the same one
@@ -26,14 +30,35 @@ export const TinCan = async (input: { client: { _client?: unknown } }) => {
   // records 0600). This log holds no message bodies, but it does hold
   // session ids, peer names, message ids and delivery modes — a record of
   // who is messaging whom — so it gets the same treatment. `mode` on
-  // appendFileSync only takes effect when the file is created; chmod
-  // unconditionally so a pre-existing 0644 file (e.g. from before this fix)
+  // appendFileSync only takes effect when the file is created, so a chmod
+  // follows the first write to any given file — a pre-existing 0644 log
   // gets tightened too, not just a freshly created one.
+  //
+  // This runs on the TUI's worker thread, so it is kept to ONE syscall per
+  // line in the steady state: the mkdir, the chmod and the size check happen
+  // on the first write only, and the size is tracked in memory after that.
+  let logBytes = -1;   // -1 until the directory is ensured and the size read
+  let tightened = false; // chmod applied to the file currently at logPath
   const sink = (line: string) => {
     try {
-      mkdirSync(dirname(logPath), { recursive: true });
-      appendFileSync(logPath, line + '\n', { mode: 0o600 });
-      chmodSync(logPath, 0o600);
+      const data = `${line}\n`;
+      if (logBytes < 0) {
+        mkdirSync(dirname(logPath), { recursive: true });
+        try { logBytes = statSync(logPath).size; } catch { logBytes = 0; }
+      }
+      if (logBytes >= MAX_LOG_BYTES) {
+        // One generation back, then overwritten. Two bounded files beat one
+        // unbounded one, and a rotation that fails must not cost us the
+        // line — logBytes is reset either way so we do not retry per line.
+        try { renameSync(logPath, `${logPath}.1`); tightened = false; } catch { /* keep appending */ }
+        logBytes = 0;
+      }
+      appendFileSync(logPath, data, { mode: 0o600 });
+      logBytes += Buffer.byteLength(data);
+      if (!tightened) {
+        chmodSync(logPath, 0o600);
+        tightened = true;
+      }
     } catch {
       // Nothing here may reach the host. SPEC §8.1.
     }

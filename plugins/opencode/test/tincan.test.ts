@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, statSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, statSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TinCan } from '../tincan.js';
@@ -40,5 +40,33 @@ describe('TinCan plugin log file permissions', () => {
     await TinCan({ client: {} });
 
     expect(statSync(logPath).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('TinCan plugin log rotation', () => {
+  it('rotates a log that has grown past the cap and keeps one generation', async () => {
+    // The log used to grow for the life of the install, with the README
+    // telling the reader to truncate it by hand.
+    const logPath = join(dir, 'opencode-plugin.log');
+    writeFileSync(logPath, 'x'.repeat(5 * 1024 * 1024));
+
+    await TinCan({ client: {} });
+
+    expect(existsSync(`${logPath}.1`)).toBe(true);
+    expect(statSync(`${logPath}.1`).size).toBe(5 * 1024 * 1024);
+    // The live log restarted, holding only what this load wrote.
+    expect(statSync(logPath).size).toBeLessThan(1024);
+    expect(readFileSync(logPath, 'utf8')).toContain('[tincan]');
+    expect(statSync(logPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('leaves a log below the cap in place', async () => {
+    const logPath = join(dir, 'opencode-plugin.log');
+    writeFileSync(logPath, 'earlier line\n');
+
+    await TinCan({ client: {} });
+
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+    expect(readFileSync(logPath, 'utf8')).toContain('earlier line');
   });
 });

@@ -46,7 +46,12 @@ Note: `~/.config/opencode/plugins/` (plural) is equally valid — both spellings
    You should see:
    - Session files named like `ses_*.json`
    - An instance socket named like `inst-*.sock` (mode `0600`)
-   - An instance caller file named like `inst-*.caller.json`
+
+   You will **not** see an `inst-*.caller.json` yet, and its absence is not a
+   failure. That file is written the first time the session invokes one of
+   Tin Can's MCP tools (`peers`, `send_peer`, `message_log`), which the steps
+   above do not do. It appears once you use one — and only if Tin Can is also
+   registered as an MCP server, which is a separate install.
 
 4. Examine a session file:
    ```bash
@@ -68,7 +73,7 @@ Clean up the registry (this step is optional but recommended):
 
 ```bash
 rm -rf ~/.tincan/peers/opencode
-rm -f ~/.tincan/opencode-plugin.log
+rm -f ~/.tincan/opencode-plugin.log ~/.tincan/opencode-plugin.log.1
 ```
 
 ## Troubleshooting
@@ -102,7 +107,7 @@ tail -f "$TINCAN_HOME/opencode-plugin.log"
 
 1. **Replay detection is per-process.** After an opencode restart, a re-sent `message_id` is logged as a fresh delivery even though opencode still de-duplicates it server-side. The plugin's log wording is approximate; the actual behaviour (no duplicate injection) is guaranteed.
 
-2. **The plugin log has no rotation.** It grows for the life of the install. You may want to periodically truncate it or move it to a separate logging pipeline.
+2. **The plugin log keeps one generation.** It rotates to `opencode-plugin.log.1` once it passes 4 MB, and the previous `.1` is overwritten. Nothing older is kept, so pipe it somewhere else if you need a longer history.
 
 3. **A resumed session is invisible until active.** When you run `opencode --continue`, the session does not appear in the registry until it next receives an event (a message, a user action, or agent activity). This was chosen over guessing from a session list, which would advertise closed sessions and silently lose messages. See SPEC.md §5 for details.
 
@@ -117,6 +122,8 @@ This plugin only *receives* messages. For opencode to *send* messages to a peer,
 ### No rate limiting
 
 Rate limiting is Tin Can's responsibility, not the plugin's. The plugin injects every message it receives immediately. If a flood arrives, Tin Can is at fault.
+
+The socket does cap concurrent connections (64) and drops one left idle for 30 seconds, but neither counts or delays messages: they bound the file descriptors and buffers a leaking sender can pin inside the opencode process, which is a different problem from too many messages.
 
 ### No message logging
 

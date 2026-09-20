@@ -7,7 +7,9 @@
  * See SPEC.md §2.
  */
 
-export const PLUGIN_VERSION = '1.0.0';
+/** Tracks the Tin Can package version: every registry record reports it,
+ *  and a number matching no release tells an operator nothing. */
+export const PLUGIN_VERSION = '0.4.0';
 export const OPENCODE_TESTED_VERSION = '1.18.31';
 
 /** Server-enforced: sessionID must match ^ses, message id must match ^msg_. */

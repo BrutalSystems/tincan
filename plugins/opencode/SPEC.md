@@ -214,7 +214,7 @@ clear error rather than letting the bind throw.
   "socket": "/Users/mike/.tincan/peers/opencode/inst-a91f.sock",
   "instance_id": "inst-a91f",
   "pid": 41233,
-  "plugin_version": "1.0.0",
+  "plugin_version": "0.4.0",
   "opencode_version": "1.18.31",
   "updated_at": "2026-09-19T14:02:11Z"
 }
