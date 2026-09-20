@@ -28,13 +28,14 @@ function makeSide(over: Partial<Side> = {}) {
   const delivered: Delivered[] = [];
   const side: Side = {
     selfRuntime: 'claude-code',
+    resolveSelf: async () => ({ sessionId: undefined }),
     selfName: async () => 'billing-api',
     selfCwd: '/src/billing',
     peerRuntimes: ['codex'],
     limitsFor: (r: 'codex' | 'claude-code') => (r === 'codex' ? CODEX_LIMITS : CLAUDE_LIMITS),
     supportsUrgent: false,
     listPeers: async () => ({ peers: [peer()] }),
-    deliver: async (_p, _e, text) => {
+    deliver: async (_self, _p, _e, text) => {
       delivered.push({ text, logLinesAtDeliveryTime: log.read({ last_n: 999 }).length });
       return { delivered: true, method: 'thread/queue/add' as const };
     },
@@ -229,7 +230,7 @@ describe('send_peer', () => {
     async () => {
       const recorded: boolean[] = [];
       const { side } = makeSide({
-        deliver: async (_p, _e, _t, urgent) => {
+        deliver: async (_self, _p, _e, _t, urgent) => {
           recorded.push(urgent);
           return { delivered: true, method: 'thread/queue/add' as const };
         },
@@ -242,7 +243,7 @@ describe('send_peer', () => {
   test('defaults urgent to false when omitted, and Side.deliver sees false, not undefined', async () => {
     const recorded: boolean[] = [];
     const { side } = makeSide({
-      deliver: async (_p, _e, _t, urgent) => {
+      deliver: async (_self, _p, _e, _t, urgent) => {
         recorded.push(urgent);
         return { delivered: true, method: 'thread/queue/add' as const };
       },

@@ -136,7 +136,7 @@ describe('buildSide', () => {
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
         });
-        const { peers } = await side.listPeers();
+        const { peers } = await side.listPeers(await side.resolveSelf());
         expect(peers).toContainEqual(
           expect.objectContaining({ runtime: 'opencode', uuid: 'ses_a', rawName: 'nimble-wizard' }),
         );
@@ -176,11 +176,13 @@ describe('buildSide', () => {
             cwd: '/src/x',
             env: { TINCAN_HOME: home },
           });
-          const { peers } = await side.listPeers();
+          // One SelfRef for the whole "call", exactly as createTools does.
+          const self = await side.resolveSelf();
+          const { peers } = await side.listPeers(self);
           const ocPeer = peers.find((p) => p.runtime === 'opencode')!;
 
-          await side.deliver(ocPeer, 'msg_urgent', 'hi urgent', true);
-          await side.deliver(ocPeer, 'msg_queued', 'hi queued', false);
+          await side.deliver(self, ocPeer, 'msg_urgent', 'hi urgent', true);
+          await side.deliver(self, ocPeer, 'msg_queued', 'hi queued', false);
 
           expect(instance.rawLines.map((l) => JSON.parse(l).delivery)).toEqual(['steer', 'queue']);
         } finally {
@@ -225,7 +227,7 @@ describe('buildSide', () => {
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
         });
-        const { peers } = await side.listPeers();
+        const { peers } = await side.listPeers(await side.resolveSelf());
         expect(peers).toContainEqual(
           expect.objectContaining({ runtime: 'opencode', uuid: 'ses_a', rawName: 'nimble-wizard' }),
         );
@@ -246,7 +248,7 @@ describe('buildSide', () => {
   test('resolves its own name lazily, since the Codex side must derive it at runtime', async () => {
     const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/auth-service' });
     expect(typeof side.selfName).toBe('function');
-    expect(await side.selfName()).toBe('auth-service');
+    expect(await side.selfName(await side.resolveSelf())).toBe('auth-service');
   });
 
   test('reports urgent as supported wherever opencode is among the peer runtimes', () => {
@@ -336,7 +338,7 @@ describe('buildSide, hosted in opencode', () => {
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
         });
-        const { peers } = await side.listPeers();
+        const { peers } = await side.listPeers(await side.resolveSelf());
         const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
         expect(uuids).not.toContain('ses_self');
         expect(uuids).toContain('ses_sibling');
@@ -360,7 +362,7 @@ describe('buildSide, hosted in opencode', () => {
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
         });
-        const { peers } = await side.listPeers();
+        const { peers } = await side.listPeers(await side.resolveSelf());
         const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
         expect(uuids).not.toContain('ses_self');
         expect(uuids).not.toContain('ses_sibling');
@@ -384,7 +386,7 @@ describe('buildSide, hosted in opencode', () => {
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE: '1' },
         });
-        const { peers } = await side.listPeers();
+        const { peers } = await side.listPeers(await side.resolveSelf());
         expect(peers.filter((p) => p.runtime === 'opencode')).toEqual([]);
       } finally {
         await instance.close();
@@ -412,7 +414,7 @@ describe('buildSide, hosted in opencode', () => {
           env: { TINCAN_HOME: home, OPENCODE_PID: '' },
         });
 
-        const { peers } = await side.listPeers();
+        const { peers } = await side.listPeers(await side.resolveSelf());
         const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
         expect(uuids).not.toContain('ses_self');
         expect(uuids).not.toContain('ses_sibling');
@@ -450,11 +452,71 @@ describe('buildSide, hosted in opencode', () => {
         cwd: '/src/some-other-directory-name',
         env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
       });
-      expect(await side.selfName()).toBe('nimble-wizard');
+      expect(await side.selfName(await side.resolveSelf())).toBe('nimble-wizard');
     } finally {
       await instance.close();
     }
   });
+
+  test(
+    'resolves self exactly once per tool call: the envelope from= and the wire ' +
+      'message_from name the same session even when every read of the caller file ' +
+      'answers differently (the change notice §4 race, in its sharpest form)',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      const logDir = mkdtempSync(join(tmpdir(), 'tincan-oc-once-'));
+      try {
+        await writeInstance(instance); // ses_self / nimble-wizard, ses_sibling / proud-forest
+        writeFileSync(
+          join(registryDir, 'ses_target.json'),
+          JSON.stringify({
+            session_id: 'ses_target',
+            slug: 'target-session',
+            directory: '/repo',
+            state: 'idle',
+            socket: instance.path,
+            instance_id: 'inst-a91f',
+            pid: 41233,
+          }),
+        );
+
+        // A self-resolver that returns a different session on each successive
+        // call. Three independent resolutions in one send_peer — listPeers,
+        // the envelope's from=, and the wire's message_from — could then
+        // disagree, and the envelope is the load-bearing provenance control
+        // on this path.
+        const answers = ['ses_self', 'ses_sibling', 'ses_self', 'ses_sibling'];
+        let i = 0;
+        const side = buildSide(
+          'opencode',
+          {
+            registryDir: join(dir, 'sessions'),
+            pid: 1,
+            cwd: '/src/x',
+            env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
+          },
+          { resolveSelfSession: async () => answers[i++ % answers.length]! },
+        );
+
+        const log = new MessageLog(join(logDir, 'messages.jsonl'));
+        const r = await createTools(side, log).send_peer({
+          peer: 'target-session',
+          message: 'hi',
+        });
+        expect(r.delivered).toBe(true);
+
+        const wire = JSON.parse(instance.rawLines[0]!) as { message_from: string; text: string };
+        expect(wire.text).toContain(`from="${wire.message_from}"`);
+        // ...and it is a real session's slug, not the cwd fallback.
+        expect(['nimble-wizard', 'proud-forest']).toContain(wire.message_from);
+        // One tool call, one resolution.
+        expect(i).toBe(1);
+      } finally {
+        await instance.close();
+        rmSync(logDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('send_peer addressed to our own slug is refused as a self-send, never delivered', async () => {
     const instance = await fakeOpencodeInstance();

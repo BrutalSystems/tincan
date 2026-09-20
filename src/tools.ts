@@ -27,11 +27,40 @@ export interface DeliveryOutcome {
   unreachable?: boolean;
 }
 
+/**
+ * Who Tin Can is, for the duration of one tool call.
+ *
+ * Resolved once at the top of each call and threaded into everything that
+ * needs it, because the opencode host's answer is not stable: the caller file
+ * it reads is scoped to the instance, not to the call, and a concurrent
+ * sibling session can change it underneath us (docs/change-notice-opencode.md
+ * §4). Three independent resolutions inside one `send_peer` could therefore
+ * name three different sessions — the envelope declaring a different sender
+ * than the one the plugin logs, on the path where the envelope *is* the
+ * provenance control. Threading one value does not close that race; it makes
+ * its outcome internally consistent, which is a prerequisite for the
+ * plugin-side `callID` fix that will.
+ */
+export interface SelfRef {
+  /**
+   * The host session's own id where the runtime can name it — opencode today.
+   * `undefined` on the hosts that identify themselves from the environment
+   * instead, and on opencode when the caller file cannot be read.
+   */
+  sessionId: string | undefined;
+}
+
 /** Everything that differs between being hosted in Claude Code and in Codex. */
 export interface Side {
   selfRuntime: RuntimeName;
+  /**
+   * Answer "which session is calling?" exactly once per tool call. The result
+   * is passed back into `selfName`, `listPeers` and `deliver` so all three
+   * agree with each other.
+   */
+  resolveSelf(): Promise<SelfRef>;
   /** Resolved lazily: the Codex side must derive its own identity at runtime. */
-  selfName(): Promise<string>;
+  selfName(self: SelfRef): Promise<string>;
   selfCwd: string;
   /** Which runtimes this side exposes. Codex-hosted exposes both. */
   peerRuntimes: RuntimeName[];
@@ -39,8 +68,20 @@ export interface Side {
   limitsFor(runtime: RuntimeName): GuardLimits;
   /** False where the runtime offers no way to interrupt a running turn. */
   supportsUrgent: boolean;
-  listPeers(): Promise<{ peers: SidePeer[]; diagnostic?: string }>;
-  deliver(peer: SidePeer, envelopeId: string, text: string, urgent: boolean): Promise<DeliveryOutcome>;
+  listPeers(self: SelfRef): Promise<{ peers: SidePeer[]; diagnostic?: string }>;
+  /**
+   * `self` comes first deliberately. An implementation that simply forgot it
+   * would otherwise still type-check — an arrow with fewer parameters is
+   * assignable — and would silently fall back to re-resolving. Leading with it
+   * makes the omission a compile error.
+   */
+  deliver(
+    self: SelfRef,
+    peer: SidePeer,
+    envelopeId: string,
+    text: string,
+    urgent: boolean,
+  ): Promise<DeliveryOutcome>;
 }
 
 export const sendPeerSchema = z.object({
@@ -146,11 +187,11 @@ export function createTools(side: Side, log: MessageLog) {
     return g;
   };
 
-  async function named(): Promise<{
+  async function named(self: SelfRef): Promise<{
     named: Array<NamedPeer & { side: SidePeer }>;
     diagnostic?: string;
   }> {
-    const { peers, diagnostic } = await side.listPeers();
+    const { peers, diagnostic } = await side.listPeers(self);
     const base = peers.map((p) => ({ runtime: p.runtime, rawName: p.rawName, uuid: p.uuid }));
     const withNames = assignNames(base).map((n, i) => ({ ...n, side: peers[i]! }));
     return { named: withNames, ...(diagnostic !== undefined && { diagnostic }) };
@@ -158,7 +199,7 @@ export function createTools(side: Side, log: MessageLog) {
 
   return {
     async peers(): Promise<PeersResult> {
-      const { named: list, diagnostic } = await named();
+      const { named: list, diagnostic } = await named(await side.resolveSelf());
       const notes: string[] = [];
       const nonSteerable = [...new Set(side.peerRuntimes)].filter(
         (r) => !runtimeSupportsUrgent(r),
@@ -188,13 +229,17 @@ export function createTools(side: Side, log: MessageLog) {
 
     async send_peer(rawArgs: SendPeerArgs): Promise<SendPeerResult> {
       const args = sendPeerSchema.parse(rawArgs);
-      const { named: list, diagnostic } = await named();
+      // One resolution for the whole call: the exclusion in listPeers, the
+      // envelope's `from=`, and the wire's `message_from` must all name the
+      // same session. See SelfRef.
+      const self = await side.resolveSelf();
+      const { named: list, diagnostic } = await named(self);
 
       const resolved = resolvePeer(list, args.peer);
       if (!resolved.ok) {
         // A host filters itself out of its own listing, so a self-send would
         // otherwise read as "no such peer" — true, but misleading.
-        if (resolved.reason === 'unknown' && (await isSelfAddress(side, args.peer))) {
+        if (resolved.reason === 'unknown' && (await isSelfAddress(side, self, args.peer))) {
           return {
             delivered: false,
             refusal: 'peer_unknown',
@@ -241,7 +286,7 @@ export function createTools(side: Side, log: MessageLog) {
 
       const envelope = buildEnvelope({
         id: newMessageId(),
-        from: { runtime: side.selfRuntime, name: await side.selfName(), cwd: side.selfCwd },
+        from: { runtime: side.selfRuntime, name: await side.selfName(self), cwd: side.selfCwd },
         to: {
           runtime: target.side.runtime,
           name: target.display,
@@ -266,6 +311,7 @@ export function createTools(side: Side, log: MessageLog) {
       guard.record(target.canonicalId, args.message);
 
       const outcome = await side.deliver(
+        self,
         target.side,
         envelope.id,
         renderEnvelope(envelope),
@@ -299,9 +345,9 @@ export function createTools(side: Side, log: MessageLog) {
 }
 
 /** Does this address name the session Tin Can is running in? */
-async function isSelfAddress(side: Side, input: string): Promise<boolean> {
+async function isSelfAddress(side: Side, self: SelfRef, input: string): Promise<boolean> {
   const q = input.trim().toLowerCase();
   if (q === '') return false;
-  const self = (await side.selfName()).toLowerCase();
-  return self === q || self.startsWith(q) || q.startsWith(`${side.selfRuntime}:${self}`);
+  const name = (await side.selfName(self)).toLowerCase();
+  return name === q || name.startsWith(q) || q.startsWith(`${side.selfRuntime}:${name}`);
 }

@@ -7,7 +7,7 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { assertNever, slugify, type RuntimeName } from './naming.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS, OPENCODE_LIMITS } from './guard.js';
-import type { Side, SidePeer, DeliveryOutcome } from './tools.js';
+import type { Side, SidePeer, SelfRef, DeliveryOutcome } from './tools.js';
 import { listClaudeSessions } from './claude/discover.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
@@ -79,7 +79,23 @@ function findSessionName(
   return undefined;
 }
 
-export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
+export interface SideDeps {
+  /**
+   * Test seam only. Production always reads the caller file
+   * (`selfSessionId`); this exists so a test can make successive reads
+   * disagree, which is the change notice §4 race the per-call `SelfRef`
+   * exists to survive.
+   */
+  resolveSelfSession?: () => Promise<string | undefined>;
+}
+
+/**
+ * A host that names itself from its own environment resolves nothing per
+ * call: only the opencode arm has an answer that can change underneath it.
+ */
+const NO_SESSION: SelfRef = { sessionId: undefined };
+
+export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps = {}): Side {
   const env = ctx.env ?? process.env;
   const common = { selfRuntime: runtime, selfCwd: ctx.cwd };
 
@@ -94,6 +110,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
       const peerRuntimes: RuntimeName[] = ['codex', 'opencode'];
       return {
         ...common,
+        resolveSelf: async () => NO_SESSION,
         selfName: async () => name,
         peerRuntimes,
         supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
@@ -116,7 +133,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
             ...(diagnostic !== undefined && { diagnostic }),
           };
         },
-        deliver: (peer, id, text, urgent) =>
+        deliver: (_self, peer, id, text, urgent) =>
           deliverTo(codex, ctx, peer, id, text, urgent, async () => name),
       };
     }
@@ -136,21 +153,25 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
       // that each call a Tin Can tool through the same shared MCP subprocess
       // (SPEC §4). Caching the first answer would freeze "self" to whichever
       // session happened to call first, misidentifying every later caller.
-      const resolveSelfSession = () => selfSessionId({ registryDir, env });
+      const resolveSelfSession =
+        deps.resolveSelfSession ?? (() => selfSessionId({ registryDir, env }));
 
       return {
         ...common,
-        selfName: () => opencodeSelfName(registryDir, resolveSelfSession, ctx.cwd),
+        // Called once per tool call by createTools, never from inside the
+        // three consumers below — that is the whole point.
+        resolveSelf: async () => ({ sessionId: await resolveSelfSession() }),
+        selfName: (self) => opencodeSelfName(registryDir, self.sessionId, ctx.cwd),
         peerRuntimes,
         supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
         limitsFor,
 
-        async listPeers() {
-          const [codexListing, claudeSessions, opencodeListing, selfSession] = await Promise.all([
+        async listPeers(self) {
+          const selfSession = self.sessionId;
+          const [codexListing, claudeSessions, opencodeListing] = await Promise.all([
             listCodexPeers(codexForOpencode),
             listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
             listOpencodeSessions({ registryDir }),
-            resolveSelfSession(),
           ]);
 
           const codexPeers = codexListing.peers.map(toCodexSidePeer);
@@ -208,9 +229,9 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
           };
         },
 
-        deliver: (peer, id, text, urgent) =>
+        deliver: (self, peer, id, text, urgent) =>
           deliverTo(codexForOpencode, ctx, peer, id, text, urgent, () =>
-            opencodeSelfName(registryDir, resolveSelfSession, ctx.cwd),
+            opencodeSelfName(registryDir, self.sessionId, ctx.cwd),
           ),
       };
     }
@@ -234,6 +255,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
 
       return {
         ...common,
+        resolveSelf: async () => NO_SESSION,
         selfName,
         peerRuntimes,
         supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
@@ -281,7 +303,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
           };
         },
 
-        deliver: (peer, id, text, urgent) =>
+        deliver: (_self, peer, id, text, urgent) =>
           deliverTo(codexForSelf, ctx, peer, id, text, urgent, selfName),
       };
     }
@@ -413,12 +435,11 @@ async function deliverTo(
  */
 async function opencodeSelfName(
   registryDir: string,
-  resolveSelfSession: () => Promise<string | undefined>,
+  sessionId: string | undefined,
   cwd: string,
 ): Promise<string> {
-  const sessionId = await resolveSelfSession();
-  const slug = sessionId === undefined ? undefined : readOpencodeSlug(registryDir, sessionId);
-  return slug ?? (basename(cwd) || 'opencode');
+  const raw = sessionId === undefined ? undefined : readOpencodeSlug(registryDir, sessionId);
+  return raw ?? (basename(cwd) || 'opencode');
 }
 
 function readOpencodeSlug(registryDir: string, sessionId: string): string | undefined {

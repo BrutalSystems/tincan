@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   });
 
   diag(
-    `hosted in ${runtime} as "${await side.selfName()}"; ` +
+    `hosted in ${runtime} as "${await side.selfName(await side.resolveSelf())}"; ` +
       `peers are ${side.peerRuntimes.join(' + ')} sessions`,
   );
   await server.connect(new StdioServerTransport());
