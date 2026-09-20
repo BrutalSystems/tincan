@@ -1317,6 +1317,16 @@ git commit -m "feat(opencode): prompt delivery with /api prefix and HTML guard"
 
 ## Task 8: Socket server and liveness probe
 
+> **Superseded in execution (2026-09-20).** The reference implementation below
+> shipped with three defects, all found by this task's review and all in the
+> plan's own sample rather than the implementer's transcription of it:
+> `mkdir(…, {mode})` does not tighten an existing directory so the 0700 parent
+> was unenforced on reuse; `onError` was itself unguarded; and `close()` hangs
+> indefinitely while any connection is open, which would wedge opencode's
+> shutdown. See commit `63f51ec` for the corrected implementation — do not
+> re-apply the code below verbatim.
+
+
 SPEC §4 and §6. `node:net` is used rather than `Bun.listen` precisely so this is testable here, under Node.
 
 **Files:**
