@@ -15,7 +15,7 @@ import { detectRuntime, buildSide, claudeRegistryDir } from './runtime.js';
 import { toolDefinitions } from './tool-definitions.js';
 import { createTools, type SendPeerArgs, type MessageLogArgs } from './tools.js';
 import { MessageLog, messagesPath } from './log.js';
-import { VERSION, versionLine, helpText } from './version.js';
+import { VERSION, versionLine, helpText, classifyArgv, unknownArgText } from './version.js';
 
 function diag(msg: string): void {
   process.stderr.write(`[tincan] ${msg}\n`);
@@ -27,15 +27,23 @@ function diag(msg: string): void {
  * here, where no transport is ever connected.
  */
 function handleArgv(argv: string[]): boolean {
-  if (argv.includes('--version') || argv.includes('-v')) {
-    process.stdout.write(`${versionLine()}\n`);
-    return true;
+  const intent = classifyArgv(argv);
+  switch (intent.kind) {
+    case 'version':
+      process.stdout.write(`${versionLine()}\n`);
+      return true;
+    case 'help':
+      process.stdout.write(`${helpText()}\n`);
+      return true;
+    case 'unknown':
+      // stderr, and a non-zero exit: a caller that guessed at a CLI must not
+      // mistake silence for an empty result.
+      process.stderr.write(`${unknownArgText(intent.arg)}\n`);
+      process.exitCode = 2;
+      return true;
+    case 'serve':
+      return false;
   }
-  if (argv.includes('--help') || argv.includes('-h')) {
-    process.stdout.write(`${helpText()}\n`);
-    return true;
-  }
-  return false;
 }
 
 async function main(): Promise<void> {

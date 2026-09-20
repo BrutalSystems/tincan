@@ -45,3 +45,41 @@ export function helpText(): string {
     'Docs: https://github.com/BrutalSystems/tincan',
   ].join('\n');
 }
+
+/** What the process should do, decided from argv alone. */
+export type ArgvIntent =
+  | { kind: 'serve' }
+  | { kind: 'version' }
+  | { kind: 'help' }
+  | { kind: 'unknown'; arg: string };
+
+/**
+ * Tin Can has no subcommands — it is an MCP server, and its tools are reached
+ * through a harness, not a shell. An unrecognised argument is therefore a
+ * mistake, and must NOT fall through to starting the server: a server started
+ * by `tincan mcp peers list` writes nothing to stdout and exits when its stdin
+ * closes, which reads exactly like "the command ran and found no peers".
+ * A model that has guessed at a CLI then believes its own invention.
+ */
+export function classifyArgv(argv: string[]): ArgvIntent {
+  for (const arg of argv) {
+    if (arg === '--version' || arg === '-v') return { kind: 'version' };
+    if (arg === '--help' || arg === '-h') return { kind: 'help' };
+    return { kind: 'unknown', arg };
+  }
+  return { kind: 'serve' };
+}
+
+/** What to print on stderr when argv makes no sense. */
+export function unknownArgText(arg: string): string {
+  return [
+    `tincan: unrecognised argument '${arg}'`,
+    '',
+    'tincan is an MCP server, not a command-line tool: it has no subcommands,',
+    'and there is no `tincan peers` or `tincan mcp ...`. Peers are listed by',
+    'calling the `peers` tool from inside an agent session that has tincan',
+    'configured as an MCP server.',
+    '',
+    "Run 'tincan --help' for the flags it does accept.",
+  ].join('\n');
+}
