@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from 'node:net';
@@ -19,7 +19,27 @@ function send(path: string, payload: string): Promise<void> {
   });
 }
 
+// Bounded wait — used ONLY where the assertion is that nothing arrived.
+// Absence has no event to await, so this stays a fixed sleep.
 const settle = () => new Promise((r) => setTimeout(r, 60));
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+// Event-driven signal for positive assertions: resolves once `count` lines
+// have arrived, instead of sleeping a fixed amount and hoping.
+function waitForLines(count: number): { onLine: (l: string) => void; lines: string[]; ready: Promise<void> } {
+  const lines: string[] = [];
+  const { promise: ready, resolve } = deferred();
+  const onLine = (l: string) => {
+    lines.push(l);
+    if (lines.length >= count) resolve();
+  };
+  return { onLine, lines, ready };
+}
 
 describe('listenLines', () => {
   it('binds the socket at mode 0600', async () => {
@@ -28,37 +48,44 @@ describe('listenLines', () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
+  it('chmods an already-existing parent directory to 0700', async () => {
+    const path = join(dir, 'inst-a.sock');
+    chmodSync(dir, 0o755);
+    handle = await listenLines({ path, onLine: () => {}, onError: () => {} });
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
   it('delivers one newline-terminated line', async () => {
     const path = join(dir, 'inst-a.sock');
-    const lines: string[] = [];
-    handle = await listenLines({ path, onLine: (l) => lines.push(l), onError: () => {} });
+    const { onLine, lines, ready } = waitForLines(1);
+    handle = await listenLines({ path, onLine, onError: () => {} });
     await send(path, '{"a":1}\n');
-    await settle();
+    await ready;
     expect(lines).toEqual(['{"a":1}']);
   });
 
   it('delivers a final line with no trailing newline', async () => {
     const path = join(dir, 'inst-a.sock');
-    const lines: string[] = [];
-    handle = await listenLines({ path, onLine: (l) => lines.push(l), onError: () => {} });
+    const { onLine, lines, ready } = waitForLines(1);
+    handle = await listenLines({ path, onLine, onError: () => {} });
     await send(path, '{"a":1}');
-    await settle();
+    await ready;
     expect(lines).toEqual(['{"a":1}']);
   });
 
   it('splits two lines arriving in one write', async () => {
     const path = join(dir, 'inst-a.sock');
-    const lines: string[] = [];
-    handle = await listenLines({ path, onLine: (l) => lines.push(l), onError: () => {} });
+    const { onLine, lines, ready } = waitForLines(2);
+    handle = await listenLines({ path, onLine, onError: () => {} });
     await send(path, '{"a":1}\n{"b":2}\n');
-    await settle();
+    await ready;
     expect(lines).toEqual(['{"a":1}', '{"b":2}']);
   });
 
   it('reassembles a line split across two writes', async () => {
     const path = join(dir, 'inst-a.sock');
-    const lines: string[] = [];
-    handle = await listenLines({ path, onLine: (l) => lines.push(l), onError: () => {} });
+    const { onLine, lines, ready } = waitForLines(1);
+    handle = await listenLines({ path, onLine, onError: () => {} });
     await new Promise<void>((resolve, reject) => {
       const c = connect(path, () => {
         c.write('{"a":');
@@ -67,19 +94,25 @@ describe('listenLines', () => {
       c.on('close', () => resolve());
       c.on('error', reject);
     });
-    await settle();
+    await ready;
     expect(lines).toEqual(['{"a":1}']);
   });
 
   it('drops an oversize line without delivering it and keeps accepting', async () => {
     const path = join(dir, 'inst-a.sock');
-    const lines: string[] = [];
     const errors: unknown[] = [];
-    handle = await listenLines({ path, onLine: (l) => lines.push(l), onError: (e) => errors.push(e) });
+    const { promise: gotOk, resolve } = deferred();
+    const lines: string[] = [];
+    handle = await listenLines({
+      path,
+      onLine: (l) => { lines.push(l); if (l === '{"ok":1}') resolve(); },
+      onError: (e) => errors.push(e),
+    });
     await send(path, `${'x'.repeat(300 * 1024)}\n`);
-    await settle();
+    await settle(); // absence: the oversize line must never have been delivered
+    expect(lines).toEqual([]);
     await send(path, '{"ok":1}\n');
-    await settle();
+    await gotOk;
     expect(lines).toEqual(['{"ok":1}']);
     expect(errors.length).toBeGreaterThan(0);
   });
@@ -87,16 +120,31 @@ describe('listenLines', () => {
   it('survives a handler that throws', async () => {
     const path = join(dir, 'inst-a.sock');
     let second = false;
+    const { promise: gotFine, resolve } = deferred();
     handle = await listenLines({
       path,
-      onLine: (l) => { if (l === 'boom') throw new Error('handler exploded'); second = true; },
+      onLine: (l) => { if (l === 'boom') throw new Error('handler exploded'); second = true; resolve(); },
       onError: () => {},
     });
     await send(path, 'boom\n');
-    await settle();
     await send(path, 'fine\n');
-    await settle();
+    await gotFine;
     expect(second).toBe(true);
+  });
+
+  it('survives an onError handler that itself throws', async () => {
+    const path = join(dir, 'inst-a.sock');
+    const lines: string[] = [];
+    const { promise: gotOk, resolve } = deferred();
+    handle = await listenLines({
+      path,
+      onLine: (l) => { lines.push(l); if (l === '{"ok":1}') resolve(); },
+      onError: () => { throw new Error('sink exploded'); },
+    });
+    await send(path, `${'x'.repeat(300 * 1024)}\n`); // triggers onError, which throws
+    await send(path, '{"ok":1}\n');
+    await gotOk;
+    expect(lines).toEqual(['{"ok":1}']);
   });
 
   it('unlinks a stale socket file before binding', async () => {
@@ -118,6 +166,27 @@ describe('listenLines', () => {
     const h = await listenLines({ path, onLine: () => {}, onError: () => {} });
     await h.close();
     expect(existsSync(path)).toBe(false);
+  });
+
+  it('closes promptly even with an idle client still connected', async () => {
+    const path = join(dir, 'inst-a.sock');
+    const h = await listenLines({ path, onLine: () => {}, onError: () => {} });
+    const client = connect(path);
+    await new Promise<void>((resolve, reject) => {
+      client.on('connect', () => resolve());
+      client.on('error', reject);
+    });
+    const start = Date.now();
+    await h.close();
+    expect(Date.now() - start).toBeLessThan(1000);
+    client.destroy();
+  });
+
+  it('is safe to call close() twice', async () => {
+    const path = join(dir, 'inst-a.sock');
+    const h = await listenLines({ path, onLine: () => {}, onError: () => {} });
+    await h.close();
+    await expect(h.close()).resolves.toBeUndefined();
   });
 });
 
