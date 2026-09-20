@@ -46,15 +46,17 @@ steps and not one.
 npm version patch -m "%s — <what changed>"     # or minor / major
 ```
 
-That is the whole release. It rewrites **all four** version sites, commits
+That is the whole release. It rewrites **all five** version sites, commits
 them, creates the `v0.5.6` tag, and pushes commit and tag to `origin`, which
-fires `publish.yml`. Watch it:
+fires `publish.yml` — publishing both `@brutalsystems/tincan` and
+`@brutalsystems/tincan-opencode` from the one run. Watch it:
 
 ```bash
 gh run watch --repo BrutalSystems/tincan
 ```
 
-The four sites are `package.json`, `test/fixtures/canonical-id.json`,
+The five sites are `package.json`, `plugins/opencode/package.json`,
+`test/fixtures/canonical-id.json`,
 `plugins/opencode/tincan-lib/types.ts` and `CANONICAL_ID.md` line 3, kept in
 step by `scripts/sync-version.mjs` from the `version` lifecycle hook;
 `postversion` does the push. `npm run check-version` reports drift without
@@ -67,7 +69,7 @@ package.json, and the third is prose. The program's own version is *not* one
 of them — `src/version.ts` reads package.json at runtime.
 
 **If you need the pieces separately** — a dry run, or a release built by hand:
-`npm run sync-version 0.5.6` rewrites the four sites and nothing else, leaving
+`npm run sync-version 0.5.6` rewrites the five sites and nothing else, leaving
 the commit, tag and push to you. `npm version --no-git-tag-version` bumps
 without committing. Neither publishes; only a pushed `v*` tag does.
 
@@ -166,6 +168,26 @@ npm trust github @brutalsystems/tincan \
 Done for tincan on 2026-09-20 — trust id `aca021a6-2a4d-4fd0-b24c-4cd9e4b588ac`,
 permissions publish + stage publish. Redo it only if the workflow filename or
 the environment name changes.
+
+#### The plugin package needs its own registration
+
+**OIDC trust is per package, not per repository.** `@brutalsystems/tincan-opencode`
+is published from the same workflow and the same `npm` environment, but npm
+will refuse it until it has been trusted under its own name:
+
+```bash
+npm login                     # interactive, prompts for the OTP
+npm trust github @brutalsystems/tincan-opencode \
+  --file publish.yml --repo BrutalSystems/tincan --env npm --allow-publish
+```
+
+The `npm` environment already exists, so there is no `gh api -X PUT` step this
+time. Until this is done the publish run **fails** at "Publish the plugin
+package" — deliberately. A release that ships the server without the matching
+plugin is the skew the split exists to prevent, so it should stop the line
+rather than pass quietly.
+
+Not yet done.
 
 `prepublishOnly` runs the build and the full suite first, so a broken build
 cannot ship, whether from CI or a laptop.

@@ -19,6 +19,7 @@ function repoAt(v: string) {
   write('test/fixtures/canonical-id.json', `{\n  "note": "x",\n  "tincan_version": "${v}",\n  "cases": []\n}\n`);
   write('plugins/opencode/tincan-lib/types.ts', `// types\nexport const PLUGIN_VERSION = '${v}';\nexport type X = 1;\n`);
   write('CANONICAL_ID.md', `# Canonical ID\n\n> **Normative for \`@brutalsystems/tincan\` ${v}.**\n\nBody.\n`);
+  write('plugins/opencode/package.json', `{\n  "name": "@brutalsystems/tincan-opencode",\n  "version": "${v}",\n  "type": "module"\n}\n`);
 }
 
 beforeEach(() => {
@@ -31,6 +32,7 @@ describe('syncVersion', () => {
   test('rewrites every version site from one argument', () => {
     syncVersion(dir, '0.6.0');
     expect(JSON.parse(read('package.json')).version).toBe('0.6.0');
+    expect(JSON.parse(read('plugins/opencode/package.json')).version).toBe('0.6.0');
     expect(JSON.parse(read('test/fixtures/canonical-id.json')).tincan_version).toBe('0.6.0');
     expect(read('plugins/opencode/tincan-lib/types.ts')).toContain("PLUGIN_VERSION = '0.6.0'");
     expect(read('CANONICAL_ID.md')).toContain('`@brutalsystems/tincan` 0.6.0.');
@@ -42,6 +44,7 @@ describe('syncVersion', () => {
     expect(VERSION_SITES.map((s) => s.file).sort()).toEqual([
       'CANONICAL_ID.md',
       'package.json',
+      'plugins/opencode/package.json',
       'plugins/opencode/tincan-lib/types.ts',
       'test/fixtures/canonical-id.json',
     ]);
@@ -51,6 +54,7 @@ describe('syncVersion', () => {
     expect(syncVersion(dir, '0.6.0').changed.sort()).toEqual([
       'CANONICAL_ID.md',
       'package.json',
+      'plugins/opencode/package.json',
       'plugins/opencode/tincan-lib/types.ts',
       'test/fixtures/canonical-id.json',
     ]);
@@ -84,6 +88,18 @@ describe('syncVersion', () => {
 describe('checkVersion', () => {
   test('passes when every site agrees with package.json', () => {
     expect(checkVersion(dir)).toEqual({ ok: true, version: '0.5.5', mismatches: [] });
+  });
+
+  test('catches the published plugin package drifting from the server', () => {
+    // The two packages are installed separately — the server by npm, the
+    // plugin by opencode — so a version skew between them is exactly the
+    // failure this whole file exists to prevent.
+    write('plugins/opencode/package.json', `{\n  "version": "0.4.0"\n}\n`);
+    expect(checkVersion(dir).mismatches).toContainEqual({
+      file: 'plugins/opencode/package.json',
+      found: '0.4.0',
+      expected: '0.5.5',
+    });
   });
 
   test('names the file, what it found, and what package.json says', () => {

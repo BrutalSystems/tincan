@@ -1,0 +1,30 @@
+{
+  "name": "@brutalsystems/tincan-opencode",
+  "version": "0.6.0",
+  "description": "opencode plugin for Tin Can — the receive half, so an opencode session can be messaged by a live Claude Code, Codex or opencode peer.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tincan",
+    "agents",
+    "agent-messaging"
+  ],
+  "license": "MIT",
+  "author": "Mike Williams",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrutalSystems/tincan.git",
+    "directory": "plugins/opencode"
+  },
+  "homepage": "https://github.com/BrutalSystems/tincan#readme",
+  "type": "module",
+  "exports": {
+    ".": "./tincan.ts"
+  },
+  "files": [
+    "tincan.ts",
+    "tincan-lib",
+    "README.md",
+    "LICENSE"
+  ]
+}

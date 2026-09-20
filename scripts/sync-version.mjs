@@ -41,6 +41,16 @@ export const VERSION_SITES = [
     write: (s, v) => s.replace(/("tincan_version"\s*:\s*)"[^"]*"/, `$1"${v}"`),
   },
   {
+    // The opencode plugin is published as its own package
+    // (@brutalsystems/tincan-opencode) so opencode can install it by npm
+    // specifier instead of the user copying files by hand. Two packages, one
+    // version: they are installed by different tools at different times, so a
+    // skew between them is precisely the failure this file exists to prevent.
+    file: 'plugins/opencode/package.json',
+    read: (s) => JSON.parse(s).version,
+    write: (s, v) => s.replace(/("version"\s*:\s*)"[^"]*"/, `$1"${v}"`),
+  },
+  {
     file: 'plugins/opencode/tincan-lib/types.ts',
     read: (s) => s.match(/PLUGIN_VERSION\s*=\s*'([^']*)'/)?.[1],
     write: (s, v) => s.replace(/(PLUGIN_VERSION\s*=\s*)'[^']*'/, `$1'${v}'`),

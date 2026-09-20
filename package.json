@@ -47,7 +47,7 @@
     "typecheck:plugin": "tsc -p tsconfig.plugin.json",
     "sync-version": "node scripts/sync-version.mjs",
     "check-version": "node scripts/sync-version.mjs --check",
-    "version": "node scripts/sync-version.mjs && git add test/fixtures/canonical-id.json plugins/opencode/tincan-lib/types.ts CANONICAL_ID.md",
+    "version": "node scripts/sync-version.mjs && git add test/fixtures/canonical-id.json plugins/opencode/package.json plugins/opencode/tincan-lib/types.ts CANONICAL_ID.md",
     "postversion": "git push origin HEAD --follow-tags",
     "prepublishOnly": "npm run build && npm run typecheck:plugin && npm test"
   },

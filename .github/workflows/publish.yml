@@ -169,6 +169,60 @@ jobs:
           fi
           echo "published artifact matches — $(wc -l < /tmp/remote.txt) files"
 
+      # The opencode plugin ships as its own package so opencode can install
+      # it by npm specifier ("plugin": ["@brutalsystems/tincan-opencode"])
+      # instead of the user copying files into ~/.config/opencode/ by hand. A
+      # hand-copied plugin silently lagged the server for five releases and
+      # kept posting to a route that did not run messages; that is the failure
+      # this split ends.
+      #
+      # Same run, same version, same trusted publisher deliberately. Releasing
+      # them separately would reintroduce exactly the skew being removed.
+      #
+      # REQUIRES its own trusted-publisher registration on npmjs.com — OIDC
+      # trust is per package. See RELEASING.md. Until that exists this step
+      # fails the run, which is correct: a release that ships the server
+      # without the matching plugin is the thing we are trying to prevent.
+      - name: Plugin package — already published?
+        id: plugin_published
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          if npm view "@brutalsystems/tincan-opencode@$pkg" version >/dev/null 2>&1; then
+            echo "::notice::@brutalsystems/tincan-opencode@$pkg is already on the registry"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack the plugin package
+        id: plugin_pack
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          ( cd plugins/opencode && npm pack )
+          echo "tarball=plugins/opencode/brutalsystems-tincan-opencode-$pkg.tgz" >> "$GITHUB_OUTPUT"
+
+      # The plugin is loaded untranspiled by opencode, so the tarball is the
+      # source. That makes it easy to ship the wrong source: the test suite
+      # and SPEC.md sit in the same tree and must not go out.
+      - name: Verify the plugin tarball
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: |
+          files=$(tar tzf "${{ steps.plugin_pack.outputs.tarball }}" | sed 's|^package/||' | grep -v '/$' | sort)
+          echo "$files"
+          for required in tincan.ts package.json LICENSE; do
+            echo "$files" | grep -qx "$required" || { echo "::error::plugin tarball is missing $required"; exit 1; }
+          done
+          echo "$files" | grep -q '^tincan-lib/' || { echo "::error::plugin tarball ships no tincan-lib"; exit 1; }
+          if echo "$files" | grep -qE '^(test/|SPEC\.md)'; then
+            echo "::error::plugin tarball ships tests or SPEC.md"
+            exit 1
+          fi
+
+      - name: Publish the plugin package
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: npm publish "./${{ steps.plugin_pack.outputs.tarball }}" --provenance
+
       # Tincan has no RELEASE_NOTES.md; the tag annotation is its release
       # record. A repo that keeps release notes extracts that version's
       # section here instead. See docs/ci-cd-standard.md.
