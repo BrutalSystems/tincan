@@ -175,40 +175,37 @@ the environment name changes.
 is published from the same workflow and the same `npm` environment, but npm
 will refuse it until it has been trusted under its own name:
 
-**The package must exist on the registry first.** `npm trust` attaches a
-publisher to an existing package and there is no pending-publisher mechanism,
-so running it against an unpublished name fails with:
-
-```
-npm error code E404
-npm error 404 Not Found - POST .../@brutalsystems%2ftincan-opencode/trust - Package not found
-```
-
-`@brutalsystems/tincan` never hit this, because it had been hand-published
-since 0.1.0 long before OIDC was set up. A brand-new package has to be
-bootstrapped in two steps:
+**A not-yet-published package can be trusted.** Trust for
+`@brutalsystems/tincan-opencode` was created on 2026-09-20 — id
+`4dada70c-bc50-4639-9f08-7a9fec1959a7`, permissions publish + stage publish —
+while the name had no published versions at all, and still has none. So there
+is no hand-publish bootstrap: register trust, then let the workflow make the
+first release, with provenance from the very first version.
 
 ```bash
-# 1. One hand publish, to create the name. publishConfig.access is "public"
-#    in that manifest, because a new scoped package is restricted by default
-#    and would otherwise publish private.
-( cd plugins/opencode && npm publish )
-
-# 2. The package now exists, so trust can be attached.
+npm login                     # interactive, prompts for the OTP
 npm trust github @brutalsystems/tincan-opencode \
   --file publish.yml --repo BrutalSystems/tincan --env npm --allow-publish
 ```
 
-The `npm` environment already exists, so there is no `gh api -X PUT` step this
-time. That first hand-published version carries **no provenance** — it cannot,
-having not come from a workflow run. Every later version does.
+The `npm` environment already exists, so there is no `gh api -X PUT` step.
 
-Until this is done the publish run **fails** at "Publish the plugin package",
-deliberately. A release that ships the server without the matching plugin is
-the skew the split exists to prevent, so it should stop the line rather than
-pass quietly.
+**If it answers `E404 ... /trust - Package not found`, you are not
+authenticated yet.** That is what the error means here, not what it says. The
+first attempt failed this way while the CLI was still printing "Authenticate
+your account at: ..." — the 404 arrived before the browser login completed.
+Finish `npm login` and run it again. An earlier revision of this file read
+that error as "the package must be published first" and prescribed a hand
+publish; that was wrong, and would have cost the first version its provenance
+for no reason.
 
-Not yet done.
+`npm trust list <package>` is how to check: it prints the registration even
+when the package has no versions. `npm access list packages @brutalsystems`
+will also show the name, because registering trust claims it — so that
+listing is **not** evidence that anything was published. Only a packument is:
+`curl -s -o /dev/null -w '%{http_code}' https://registry.npmjs.org/@brutalsystems%2ftincan-opencode`.
+
+Done. The first release publishing both packages is the test of it.
 
 `prepublishOnly` runs the build and the full suite first, so a broken build
 cannot ship, whether from CI or a laptop.
