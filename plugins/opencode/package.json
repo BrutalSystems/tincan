@@ -18,6 +18,9 @@
   },
   "homepage": "https://github.com/BrutalSystems/tincan#readme",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./tincan.ts"
   },
