@@ -3,17 +3,20 @@
 [![npm](https://img.shields.io/npm/v/@brutalsystems/tincan)](https://www.npmjs.com/package/@brutalsystems/tincan)
 [![license](https://img.shields.io/npm/l/@brutalsystems/tincan)](./LICENSE)
 
-Two cans and a string. Tin Can lets a live **Claude Code** session and a live
-**Codex** session on the same machine send each other text messages.
+Two cans and a string. Tin Can lets live **Claude Code**, **Codex** and
+**opencode** sessions on the same machine send each other text messages.
 
-You are probably already running both. One knows the API, the other is deep in
-the migration that calls it, and you are the one carrying questions between two
-terminals. Tin Can lets them ask each other directly, so you stop being the
-message bus.
+You are probably already running more than one. One knows the API, another is
+deep in the migration that calls it, and you are the one carrying questions
+between terminals. Tin Can lets them ask each other directly, so you stop
+being the message bus.
 
-One binary, run twice — as a stdio MCP server inside each session. It does not
-spawn either session, does not own a conversation, and never blocks. `send_peer`
-returns when the peer's harness accepts the message, not when the peer answers.
+The same `tincan` binary runs as a stdio MCP server inside each session — that
+is the whole install for Claude Code and Codex. opencode needs one extra step:
+a small plugin, installed separately, that lets it *receive* what the binary
+sends. See [Install](#install). None of this spawns a session, owns a
+conversation, or blocks. `send_peer` returns when the peer's harness accepts
+the message, not when the peer answers.
 
 Same machine only. No network listener, no remote transport.
 
@@ -70,10 +73,19 @@ session's next turn. Both directions are recorded in one log.
 
 **The peer list is deliberately asymmetric. Do not "fix" it into symmetry.**
 
-| Hosted in | You see | Why |
-|---|---|---|
-| Claude Code | Codex sessions only | Claude Code already reaches its own sessions natively with `SendMessage`. Two logged paths to one destination is worse than one. |
-| Codex | **Codex *and* Claude Code sessions** | Codex has no native path to either. |
+| Hosted in | Lists |
+|---|---|
+| Claude Code | Codex, opencode |
+| Codex | Codex, Claude Code, opencode |
+| opencode | Codex, Claude Code, opencode |
+
+Claude Code is the only runtime whose own kind is excluded, because
+`SendMessage` already covers it natively and two logged paths to one
+destination is worse than one. Codex and opencode have no native
+model-callable peer messaging at all — Codex ships collaboration tools, but
+they are scoped to a spawn tree rather than to independently launched sessions
+(below), and opencode has nothing of the kind — so both list everything,
+including their own kind, with self excluded.
 
 Codex does ship collaboration tools — `collaboration.list_agents`,
 `collaboration.send_message`, `spawn_agent` and friends, enabled by the
@@ -101,7 +113,9 @@ thread almost always reports `notLoaded` even while its operator is mid-turn.
 Tin Can reads that as `idle`, because the alternative told every sender they
 were interrupting someone. A Codex peer marked `idle` means *reachable and not
 known to be busy*, not *definitely free*. Claude Code peers report real state
-from the session registry.
+from the session registry. opencode peers report real state too, pushed live
+by the plugin from opencode's own event bus — Tin Can never has to probe an
+opencode peer to know whether it is busy.
 
 ### A known gap in the log
 
@@ -119,9 +133,10 @@ environment decides which runtime is hosting.
 npm install -g @brutalsystems/tincan
 ```
 
-**Install it on both sides.** A session can only be *reached* if it has Tin Can
-too, so register it with each runtime you want addressable. Neither reference
-needs a path — the `tincan` command is on `PATH` once installed.
+**Install it on every side you want addressable.** A session can only be
+*reached* if it has Tin Can too, so register it with each runtime you want to
+talk to. None of the references below need a path — the `tincan` command is on
+`PATH` once installed.
 
 **Claude Code** (user scope, so it works in every project):
 
@@ -139,9 +154,66 @@ tool_timeout_sec = 30
 
 Restart each session to pick it up — MCP servers are loaded at startup.
 
-To try it without installing, substitute `npx -y @brutalsystems/tincan` for
-`tincan` in both. That re-resolves the package on every session start, so it is
-better for a trial than for daily use.
+**opencode** needs two separate installs, not one, and it is the runtime where
+doing only half of it is easy to do by accident. Do both, in order:
+
+1. **Register Tin Can as an MCP server.** This is the *send* half — it is how
+   an opencode session reaches anyone else. In
+   `~/.config/opencode/opencode.json` (or a project-level `opencode.json`):
+
+   ```jsonc
+   {
+     "mcp": {
+       "tincan": {
+         "type": "local",
+         "command": ["tincan"],
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+   Without this, the session has no `peers`, `send_peer` or `message_log`
+   tools at all — it can be messaged, but it cannot message anyone.
+
+2. **Install the plugin.** This is the *receive* half — it is what makes an
+   opencode session show up in anyone else's `peers` list at all:
+
+   ```bash
+   PKG="$(npm root -g)/@brutalsystems/tincan"
+   mkdir -p ~/.config/opencode/plugin
+   cp "$PKG/plugins/opencode/tincan.ts" ~/.config/opencode/plugin/
+   cp -r "$PKG/plugins/opencode/tincan-lib" ~/.config/opencode/plugin/
+   ```
+
+   `tincan.ts` must sit **directly** in `plugin/` — opencode's loader globs one
+   level only, so a nested `plugin/tincan/tincan.ts` never loads.
+   `plugin/tincan-lib/` holds the plugin's actual logic; the loader correctly
+   ignores it, so leave it where it lands. (`~/.config/opencode/plugins/`,
+   plural, works identically if that is what you already use.)
+
+3. **Restart opencode.** Both the MCP registration and the plugin load only at
+   startup.
+
+**Both installs are required for two-way messaging, and each one fails
+silently without the other** — no error appears in either session:
+
+| Installed | Missing | Result |
+|---|---|---|
+| MCP registration | Plugin | This session can send — `peers` and `send_peer` work — but no other runtime's `peers` ever lists it. It can talk, not listen. |
+| Plugin | MCP registration | Other runtimes can see and message this session, but it has no Tin Can tools of its own to reply with. It can listen, not talk. |
+
+If a peer you expect is missing, or a tool you expect is absent, check which
+half is actually installed before assuming Tin Can is broken.
+
+To try Claude Code or Codex without installing, substitute `npx -y
+@brutalsystems/tincan` for `tincan` in either config above; the same
+substitution works for opencode's MCP `command`
+(`["npx", "-y", "@brutalsystems/tincan"]`). That re-resolves the package on
+every session start, so it is better for a trial than for daily use. The
+plugin half still needs real files on disk, though — `npx` fetches nothing you
+can `cp` from, so use a clone (below) or a one-off `npm install -g` for that
+one step.
 
 <details>
 <summary>Running from a clone instead</summary>
@@ -158,11 +230,32 @@ args = ["/abs/path/to/tincan/dist/tincan.js"]
 tool_timeout_sec = 30
 ```
 
+```jsonc
+{
+  "mcp": {
+    "tincan": {
+      "type": "local",
+      "command": ["node", "/abs/path/to/tincan/dist/tincan.js"],
+      "enabled": true
+    }
+  }
+}
+```
+
+The plugin copies straight from the clone instead of the global install:
+
+```bash
+mkdir -p ~/.config/opencode/plugin
+cp plugins/opencode/tincan.ts ~/.config/opencode/plugin/
+cp -r plugins/opencode/tincan-lib ~/.config/opencode/plugin/
+```
+
 </details>
 
 ### Environment
 
-- `TINCAN_HOME` — where the log lives. Default `~/.tincan`.
+- `TINCAN_HOME` — where the log lives, and where the opencode plugin keeps its
+  own registry and log. Default `~/.tincan`.
 - `CODEX_HOME` — honoured for locating Codex state. Default `~/.codex`.
 
 ## Prerequisites
@@ -175,11 +268,19 @@ created automatically.
 daemon and no control socket are required — see
 [Codex: no daemon required](#codex-no-daemon-required).
 
+**opencode 1.18.31** (verified; other versions untested), **with the plugin
+installed** — an opencode session with only the MCP registration is invisible
+to every other peer's `peers` list. See [Install](#install) and
+[opencode: inverted reach](#opencode-inverted-reach).
+
 **Node 22 or newer**, for the `tincan` process itself.
 
 ## Peer names
 
-A peer list only contains the other runtime, so names carry no runtime prefix.
+A peer list can mix all three runtimes now (see
+[Which peers you see](#which-peers-you-see)), but names still carry no runtime
+prefix — a Codex thread and an opencode session sharing a slug collide and
+both get suffixed, exactly as two same-runtime peers would.
 
 - Display and input form: `auth-refactor`. Case-insensitive; any unambiguous
   prefix resolves (`auth` works if it is the only match).
@@ -202,6 +303,14 @@ Codex names are derived thread titles, slugified — so two threads titled
 "Review phase 1" and "Review phase-1" collide, and both get suffixes. `/rename`
 in the Codex TUI gives a thread a short stable name and avoids this entirely.
 
+opencode peer names come from opencode's own stable `slug` (`nimble-wizard`),
+never from its `title` — the title drifts as the conversation develops,
+observed rewriting itself within two seconds of the first reply. A name that
+changes underneath a caller mid-conversation would be worse than an opaque
+one. An opencode session id is `ses_` followed by timestamp hex and base62
+random; the same last-three-hex-characters rule applies and draws from the
+random tail, for the same reason it does against Codex's UUIDv7.
+
 Names belong to processes and die with them. Re-resolve through `peers` rather
 than caching a name, and key durable records on the thread or session id.
 
@@ -221,6 +330,14 @@ so. Send one prompt in that terminal and it becomes addressable.
 
 Also unreachable, and correctly so: ephemeral threads and subagent threads, which
 report `canAcceptDirectInput: false`.
+
+An opencode peer is marked `unreachable` on the same principle, by a different
+mechanism: its registry file's socket refused a connection, meaning that
+opencode instance is gone (quit, crashed, or killed). Tin Can prunes the file
+and reports the peer `unreachable` once rather than on every call. A session
+resumed with `opencode --continue` is a separate case — it does not appear in
+`peers` at all, reachable or not, until it next does something. That is
+expected, not a bug: see [Known limits](#known-limits).
 
 ## What a peer receives
 
@@ -269,9 +386,19 @@ message, never when the peer answers. There is no `await_reply`; the peer may
 have a human who has walked away. `expect_reply` records intent and changes
 nothing.
 
-**No interrupting a running turn.** `urgent` is accepted and has no effect.
-Claude Code has no external interrupt, and Codex's `turn/steer` requires an
-`expectedTurnId` that only the connection owning that turn ever learns.
+**No interrupting a running turn — for Codex and Claude Code.** `urgent` is
+accepted and has no effect on either: Claude Code has no external interrupt,
+and Codex's `turn/steer` requires an `expectedTurnId` that only the connection
+owning that turn ever learns. Every message to those two runtimes queues,
+regardless of `urgent`.
+
+opencode is the exception, because its wire protocol takes an explicit
+`delivery: "steer" | "queue"`. `urgent: true` maps to `steer`, which promotes
+the message into the peer's *running* turn at the next step boundary rather
+than waiting for the turn to finish. Leave `urgent` unset (or `false`) and an
+opencode peer queues exactly like the other two. `peers` reports, per peer,
+whether `urgent` does anything for it — believe that output over this
+paragraph if the two ever disagree.
 
 **Same machine only.** No network listener, no TCP port, no remote transport.
 Both sockets are already restricted to the operating-system user, and Tin Can
@@ -281,16 +408,39 @@ does not widen that.
 
 Enforced in code, per peer:
 
-| | Claude peers | Codex peers |
-|---|---|---|
-| Messages/minute | 10 | 3 |
-| Identical repeat | dropped within 60s | dropped within 60s |
-| Runaway ceiling | 50 per 10 min | 20 per 10 min |
-| Message size | 100,000 characters | 100,000 characters |
+| | Claude peers | Codex peers | opencode peers |
+|---|---|---|---|
+| Messages/minute | 10 | 3 | 3 |
+| Identical repeat | dropped within 60s | dropped within 60s | dropped within 60s |
+| Runaway ceiling | 50 per 10 min | 20 per 10 min | 20 per 10 min |
+| Message size | 100,000 characters | 100,000 characters | 100,000 characters |
 
 Codex is tighter because a queued submission starts a turn immediately on an
-idle thread — every send is an interrupt in practice. A refused send tells the sender
-which message was dropped and not to resend.
+idle thread — every send is an interrupt in practice. opencode shares that
+same tighter budget rather than a looser one of its own: the plugin
+deliberately implements no rate limiting at all (see [opencode: inverted
+reach](#opencode-inverted-reach)), and opencode's queue is durable, so a
+flood there survives a restart rather than dying with the process. A refused
+send tells the sender which message was dropped and not to resend.
+
+### Known limits
+
+Three things worth knowing before you rely on them, none of them bugs:
+
+- **Replay detection is per-process.** After an opencode restart, a re-sent
+  `message_id` is logged by the plugin as a fresh delivery even though
+  opencode still de-duplicates it server-side — nothing is delivered twice,
+  but the log line is approximate.
+- **The plugin log keeps one generation.** It rotates to
+  `opencode-plugin.log.1` once it passes 4 MB, and the next rotation
+  overwrites that file. There is no history before it; pipe the log elsewhere
+  if you need more.
+- **A resumed session is not advertised until it is active.** A session opened
+  with `opencode --continue` does not appear in any `peers` list until it next
+  receives an event — a typed message, or agent activity. This was chosen
+  over guessing from a session list, which would advertise sessions that are
+  actually closed. See [When a Codex peer is unreachable](#when-a-codex-peer-is-unreachable)
+  for the analogous opencode note.
 
 ## Log
 
@@ -311,18 +461,39 @@ the message so you read one record with the true `delivered` value.
 ## Troubleshooting
 
 **`peers` is empty, or missing a session you can see.**
-Tin Can must be installed on *both* sides — it lists the opposite runtime, so a
-Claude session with no Codex peers means Codex has nothing running, not that
-Tin Can is broken. Check the `diagnostic` field, which says what is wrong.
+Tin Can must be installed on every side you want to reach (see [Which peers you
+see](#which-peers-you-see) for exactly which runtimes each host lists), so an
+empty or short list often just means the runtime it names has nothing running
+— not that Tin Can is broken. Check the `diagnostic` field, which says what is
+wrong. For opencode specifically, "nothing running" and "not installed" look
+identical from here; the two rows below tell them apart.
+
+**An opencode session can send but never shows up as anyone else's peer.**
+The MCP registration is installed, the plugin is not. It can talk, not
+listen. See [Install](#install).
+
+**An opencode session shows up as a peer but has no Tin Can tools of its own.**
+The plugin is installed, the MCP registration is not. It can listen, not
+talk. See [Install](#install).
 
 **A tool you just installed is not there.**
-MCP servers are loaded at session startup. Restart the session.
+MCP servers and opencode plugins are both loaded at session startup. Restart
+the session.
 
 **A Codex peer says `unreachable`.**
 Three causes, and `peers` names which one. The session has not taken its first
 turn yet (send one prompt in that terminal); it is a `codex exec` run, which
 accepts input and exits without reading it; or it is an ephemeral or subagent
 thread, which rejects queued input by design.
+
+**An opencode peer says `unreachable`.**
+Its registry file's socket refused a connection — that opencode instance is
+gone. Tin Can prunes the file and reports it once. See [When a Codex peer is
+unreachable](#when-a-codex-peer-is-unreachable) for the full note.
+
+**An opencode session started with `opencode --continue` never appears.**
+Expected if it has not been typed into yet — it is not advertised until its
+next activity. See [Known limits](#known-limits).
 
 **A message was delivered but the peer never answered.**
 Delivery is fire-and-forget by design — `delivered: true` means the peer's
@@ -369,8 +540,9 @@ Two protocol calls genuinely are unusable from outside, and Tin Can avoids them:
 - `turn/steer` requires an `expectedTurnId` matching the peer's currently active
   turn, which only the connection owning that turn ever learns.
 
-A consequence of that last one: **`urgent` currently has no effect** — nothing
-interrupts a running turn, so every message is queued. `peers` says so in its
+A consequence of that last one, for Codex specifically: **`urgent` has no
+effect on a Codex peer** — nothing interrupts a running turn there, so every
+message queues. (opencode is different — see below.) `peers` says so in its
 output.
 
 ### Claude Code wire format
@@ -395,11 +567,41 @@ close:
 - A held message comes back as a `peer_message_status` frame correlated by
   `orig_msg_id`. A hold is not a failure — it is surfaced as a notice.
 
+### opencode: inverted reach
+
+opencode's injection API is good on paper: `POST /api/session/{id}/prompt`
+with an explicit `delivery: "steer" | "queue"`, durable in SQLite, idempotent
+by message id. **None of it is reachable from outside.** A default `opencode`
+TUI opens no TCP port — the server runs in a worker thread behind a nominal
+base URL with an in-process fetch bridge, and there is no port file, lockfile,
+PID file, or environment variable on disk that names it. An external `curl` to
+the advertised URL is refused.
+
+So the reach is inverted from the other two runtimes: instead of Tin Can
+calling in, a plugin running *inside* opencode advertises each live session to
+`~/.tincan/peers/opencode/` and binds a Unix socket (`0600`, one per opencode
+instance, since one instance serves many sessions). Tin Can writes one JSON
+object to that socket and closes; the plugin injects it as a prompt. Tin Can
+never speaks HTTP to opencode, and the plugin — not `src/` — is what makes an
+opencode session reachable at all. This is why opencode needs the second,
+separate install: see [Install](#install).
+
+Two things worth knowing if opencode's behavior ever seems to disagree with
+this document:
+
+- `delivery` must always be sent explicitly. opencode's own default is
+  `"steer"`; Tin Can's policy is queue-by-default. Omitting the field would
+  silently invert that policy with no error.
+- Re-submitting an already-seen `message_id` returns success with the
+  original result, not an error — opencode's idempotency, not a retry Tin Can
+  performs itself.
+
 ## Development
 
 ```bash
-npm test          # vitest
-npm run build     # tsc to dist/
+npm test                  # vitest — covers src/ and the opencode plugin
+npm run build             # tsc to dist/
+npm run typecheck:plugin  # separate tsconfig for plugins/opencode, which ships untranspiled
 ```
 
 [`CANONICAL_ID.md`](./CANONICAL_ID.md) specifies the address format and is

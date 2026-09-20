@@ -50,7 +50,11 @@ export const TinCan = async (input: { client: { _client?: unknown } }) => {
         // One generation back, then overwritten. Two bounded files beat one
         // unbounded one, and a rotation that fails must not cost us the
         // line — logBytes is reset either way so we do not retry per line.
-        try { renameSync(logPath, `${logPath}.1`); tightened = false; } catch { /* keep appending */ }
+        try {
+          renameSync(logPath, `${logPath}.1`);
+          chmodSync(`${logPath}.1`, 0o600);
+          tightened = false;
+        } catch { /* keep appending */ }
         logBytes = 0;
       }
       appendFileSync(logPath, data, { mode: 0o600 });

@@ -54,6 +54,9 @@ describe('TinCan plugin log rotation', () => {
 
     expect(existsSync(`${logPath}.1`)).toBe(true);
     expect(statSync(`${logPath}.1`).size).toBe(5 * 1024 * 1024);
+    // The rotated file is re-secured too — it can inherit a pre-existing
+    // world-readable mode from before the live file was ever tightened.
+    expect(statSync(`${logPath}.1`).mode & 0o777).toBe(0o600);
     // The live log restarted, holding only what this load wrote.
     expect(statSync(logPath).size).toBeLessThan(1024);
     expect(readFileSync(logPath, 'utf8')).toContain('[tincan]');
