@@ -66,8 +66,6 @@ export interface Side {
   peerRuntimes: RuntimeName[];
   /** Budgets are per peer runtime: Codex is tighter, since every send starts a turn. */
   limitsFor(runtime: RuntimeName): GuardLimits;
-  /** False where the runtime offers no way to interrupt a running turn. */
-  supportsUrgent: boolean;
   listPeers(self: SelfRef): Promise<{ peers: SidePeer[]; diagnostic?: string }>;
   /**
    * `self` comes first deliberately. An implementation that simply forgot it
@@ -154,8 +152,13 @@ export function durableIdOf(p: SidePeer): { thread_id: string } | { session_id: 
 /**
  * Whether a peer on this runtime can have a running turn interrupted at all.
  * Only opencode's wire protocol exposes that (`delivery: "steer"`); Codex's
- * queue and the Claude Code inbox have no such notion. Single source of
- * truth for both `buildSide`'s `supportsUrgent` and the `peers` note below.
+ * queue and the Claude Code inbox have no such notion.
+ *
+ * The single source of truth, deliberately: both the `peers` note below and
+ * `tool-definitions.ts` derive from this function rather than from a flag
+ * computed alongside it. `Side` used to carry a `supportsUrgent` boolean as
+ * well — nothing read it, and three parallel derivations of one fact is how
+ * drift starts.
  */
 export function runtimeSupportsUrgent(runtime: RuntimeName): boolean {
   return runtime === 'opencode';

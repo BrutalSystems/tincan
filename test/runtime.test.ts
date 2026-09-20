@@ -13,7 +13,7 @@ import {
 } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
 import { slugify } from '../src/naming.js';
-import { createTools } from '../src/tools.js';
+import { createTools, runtimeSupportsUrgent } from '../src/tools.js';
 import { MessageLog } from '../src/log.js';
 import { fakeInbox, fakeOpencodeInstance } from './fakes.js';
 
@@ -312,15 +312,16 @@ describe('buildSide', () => {
     expect(await side.selfName(await side.resolveSelf())).toBe('auth-service');
   });
 
-  test('reports urgent as supported wherever opencode is among the peer runtimes', () => {
+  test('urgent support is derived from the peer runtimes, not carried as a second flag', () => {
     // claude-code and codex hosted both list opencode peers, which opencode's
-    // own wire format can steer (delivery: "steer").
-    expect(
-      buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
-    ).toBe(true);
-    expect(
-      buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
-    ).toBe(true);
+    // own wire format can steer (delivery: "steer"). `runtimeSupportsUrgent`
+    // is the single source of truth for that; `Side` deliberately carries no
+    // `supportsUrgent` boolean alongside it.
+    for (const host of ['claude-code', 'codex'] as const) {
+      const side = buildSide(host, { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
+      expect(side.peerRuntimes.some(runtimeSupportsUrgent)).toBe(true);
+      expect(side).not.toHaveProperty('supportsUrgent');
+    }
   });
 });
 

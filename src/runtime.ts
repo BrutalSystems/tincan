@@ -16,7 +16,6 @@ import { pickSelfThreadId, ancestorPids } from './codex/self.js';
 import { listOpencodeSessions, type OpencodeSession } from './opencode/discover.js';
 import { sendToInstance } from './opencode/client.js';
 import { selfSessionId, parseOpencodePid } from './opencode/self.js';
-import { runtimeSupportsUrgent } from './tools.js';
 
 export interface HostContext {
   registryDir: string;
@@ -144,7 +143,6 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         resolveSelf: async () => NO_SESSION,
         selfName: async () => name,
         peerRuntimes,
-        supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
         limitsFor,
         async listPeers() {
           const [codexListing, opencodeListing] = await Promise.all([
@@ -194,7 +192,6 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         resolveSelf: async () => ({ sessionId: await resolveSelfSession() }),
         selfName: (self) => opencodeSelfName(registryDir, self.sessionId, ctx.cwd),
         peerRuntimes,
-        supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
         limitsFor,
 
         async listPeers(self) {
@@ -306,7 +303,6 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         resolveSelf: async () => NO_SESSION,
         selfName,
         peerRuntimes,
-        supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
         limitsFor,
 
         async listPeers() {

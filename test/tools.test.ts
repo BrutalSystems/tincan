@@ -33,7 +33,6 @@ function makeSide(over: Partial<Side> = {}) {
     selfCwd: '/src/billing',
     peerRuntimes: ['codex'],
     limitsFor: (r: 'codex' | 'claude-code') => (r === 'codex' ? CODEX_LIMITS : CLAUDE_LIMITS),
-    supportsUrgent: false,
     listPeers: async () => ({ peers: [peer()] }),
     deliver: async (_self, _p, _e, text) => {
       delivered.push({ text, logLinesAtDeliveryTime: log.read({ last_n: 999 }).length });
@@ -137,7 +136,6 @@ describe('peers', () => {
   test('emits no urgent note when every listed peer runtime can be steered', async () => {
     const { side } = makeSide({
       peerRuntimes: ['opencode'],
-      supportsUrgent: true,
       listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
     });
     const r = await tools(side).peers();
