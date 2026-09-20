@@ -385,8 +385,20 @@ const res = await transport.post({
 })
 ```
 
-A success is 200 with a JSON `SessionInputAdmitted`:
-`{ admittedSeq, id, sessionID, prompt, delivery, timeCreated, promotedSeq? }`.
+A success is 200 whose JSON body **wraps** the admission in a `data` key:
+
+```json
+{ "data": { "admittedSeq": 16, "id": "msg_…", "sessionID": "ses_…",
+            "prompt": { "text": "…" }, "delivery": "queue",
+            "timeCreated": 1789902122634 } }
+```
+
+The inner object is `SessionInputAdmitted`. The wrapper is not decoration —
+the server's own OpenAPI declares the 200 schema as
+`{ data: SessionInputAdmitted }`, `required: ["data"]`, and a live probe
+returned exactly that. Since the transport client surfaces the whole body as
+its `.data`, the admission is reached at `res.data.data.admittedSeq`. Reading
+one level too shallow silently classifies every success as a failure.
 
 ### Five things to get exactly right
 
