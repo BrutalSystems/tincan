@@ -65,40 +65,48 @@ is built on a runtime the package does not claim to support.
 Cheapest checks first, so a bad release fails in seconds rather than after a
 full install and test run.
 
-1. **Fork guard** — `if: github.repository == 'BrutalSystems/<repo>'`. OIDC
-   would refuse a fork anyway; the gate stops a confusing red run in someone
-   else's copy.
-2. **Tag matches `package.json`.** Fails the run. A published version is
+Cheapest checks first, so a bad release fails in seconds rather than after a
+full install and test run. A **fork guard** — `if: github.repository ==
+'BrutalSystems/<repo>'` — sits on the job itself, before any of this.
+
+1. **Tag matches `package.json`.** Fails the run. A published version is
    immutable, so shipping the wrong number is not recoverable.
+2. **Release notes finalized**, if the repository keeps them. A repository
+   with a `RELEASE_NOTES.md` extracts that version's section and fails if it
+   is missing or still marked unreleased. A repository without one skips this
+   and uses the tag annotation at step 12.
 3. **Already published?** If the registry already serves this version, finish
    **green with nothing to do**. A re-pushed tag, or a release published by
-   hand, is not an error. This is the one guard that must not fail the run —
-   step 2 is what catches a genuine mistake.
-4. **Release notes** (optional source, mandatory Release). A repository with a
-   `RELEASE_NOTES.md` extracts that version's section and fails if it is
-   missing or still marked unreleased. A repository without one uses the tag
-   annotation via `gh release create --notes-from-tag`. Either way the run
-   creates a GitHub Release.
-5. `npm ci`, build, typecheck, test.
-6. **Contract suite**, where the repository has one — run against a real
-   installed dependency, not against the unit tests' fakes.
-7. `npm pack`.
-8. **Verify the tarball** — `node scripts/verify-tarball.mjs`, see below.
-9. **Smoke-test the packed artifact.** Install the tarball into an empty temp
-   prefix and run the binary. Nothing else in the pipeline notices a broken
-   `bin`, a missing `dist` file, or a bad shebang, because unit tests import
-   source rather than the package.
-10. **Publish the tarball**, not the directory — `npm publish <tarball>
-    --provenance` — so what ships is exactly what was smoke-tested.
-11. **Confirm the registry serves it**, and print `dist.integrity`. Publishes
-    lag one to two minutes; poll rather than asserting once.
-12. **Verify the published artifact.** Download it back with `npm pack
-    <package>@<version>` and diff its file list against the tarball this run
-    packed. Every earlier check inspects a local build; this is the only one
-    that sees what a consumer actually downloads. Skip it — do not fail —
-    when the registry has not caught up, since the publish itself already
-    succeeded.
-13. **Create the GitHub Release.**
+   hand, is not an error. **This guard must never be hardened into a failing
+   check** — step 1 is what catches a genuine mistake.
+4. **Install, build, test** — `npm ci`, build, typecheck, the unit suite.
+5. **Contract or integration suite**, where the repository has one — run
+   against a real installed dependency, not against the unit tests' fakes.
+6. **Pack** — `npm pack`.
+7. **Verify the tarball** — `node scripts/verify-tarball.mjs`, see below.
+8. **Smoke-test that exact tarball.** Install it into an empty temp prefix and
+   run the binary. Nothing else in the pipeline notices a broken `bin`, a
+   missing `dist` file, or a bad shebang, because unit tests import source
+   rather than the package.
+9. **Publish that tarball**, not the directory — `npm publish <tarball>
+   --provenance` — so what ships is exactly what was smoke-tested.
+10. **Confirm the registry serves it.** Poll `npm view`; publishes lag one to
+    two minutes. Print `dist.integrity`.
+11. **Verify the published artifact matches what was tested.** Download it
+    back and diff its file list against the tarball packed at step 6 and
+    tested at step 8 — *not* a re-run of step 7's rules, since two different
+    compliant lists could both pass those. Skip, do not fail, if the registry
+    has not replicated the tarball after retries: the publish already
+    succeeded and was confirmed at step 10.
+12. **Create the GitHub Release.** Mandatory. From the release notes if the
+    repository has them, otherwise `gh release create --notes-from-tag`.
+
+> **The release runs on a toolchain no CI run has exercised.** `npm install -g
+> npm@latest` in the publish job means anything shelling out to npm must
+> tolerate a version CI never saw. This is not hypothetical: npm 12 changed
+> `npm pack --json` from an array to an object keyed by package name, which
+> broke `verify-tarball.mjs` while every CI run stayed green — because CI runs
+> it under the runner's older bundled npm.
 
 ## `scripts/verify-tarball.mjs`
 

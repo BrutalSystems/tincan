@@ -30,7 +30,7 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
       description:
         `List the live ${peer} sessions on this machine that you can message. ` +
         `Returns each peer's name, state (idle | busy | unreachable), working directory, ` +
-        `and a durable id (thread_id for Codex, session_id for Claude Code). ` +
+        `and a durable id (thread_id for Codex, session_id for Claude Code and opencode). ` +
         `Show display_label to the user: unnamed sessions use project · short ID. ` +
         `When display_label differs from name, also show the full durable ID for copying. ` +
         `Use name, not display_label, when calling send_peer. ` +

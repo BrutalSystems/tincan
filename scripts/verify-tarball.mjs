@@ -52,7 +52,18 @@ const EXCEPTIONS = new Set(['test/fixtures/canonical-id.json']);
 const packed = JSON.parse(
   execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
 );
-const files = packed[0].files.map((f) => f.path);
+
+// npm <= 11 returns an array of results; npm 12 returns an object keyed by
+// package name. Accept both — the publish job runs `npm install -g npm@latest`,
+// so the shape changes under us without any change here.
+const entry = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];
+if (!entry?.files) {
+  console.error('could not read a file list from `npm pack --dry-run --json`.');
+  console.error(`npm ${process.env.npm_config_user_agent ?? ''} returned an unrecognised shape:`);
+  console.error(JSON.stringify(packed).slice(0, 400));
+  process.exit(1);
+}
+const files = entry.files.map((f) => f.path);
 
 const under = (p, a) => p === a || p.startsWith(a.replace(/\/$/, '') + '/');
 const problems = [];
