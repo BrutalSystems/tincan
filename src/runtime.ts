@@ -5,8 +5,8 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
-import { slugify, type RuntimeName } from './naming.js';
-import { CLAUDE_LIMITS, CODEX_LIMITS } from './guard.js';
+import { assertNever, slugify, type RuntimeName } from './naming.js';
+import { CLAUDE_LIMITS, CODEX_LIMITS, OPENCODE_LIMITS } from './guard.js';
 import type { Side, SidePeer, DeliveryOutcome } from './tools.js';
 import { listClaudeSessions } from './claude/discover.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
@@ -36,7 +36,13 @@ export function opencodeRegistryDir(
 }
 
 export function detectRuntime(env: NodeJS.ProcessEnv): RuntimeName {
-  return env.CLAUDE_CODE_MESSAGING_SOCKET ? 'claude-code' : 'codex';
+  // OPENCODE first, deliberately. An MCP subprocess inherits the environment of
+  // whatever launched opencode, so CLAUDE_CODE_MESSAGING_SOCKET can be present
+  // at the same time — verified with a stub MCP server. Checking Claude first
+  // makes an opencode-hosted instance misidentify its own host.
+  if (env.OPENCODE || env.OPENCODE_PID) return 'opencode';
+  if (env.CLAUDE_CODE_MESSAGING_SOCKET) return 'claude-code';
+  return 'codex';
 }
 
 export function selfNameFor(runtime: RuntimeName, ctx: HostContext): string {
@@ -74,103 +80,125 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
   const env = ctx.env ?? process.env;
   const common = { selfRuntime: runtime, selfCwd: ctx.cwd, supportsUrgent: false };
 
-  if (runtime === 'claude-code') {
-    // Hosted in Claude Code, so the peers are Codex threads and opencode
-    // sessions. (Claude Code's own sessions are reached natively via
-    // SendMessage, so Tin Can deliberately does not duplicate that path.)
-    const codex = createCodexEnv();
-    const name = selfNameFor(runtime, ctx);
-    const registryDir = opencodeRegistryDir(env);
-    return {
-      ...common,
-      selfName: async () => name,
-      peerRuntimes: ['codex', 'opencode'],
-      limitsFor,
-      async listPeers() {
-        const [codexListing, opencodeListing] = await Promise.all([
-          listCodexPeers(codex),
-          listOpencodeSessions({ registryDir }),
-        ]);
-        const peers = [
-          ...codexListing.peers.map(toCodexSidePeer),
-          ...opencodeListing.peers.map(toOpencodeSidePeer),
-        ];
-        const diagnostic =
-          peers.length === 0
-            ? (opencodeListing.diagnostic ?? codexListing.diagnostic)
-            : codexListing.diagnostic;
-        return {
-          peers,
-          ...(diagnostic !== undefined && { diagnostic }),
-        };
-      },
-      // An opencode peer is not deliverable yet — Task 3. `deliver` is
-      // unchanged and only ever called for a Codex peer from this side.
-      deliver: (peer, id, text) => deliverTo(codex, ctx, peer, id, text),
-    };
-  }
-
-  // Hosted in Codex. Codex's own collaboration.list_agents / send_message are
-  // scoped to a spawn tree ("live agents in the current root thread tree") and
-  // cannot reach an independently launched session, so Tin Can exposes BOTH
-  // Codex and Claude peers here. The asymmetry with the Claude side is
-  // deliberate — see the README.
-  const codexForSelf = createCodexEnv();
-  let selfThread: string | undefined;
-  const selfName = makeSelfNameResolver(
-    () => codexThreadName(codexForSelf, ctx, env),
-    ctx.cwd,
-  );
-
-  return {
-    ...common,
-    selfName,
-    peerRuntimes: ['codex', 'claude-code'],
-    limitsFor,
-
-    async listPeers() {
-      selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
-
-      const [codexListing, claudeSessions] = await Promise.all([
-        listCodexPeers(codexForSelf),
-        listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
-      ]);
-
-      const codexPeers = codexListing.peers
-        .filter((p) => p.threadId !== selfThread) // never list ourselves
-        .map(toCodexSidePeer);
-
-      const claudePeers: SidePeer[] = claudeSessions.map((session) => ({
-        runtime: 'claude-code',
-        rawName: session.rawName,
-        uuid: session.uuid,
-        cwd: session.cwd,
-        state: session.state,
-        socketPath: session.socketPath,
-        auth: session.auth,
-      }));
-
-      const peers = [...codexPeers, ...claudePeers];
-      if (peers.length === 0) {
-        return {
-          peers,
-          diagnostic:
-            'No other agent sessions are running. Start a Codex or Claude Code ' +
-            'session, or check that it has taken its first turn.',
-        };
-      }
+  switch (runtime) {
+    case 'claude-code': {
+      // Hosted in Claude Code, so the peers are Codex threads and opencode
+      // sessions. (Claude Code's own sessions are reached natively via
+      // SendMessage, so Tin Can deliberately does not duplicate that path.)
+      const codex = createCodexEnv();
+      const name = selfNameFor(runtime, ctx);
+      const registryDir = opencodeRegistryDir(env);
       return {
-        peers,
-        ...(codexListing.diagnostic !== undefined && { diagnostic: codexListing.diagnostic }),
+        ...common,
+        selfName: async () => name,
+        peerRuntimes: ['codex', 'opencode'],
+        limitsFor,
+        async listPeers() {
+          const [codexListing, opencodeListing] = await Promise.all([
+            listCodexPeers(codex),
+            listOpencodeSessions({ registryDir }),
+          ]);
+          const peers = [
+            ...codexListing.peers.map(toCodexSidePeer),
+            ...opencodeListing.peers.map(toOpencodeSidePeer),
+          ];
+          const diagnostic =
+            peers.length === 0
+              ? (opencodeListing.diagnostic ?? codexListing.diagnostic)
+              : codexListing.diagnostic;
+          return {
+            peers,
+            ...(diagnostic !== undefined && { diagnostic }),
+          };
+        },
+        // An opencode peer is not deliverable yet — Task 3. `deliver` is
+        // unchanged and only ever called for a Codex peer from this side.
+        deliver: (peer, id, text) => deliverTo(codex, ctx, peer, id, text),
       };
-    },
+    }
 
-    deliver: (peer, id, text) => deliverTo(codexForSelf, ctx, peer, id, text),
-  };
+    case 'opencode':
+      // TODO(Task 4): opencode has no host-side construction of its own yet.
+      // Fall through to the Codex arm as a workable stand-in — an
+      // opencode-hosted Tin Can would otherwise crash at startup for the
+      // duration of Tasks 2–3.
+      // eslint-disable-next-line no-fallthrough
+    case 'codex': {
+      // Hosted in Codex. Codex's own collaboration.list_agents / send_message
+      // are scoped to a spawn tree ("live agents in the current root thread
+      // tree") and cannot reach an independently launched session, so Tin Can
+      // exposes BOTH Codex and Claude peers here. The asymmetry with the
+      // Claude side is deliberate — see the README.
+      const codexForSelf = createCodexEnv();
+      let selfThread: string | undefined;
+      const selfName = makeSelfNameResolver(
+        () => codexThreadName(codexForSelf, ctx, env),
+        ctx.cwd,
+      );
+
+      return {
+        ...common,
+        selfName,
+        peerRuntimes: ['codex', 'claude-code'],
+        limitsFor,
+
+        async listPeers() {
+          selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
+
+          const [codexListing, claudeSessions] = await Promise.all([
+            listCodexPeers(codexForSelf),
+            listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
+          ]);
+
+          const codexPeers = codexListing.peers
+            .filter((p) => p.threadId !== selfThread) // never list ourselves
+            .map(toCodexSidePeer);
+
+          const claudePeers: SidePeer[] = claudeSessions.map((session) => ({
+            runtime: 'claude-code',
+            rawName: session.rawName,
+            uuid: session.uuid,
+            cwd: session.cwd,
+            state: session.state,
+            socketPath: session.socketPath,
+            auth: session.auth,
+          }));
+
+          const peers = [...codexPeers, ...claudePeers];
+          if (peers.length === 0) {
+            return {
+              peers,
+              diagnostic:
+                'No other agent sessions are running. Start a Codex or Claude Code ' +
+                'session, or check that it has taken its first turn.',
+            };
+          }
+          return {
+            peers,
+            ...(codexListing.diagnostic !== undefined && { diagnostic: codexListing.diagnostic }),
+          };
+        },
+
+        deliver: (peer, id, text) => deliverTo(codexForSelf, ctx, peer, id, text),
+      };
+    }
+
+    default:
+      return assertNever(runtime, 'buildSide');
+  }
 }
 
-function limitsFor(runtime: RuntimeName) {
-  return runtime === 'codex' ? CODEX_LIMITS : CLAUDE_LIMITS;
+export function limitsFor(runtime: RuntimeName) {
+  switch (runtime) {
+    case 'codex':
+      return CODEX_LIMITS;
+    case 'claude-code':
+      return CLAUDE_LIMITS;
+    case 'opencode':
+      return OPENCODE_LIMITS;
+    default:
+      return assertNever(runtime, 'limitsFor');
+  }
 }
 
 function toCodexSidePeer(p: {
@@ -209,28 +237,37 @@ async function deliverTo(
   id: string,
   text: string,
 ): Promise<DeliveryOutcome> {
-  if (peer.runtime === 'codex') {
-    const r = await codex.queue(peer.threadId ?? peer.uuid, text);
-    return {
-      delivered: r.ok,
-      method: 'thread/queue/add',
-      ...(r.error !== undefined && { error: r.error }),
-    };
+  switch (peer.runtime) {
+    case 'codex': {
+      const r = await codex.queue(peer.threadId ?? peer.uuid, text);
+      return {
+        delivered: r.ok,
+        method: 'thread/queue/add',
+        ...(r.error !== undefined && { error: r.error }),
+      };
+    }
+    case 'claude-code': {
+      const r = await sendToInbox({
+        socketPath: peer.socketPath!,
+        auth: peer.auth as InboxAuth | undefined,
+        text,
+        msgId: id,
+      });
+      return {
+        delivered: r.delivered,
+        method: 'inbox',
+        ...(r.notice !== undefined && { notice: r.notice }),
+        ...(r.error !== undefined && { error: r.error }),
+        ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
+      };
+    }
+    case 'opencode':
+      // Loud, not silent: until Task 3, an opencode peer must never be sent
+      // down the Claude inbox protocol against peer.socketPath!.
+      throw new Error('opencode delivery not implemented (Task 3)');
+    default:
+      return assertNever(peer.runtime, 'deliverTo');
   }
-
-  const r = await sendToInbox({
-    socketPath: peer.socketPath!,
-    auth: peer.auth as InboxAuth | undefined,
-    text,
-    msgId: id,
-  });
-  return {
-    delivered: r.delivered,
-    method: 'inbox',
-    ...(r.notice !== undefined && { notice: r.notice }),
-    ...(r.error !== undefined && { error: r.error }),
-    ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
-  };
 }
 
 /** Our own Codex thread, so a Codex-hosted instance never lists itself. */

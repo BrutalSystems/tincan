@@ -8,9 +8,9 @@ import type { RuntimeName } from './naming.js';
 
 /**
  * How the message reached the peer: the Codex app-server's experimental queue,
- * or the Claude Code inbox socket.
+ * the Claude Code inbox socket, or an opencode prompt (Task 3).
  */
-export type DeliveryMethod = 'thread/queue/add' | 'inbox';
+export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt';
 
 export interface EnvelopeParty {
   runtime: RuntimeName;

@@ -1,7 +1,7 @@
 /** The three tools (§7), identical on both sides. */
 import { z } from 'zod';
 import { basename } from 'node:path';
-import { assignNames, resolvePeer, slugify, type NamedPeer, type RuntimeName } from './naming.js';
+import { assertNever, assignNames, resolvePeer, slugify, type NamedPeer, type RuntimeName } from './naming.js';
 import { buildEnvelope, newMessageId, renderEnvelope, type DeliveryMethod } from './envelope.js';
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
 import { MessageLog, type LogRecord } from './log.js';
@@ -93,6 +93,36 @@ export interface PeersResult {
   notes?: string[];
 }
 
+/**
+ * Every peer carries a durable id: canonical_id is not unique (see
+ * CANONICAL_ID.md), so it cannot be a caller's primary key.
+ */
+export function durableIdOf(p: SidePeer): { thread_id: string } | { session_id: string } {
+  switch (p.runtime) {
+    case 'codex':
+      return { thread_id: p.threadId ?? p.uuid };
+    case 'claude-code':
+      return { session_id: p.uuid };
+    case 'opencode':
+      return { session_id: p.uuid };
+    default:
+      return assertNever(p.runtime, 'durableIdOf');
+  }
+}
+
+export function methodFor(runtime: RuntimeName): DeliveryMethod {
+  switch (runtime) {
+    case 'codex':
+      return 'thread/queue/add';
+    case 'claude-code':
+      return 'inbox';
+    case 'opencode':
+      return 'opencode/prompt';
+    default:
+      return assertNever(runtime, 'methodFor');
+  }
+}
+
 export function createTools(side: Side, log: MessageLog) {
   // One guard per peer runtime, so a Codex peer's tight budget does not
   // throttle a Claude peer sharing the same listing.
@@ -135,11 +165,7 @@ export function createTools(side: Side, log: MessageLog) {
           canonical_id: p.canonicalId,
           state: p.side.state,
           cwd: p.side.cwd,
-          // Every peer carries a durable id: canonical_id is not unique
-          // (see CANONICAL_ID.md), so it cannot be a caller's primary key.
-          ...(p.side.runtime === 'codex'
-            ? { thread_id: p.side.threadId ?? p.side.uuid }
-            : { session_id: p.side.uuid }),
+          ...durableIdOf(p.side),
         })),
         ...(diagnostic !== undefined && { diagnostic }),
         ...(notes.length > 0 && { notes }),
@@ -208,7 +234,7 @@ export function createTools(side: Side, log: MessageLog) {
           cwd: target.side.cwd,
           ...(target.side.threadId !== undefined && { thread_id: target.side.threadId }),
         },
-        method: target.side.runtime === 'codex' ? 'thread/queue/add' : 'inbox',
+        method: methodFor(target.side.runtime),
         expect_reply: args.expect_reply,
         ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
         text: args.message,

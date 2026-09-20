@@ -22,6 +22,11 @@ export type Resolution =
   | { ok: true; peer: NamedPeer }
   | { ok: false; reason: 'unknown' | 'ambiguous'; candidates: string[] };
 
+/** Makes a widened RuntimeName a compile error at every branch that ignores it. */
+export function assertNever(x: never, context: string): never {
+  throw new Error(`${context}: unhandled runtime ${JSON.stringify(x)}`);
+}
+
 export function slugify(raw: string): string {
   return raw
     .toLowerCase()

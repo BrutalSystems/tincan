@@ -35,6 +35,13 @@ export const CODEX_LIMITS: GuardLimits = {
   maxChars: 100_000,
 };
 
+// Same shape as Codex: like Codex, every opencode delivery starts or joins a
+// turn, so it gets Codex's tighter budget rather than silently inheriting
+// Claude's looser one.
+export const OPENCODE_LIMITS: GuardLimits = {
+  ...CODEX_LIMITS,
+};
+
 export type GuardReason = 'too_large' | 'identical_repeat' | 'rate_limited' | 'queue_full';
 
 export type GuardVerdict =
