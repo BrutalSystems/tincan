@@ -175,17 +175,38 @@ the environment name changes.
 is published from the same workflow and the same `npm` environment, but npm
 will refuse it until it has been trusted under its own name:
 
+**The package must exist on the registry first.** `npm trust` attaches a
+publisher to an existing package and there is no pending-publisher mechanism,
+so running it against an unpublished name fails with:
+
+```
+npm error code E404
+npm error 404 Not Found - POST .../@brutalsystems%2ftincan-opencode/trust - Package not found
+```
+
+`@brutalsystems/tincan` never hit this, because it had been hand-published
+since 0.1.0 long before OIDC was set up. A brand-new package has to be
+bootstrapped in two steps:
+
 ```bash
-npm login                     # interactive, prompts for the OTP
+# 1. One hand publish, to create the name. publishConfig.access is "public"
+#    in that manifest, because a new scoped package is restricted by default
+#    and would otherwise publish private.
+( cd plugins/opencode && npm publish )
+
+# 2. The package now exists, so trust can be attached.
 npm trust github @brutalsystems/tincan-opencode \
   --file publish.yml --repo BrutalSystems/tincan --env npm --allow-publish
 ```
 
 The `npm` environment already exists, so there is no `gh api -X PUT` step this
-time. Until this is done the publish run **fails** at "Publish the plugin
-package" — deliberately. A release that ships the server without the matching
-plugin is the skew the split exists to prevent, so it should stop the line
-rather than pass quietly.
+time. That first hand-published version carries **no provenance** — it cannot,
+having not come from a workflow run. Every later version does.
+
+Until this is done the publish run **fails** at "Publish the plugin package",
+deliberately. A release that ships the server without the matching plugin is
+the skew the split exists to prevent, so it should stop the line rather than
+pass quietly.
 
 Not yet done.
 
