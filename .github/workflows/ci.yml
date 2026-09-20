@@ -41,16 +41,12 @@ jobs:
       - name: Test
         run: npm test
 
-      # The four version locations are asserted by the suite for three of
-      # them; this catches the fourth, which is prose. See RELEASING.md.
-      - name: CANONICAL_ID.md header matches package.json
-        run: |
-          pkg=$(node -p "require('./package.json').version")
-          if ! grep -qF "Normative for \`@brutalsystems/tincan\` $pkg." CANONICAL_ID.md; then
-            echo "::error file=CANONICAL_ID.md,line=3::header does not name version $pkg"
-            sed -n '3p' CANONICAL_ID.md
-            exit 1
-          fi
+      # All four version locations in one check, against package.json as the
+      # source. The suite covers three of them from the other direction; this
+      # also catches the fourth, which is prose, and names every drifted file
+      # at once instead of the first. See RELEASING.md.
+      - name: Every version site agrees with package.json
+        run: npm run check-version
 
   package:
     runs-on: ubuntu-latest

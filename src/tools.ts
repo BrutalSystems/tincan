@@ -172,6 +172,45 @@ export function runtimeSupportsUrgent(runtime: RuntimeName): boolean {
   return runtime === 'opencode';
 }
 
+/**
+ * The host-native peer-messaging path that lets a runtime exclude its own kind
+ * from Tin Can's peer list, named so the model is told where the missing
+ * sessions actually are rather than merely that some are missing.
+ *
+ * Only Claude Code has one (README, "Which peers you see"). Keeping it a
+ * lookup rather than a hard-coded "Claude Code" string in `tools.ts` and
+ * `tool-definitions.ts` is the same single-source rule as
+ * `runtimeSupportsUrgent` above: the condition is derived from `peerRuntimes`
+ * vs `selfRuntime`, so a side that starts listing its own kind stops claiming
+ * otherwise without anyone remembering to edit the wording.
+ */
+export const NATIVE_PEER_PATH: Partial<Record<RuntimeName, string>> = {
+  'claude-code': 'SendMessage',
+};
+
+/** Whether this side hides the host's own kind from its peer list. */
+export function excludesOwnKind(
+  peerRuntimes: RuntimeName[],
+  selfRuntime: RuntimeName,
+): boolean {
+  return !peerRuntimes.includes(selfRuntime);
+}
+
+/**
+ * The human labels for a set of runtimes, as English: "Codex", "Codex and
+ * opencode", "Codex, Claude Code, and opencode". Duplicates collapse.
+ *
+ * The single join for every runtime list Tin Can shows a model — both notes
+ * here and all three tool descriptions. Four inlined `.join(' and ')` calls
+ * are what produced "Codex and Claude Code and opencode" in every description
+ * on the two hosts that list all three runtimes.
+ */
+export function labelList(runtimes: RuntimeName[]): string {
+  const labels = [...new Set(runtimes)].map((r) => LABEL[r]);
+  if (labels.length <= 2) return labels.join(' and ');
+  return `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
+}
+
 export function methodFor(runtime: RuntimeName): DeliveryMethod {
   switch (runtime) {
     case 'codex':
@@ -212,6 +251,22 @@ export function createTools(side: Side, log: MessageLog) {
     async peers(): Promise<PeersResult> {
       const { named: list, diagnostic } = await named(await side.resolveSelf());
       const notes: string[] = [];
+
+      // Scoping, before the urgent caveat: which sessions this list covers
+      // matters more than how they are delivered to, and unlike the urgent
+      // note it is emitted for an *empty* list too. An empty peer list with
+      // no explanation is exactly what reads as "nothing else is running" on
+      // a machine with a dozen live Claude Code sessions.
+      if (excludesOwnKind(side.peerRuntimes, side.selfRuntime)) {
+        const native = NATIVE_PEER_PATH[side.selfRuntime];
+        notes.push(
+          `${LABEL[side.selfRuntime]} sessions are not listed here: Tin Can reaches ` +
+            `${labelList(side.peerRuntimes)} only. Your host already reaches its own ` +
+            `sessions natively${native !== undefined ? ` (${native})` : ''}, so Tin Can ` +
+            `does not duplicate that path.`,
+        );
+      }
+
       const nonSteerable = [...new Set(side.peerRuntimes)].filter(
         (r) => !runtimeSupportsUrgent(r),
       );
@@ -221,7 +276,7 @@ export function createTools(side: Side, log: MessageLog) {
           // renders "Codex and Claude Code" for the same pair, and two
           // spellings in one tool's output is a bug the reader has to
           // resolve.
-          `urgent has no effect for ${nonSteerable.map((r) => LABEL[r]).join(' and ')} peers: ` +
+          `urgent has no effect for ${labelList(nonSteerable)} peers: ` +
             `${nonSteerable.length > 1 ? 'those runtimes expose' : 'that runtime exposes'} ` +
             `no way to interrupt a running turn, so messages to them are always queued.`,
         );

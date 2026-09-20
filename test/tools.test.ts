@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MessageLog } from '../src/log.js';
 import { CODEX_LIMITS, CLAUDE_LIMITS } from '../src/guard.js';
-import { createTools, type Side, type SidePeer } from '../src/tools.js';
+import { createTools, labelList, type Side, type SidePeer } from '../src/tools.js';
 
 let dir: string;
 let log: MessageLog;
@@ -50,6 +50,33 @@ beforeEach(() => {
   log = new MessageLog(join(dir, 'messages.jsonl'));
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('labelList', () => {
+  test('renders one runtime as its bare label', () => {
+    expect(labelList(['codex'])).toBe('Codex');
+  });
+
+  test('joins two with "and", no comma', () => {
+    expect(labelList(['codex', 'claude-code'])).toBe('Codex and Claude Code');
+  });
+
+  test('joins three as a list, not "A and B and C"', () => {
+    // The Codex and opencode hosts list all three runtimes, so every peer
+    // tool description on those hosts read "Codex and Claude Code and
+    // opencode".
+    expect(labelList(['codex', 'claude-code', 'opencode'])).toBe(
+      'Codex, Claude Code, and opencode',
+    );
+  });
+
+  test('collapses a repeated runtime rather than naming it twice', () => {
+    expect(labelList(['codex', 'codex'])).toBe('Codex');
+  });
+
+  test('renders an empty list as the empty string', () => {
+    expect(labelList([])).toBe('');
+  });
+});
 
 describe('peers', () => {
   test.each([null, '', '   ', '???'])('labels an unnamed session (%j) with its project and trailing id', async (rawName) => {
@@ -149,12 +176,48 @@ describe('peers', () => {
   });
 
   test('emits no urgent note when every listed peer runtime can be steered', async () => {
+    // An opencode host, not the default Claude Code one: this asserts the
+    // note array is *empty*, so the side must also be one that lists its own
+    // kind and therefore earns no scope note either.
     const { side } = makeSide({
+      selfRuntime: 'opencode',
       peerRuntimes: ['opencode'],
       listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
     });
     const r = await tools(side).peers();
     expect(r.notes ?? []).toEqual([]);
+  });
+
+  test('says the host’s own kind is missing from the list', async () => {
+    // The Claude Code host lists Codex and opencode only. Nothing in the rows
+    // says so, so a model reports a three-row list as the whole machine.
+    const { side } = makeSide({ peerRuntimes: ['codex', 'opencode'] });
+    const r = await tools(side).peers();
+    const scope = (r.notes ?? []).join(' ');
+    expect(scope).toContain('Claude Code');
+    expect(scope).toContain('SendMessage');
+    // The human label everywhere, as with the urgent note above.
+    expect(scope).not.toContain('claude-code');
+  });
+
+  test('says so even when no peers are listed at all', async () => {
+    // The case that misleads most: an empty list plus no explanation reads as
+    // "nothing is running", when a dozen Claude Code sessions may be.
+    const { side } = makeSide({
+      peerRuntimes: ['codex', 'opencode'],
+      listPeers: async () => ({ peers: [] }),
+    });
+    const r = await tools(side).peers();
+    expect((r.notes ?? []).join(' ')).toContain('SendMessage');
+  });
+
+  test('emits no scope note on a side that lists its own kind', async () => {
+    const { side } = makeSide({
+      selfRuntime: 'codex',
+      peerRuntimes: ['codex', 'claude-code', 'opencode'],
+    });
+    const r = await tools(side).peers();
+    expect((r.notes ?? []).join(' ')).not.toContain('SendMessage');
   });
 });
 

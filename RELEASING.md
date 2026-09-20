@@ -6,10 +6,19 @@
 
 ## Before you start
 
+**For the normal release: push access to this repository, and nothing else.**
+Publishing runs in CI and authenticates over OIDC, so there is no npm account,
+no token and no local login in the release path — see
+[Publishing](#publishing).
+
+The prerequisites below apply only to
+[publishing by hand](#publishing-by-hand), the fallback for when CI is
+unavailable:
+
 - Publish rights on the `@brutalsystems` npm scope.
-- `NPM_TOKEN` available from wherever you keep secrets — a **granular** token
-  scoped to `@brutalsystems`, not a classic account-wide one. Or skip the token
-  and authenticate interactively; see [Publishing](#publishing).
+- `NPM_TOKEN` in Keep (`keep unlock NPM_TOKEN`) — a **granular** token scoped
+  to `@brutalsystems`, not a classic account-wide one. Or skip the token and
+  authenticate interactively.
 
 ## Choosing the version
 
@@ -27,47 +36,49 @@ existing expected value is.
 
 ## Steps
 
-**1. Bump four files, not one.**
+**1. Commit your change**, as an ordinary commit. `npm version` needs a clean
+tree, so the release is its own commit — that is the only reason this is two
+steps and not one.
 
-The program's own reported version is *not* one of them — `src/version.ts`
-reads it from package.json at runtime, and `test/version.test.ts` pins that.
-It used to be a fifth hardcoded literal and reported `0.1.0` for four
-releases, because nothing checked it.
+**2. Cut the release.**
 
-```jsonc
-// package.json
-"version": "0.1.2"
-
-// test/fixtures/canonical-id.json
-"tincan_version": "0.1.2"
+```bash
+npm version patch -m "%s — <what changed>"     # or minor / major
 ```
 
-```ts
-// plugins/opencode/tincan-lib/types.ts
-export const PLUGIN_VERSION = '0.1.2';
+That is the whole release. It rewrites **all four** version sites, commits
+them, creates the `v0.5.6` tag, and pushes commit and tag to `origin`, which
+fires `publish.yml`. Watch it:
+
+```bash
+gh run watch --repo BrutalSystems/tincan
 ```
 
-```markdown
-<!-- CANONICAL_ID.md, line 3 -->
-> **Normative for `@brutalsystems/tincan` 0.1.2.**
-```
+The four sites are `package.json`, `test/fixtures/canonical-id.json`,
+`plugins/opencode/tincan-lib/types.ts` and `CANONICAL_ID.md` line 3, kept in
+step by `scripts/sync-version.mjs` from the `version` lifecycle hook;
+`postversion` does the push. `npm run check-version` reports drift without
+changing anything, and CI runs it on every push.
 
-The suite asserts the first three match. That is deliberate: the fixture
-records which Tin Can its expectations were verified against, and consumers use
-it as a staleness check on their copy; the plugin reports its version to
-opencode, and a plugin claiming a version the server does not have is worse
-than no version at all. A release cannot silently leave any of them behind.
+They are literals rather than runtime reads of package.json for reasons the
+script's header gives: the fixture is a staleness check consumers compare
+against, the plugin ships untranspiled into opencode with no path to our
+package.json, and the third is prose. The program's own version is *not* one
+of them — `src/version.ts` reads package.json at runtime.
 
-`CANONICAL_ID.md`'s header is **not** asserted by any test — it is prose, and
-the only one of the four you can forget without the build telling you.
+**If you need the pieces separately** — a dry run, or a release built by hand:
+`npm run sync-version 0.5.6` rewrites the four sites and nothing else, leaving
+the commit, tag and push to you. `npm version --no-git-tag-version` bumps
+without committing. Neither publishes; only a pushed `v*` tag does.
 
-**2. Build and test.**
+**3. Build and test** — optional; CI does both, and `prepublishOnly` blocks
+a broken build from shipping.
 
 ```bash
 npm run build && npm test
 ```
 
-**3. Check what will actually ship.**
+**4. Check what will actually ship** — also run by CI on every push.
 
 ```bash
 npm pack --dry-run
@@ -78,17 +89,7 @@ and `test/fixtures/canonical-id.json` — the contract ships with the package so
 that anyone installing from the registry can read the rules they are bound by.
 Nothing else: no source, no tests, no `node_modules`.
 
-**4. Commit, tag, push.**
-
-```bash
-git commit -am "0.1.2 — <what changed>"
-git tag -a v0.1.2 -m "0.1.2"
-git push origin main --tags
-```
-
-**5. Push the tag — that publishes.** See [Publishing](#publishing).
-
-**6. Verify against the registry, not against your working copy.**
+**5. Verify against the registry, not against your working copy.**
 
 ```bash
 npm view @brutalsystems/tincan version
@@ -119,12 +120,8 @@ published by hand — the job says so and finishes green without republishing.
 Shipping the *wrong* version is what the tag check catches, and that one
 fails the run.
 
-So the normal release is steps 1-4 and then nothing — watch the run:
-
-```bash
-git push origin main --tags
-gh run watch --repo BrutalSystems/tincan
-```
+So the normal release is `npm version` and then nothing. A bare `git push`
+sends the commit only: CI runs, nothing publishes.
 
 **There is no npm token.** Authentication is npm trusted publishing over
 OIDC: the registry trusts this repository, this workflow *filename*, and the
@@ -141,8 +138,9 @@ Three things break it:
 - **Removing `environment: npm` from the job**, or renaming that environment.
   It is part of the trust, not decoration.
 - **Publishing on a runner with npm < 11.5.1.** Node 22 ships npm 10.x, so the
-  publish job pins Node 24. The `engines` floor stays `>=22` and CI still tests
-  on 22 — only the publishing runner has to be newer.
+  publish job stays on Node 22 — the `engines` floor — and upgrades npm itself
+  with `npm install -g npm@latest` before publishing. Raising the runtime
+  instead would mean releasing on a Node the floor does not cover.
 
 **Who can publish, now that CI can:** anyone able to push a tag to this
 repository. npm says so out loud when trust is established — *"anyone with

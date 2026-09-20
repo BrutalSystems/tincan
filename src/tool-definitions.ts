@@ -1,6 +1,6 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
 import { LABEL, type RuntimeName } from './naming.js';
-import { runtimeSupportsUrgent } from './tools.js';
+import { excludesOwnKind, labelList, NATIVE_PEER_PATH, runtimeSupportsUrgent } from './tools.js';
 
 export interface ToolDefinition {
   name: string;
@@ -12,8 +12,20 @@ export interface ToolDefinition {
   };
 }
 
-export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
-  const peer = peerRuntimes.map((r) => LABEL[r]).join(' and ');
+export function toolDefinitions(
+  peerRuntimes: RuntimeName[],
+  selfRuntime: RuntimeName,
+): ToolDefinition[] {
+  const peer = labelList(peerRuntimes);
+  // Told before the call, not only after it: a model that knows the list is
+  // scoped asks its host for the rest instead of reporting the peer list as
+  // the whole machine. The `peers` result repeats it as a note (tools.ts),
+  // because a description read at connect time is a long way from a result
+  // read mid-turn.
+  const ownKindNote = excludesOwnKind(peerRuntimes, selfRuntime)
+    ? ` Does not list ${LABEL[selfRuntime]} sessions; your host reaches those natively` +
+      `${NATIVE_PEER_PATH[selfRuntime] !== undefined ? ` (${NATIVE_PEER_PATH[selfRuntime]})` : ''}.`
+    : '';
   const steerable = peerRuntimes.filter(runtimeSupportsUrgent);
   const notSteerable = peerRuntimes.filter((r) => !runtimeSupportsUrgent(r));
   const urgentDescription =
@@ -22,8 +34,8 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
       : notSteerable.length === 0
         ? `Ask to interrupt a running turn instead of queuing behind it.`
         : `Ask to interrupt a running turn instead of queuing behind it. Only takes effect for ` +
-          `${steerable.map((r) => LABEL[r]).join(' and ')} peers; ` +
-          `${notSteerable.map((r) => LABEL[r]).join(' and ')} peers are always queued regardless.`;
+          `${labelList(steerable)} peers; ` +
+          `${labelList(notSteerable)} peers are always queued regardless.`;
   return [
     {
       name: 'peers',
@@ -34,7 +46,8 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
         `Show display_label to the user: unnamed sessions use project · short ID. ` +
         `When display_label differs from name, also show the full durable ID for copying. ` +
         `Use name, not display_label, when calling send_peer. ` +
-        `Call this before send_peer: names change and sessions come and go.`,
+        `Call this before send_peer: names change and sessions come and go.` +
+        ownKindNote,
       inputSchema: { type: 'object', properties: {} },
     },
     {

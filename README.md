@@ -81,7 +81,11 @@ session's next turn. Both directions are recorded in one log.
 
 Claude Code is the only runtime whose own kind is excluded, because
 `SendMessage` already covers it natively and two logged paths to one
-destination is worse than one. Codex and opencode have no native
+destination is worse than one. **The exclusion is stated at runtime, not just
+here**: on a side that hides its own kind the `peers` description says so, and
+every `peers` result — including an empty one — carries a note naming the
+native path. A scoped list that does not say it is scoped reads as the whole
+machine, and gets reported to the user that way. Codex and opencode have no native
 model-callable peer messaging at all — Codex ships collaboration tools, but
 they are scoped to a spawn tree rather than to independently launched sessions
 (below), and opencode has nothing of the kind — so both list everything,
@@ -614,6 +618,14 @@ npm run typecheck:plugin  # separate tsconfig for plugins/opencode, which ships 
 [`CANONICAL_ID.md`](./CANONICAL_ID.md) specifies the address format and is
 normative — a change to it is a breaking release.
 [`RELEASING.md`](./RELEASING.md) covers cutting one.
+
+**CI and publishing both run in GitHub Actions.** Every push and PR to `main`
+runs `ci.yml` — build, plugin typecheck, the suite on Node 22 and 24, and the
+tarball check. Publishing is separate and **tag-driven**: pushing a `v*.*.*`
+tag runs `publish.yml`, which releases to npm over OIDC with provenance and no
+stored token. A branch push builds and tests; it never publishes. See
+[`RELEASING.md`](./RELEASING.md) and
+[`docs/ci-cd-standard.md`](./docs/ci-cd-standard.md).
 
 Both peers are sockets, so both fake cleanly. No test touches a real model or a
 real session.
