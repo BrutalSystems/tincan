@@ -19,9 +19,30 @@ export interface SelfSessionParams {
 }
 
 /**
+ * `OPENCODE_PID` as a real pid, or `undefined` if it cannot possibly be one.
+ *
+ * Two traps in one guard:
+ * - `env.OPENCODE_PID` is a STRING; the caller file's `pid` is a NUMBER.
+ *   `rec.pid === env.OPENCODE_PID` compiles cleanly against
+ *   `Record<string, unknown>` and is always false — self would never be
+ *   excluded and a self-send would deliver silently. Compare as numbers.
+ * - `Number('')` is `0`, and `Number.isInteger(0)` is `true` — an empty or
+ *   whitespace `OPENCODE_PID` would otherwise sail through as pid 0. No real
+ *   process has pid 0, so a positive-integer check closes it for free.
+ *
+ * The two call sites (here, and runtime.ts's instance-level fallback) MUST
+ * share this function rather than re-deriving it — that duplication is
+ * exactly how this guard's tightening in one place failed to reach the other.
+ */
+export function parseOpencodePid(env: NodeJS.ProcessEnv): number | undefined {
+  const pid = Number(env.OPENCODE_PID);
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/**
  * The opencode session hosting us, or `undefined` when it cannot be
- * determined — `OPENCODE_PID` absent or non-numeric, no caller file has been
- * written yet, or it is unreadable/unparseable.
+ * determined — `OPENCODE_PID` absent, empty, or non-numeric, no caller file
+ * has been written yet, or it is unreadable/unparseable.
  *
  * Callers MUST treat `undefined` as "fall back to excluding the whole
  * instance," never as "exclude nothing" — see runtime.ts's opencode-hosted
@@ -31,12 +52,8 @@ export interface SelfSessionParams {
 export async function selfSessionId(params: SelfSessionParams): Promise<string | undefined> {
   const { registryDir, env } = params;
 
-  // env.OPENCODE_PID is a STRING; the caller file's `pid` is a NUMBER.
-  // `rec.pid === env.OPENCODE_PID` compiles cleanly against
-  // `Record<string, unknown>` and is always false — self would never be
-  // excluded and a self-send would deliver silently. Compare as numbers.
-  const selfPid = Number(env.OPENCODE_PID);
-  if (!Number.isInteger(selfPid)) return undefined;
+  const selfPid = parseOpencodePid(env);
+  if (selfPid === undefined) return undefined;
 
   let names: string[];
   try {

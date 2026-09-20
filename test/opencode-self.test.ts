@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { selfSessionId } from '../src/opencode/self.js';
+import { selfSessionId, parseOpencodePid } from '../src/opencode/self.js';
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'tc-oc-self-')); });
@@ -52,6 +52,23 @@ describe('selfSessionId', () => {
     expect(id).toBeUndefined();
   });
 
+  it(
+    'is undefined when OPENCODE_PID is an empty string — Number(\'\') is 0 and ' +
+      'Number.isInteger(0) is true, so a naive integer check alone would treat an empty ' +
+      'env var as a valid pid of 0',
+    async () => {
+      writeCaller('inst-a91f', { pid: 0 });
+      const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '' } });
+      expect(id).toBeUndefined();
+    },
+  );
+
+  it('is undefined when OPENCODE_PID is whitespace only', async () => {
+    writeCaller('inst-a91f', { pid: 0 });
+    const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '   ' } });
+    expect(id).toBeUndefined();
+  });
+
   it('is undefined when the registry directory does not exist', async () => {
     const id = await selfSessionId({
       registryDir: join(dir, 'nope'),
@@ -81,5 +98,35 @@ describe('selfSessionId', () => {
     writeCaller('inst-a91f');
     const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '41233' } });
     expect(id).toBe('ses_self');
+  });
+});
+
+describe('parseOpencodePid', () => {
+  it('parses a real pid', () => {
+    expect(parseOpencodePid({ OPENCODE_PID: '41233' })).toBe(41233);
+  });
+
+  it('rejects an empty string, which Number() would otherwise coerce to a valid-looking 0', () => {
+    expect(parseOpencodePid({ OPENCODE_PID: '' })).toBeUndefined();
+  });
+
+  it('rejects whitespace only', () => {
+    expect(parseOpencodePid({ OPENCODE_PID: '   ' })).toBeUndefined();
+  });
+
+  it('rejects a literal pid of 0 too — no real process has pid 0', () => {
+    expect(parseOpencodePid({ OPENCODE_PID: '0' })).toBeUndefined();
+  });
+
+  it('rejects a non-numeric value', () => {
+    expect(parseOpencodePid({ OPENCODE_PID: 'not-a-pid' })).toBeUndefined();
+  });
+
+  it('rejects a missing value', () => {
+    expect(parseOpencodePid({})).toBeUndefined();
+  });
+
+  it('rejects a negative value', () => {
+    expect(parseOpencodePid({ OPENCODE_PID: '-1' })).toBeUndefined();
   });
 });

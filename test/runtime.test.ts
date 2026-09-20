@@ -356,6 +356,44 @@ describe('buildSide, hosted in opencode', () => {
     },
   );
 
+  test(
+    'OPENCODE_PID as an empty string: excludes our own session (and every sibling) rather ' +
+      "than treating it as pid 0 — Number('') is 0, and Number.isInteger(0) is true, so a " +
+      'naive check alone would let our own session through as an ordinary, addressable peer',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      const logDir = mkdtempSync(join(tmpdir(), 'tincan-oc-emptypid-'));
+      try {
+        await writeInstance(instance);
+        // Deliberately no caller file: this exercises the instance-level
+        // fallback (tier 2), which is exactly where the naive
+        // Number.isInteger(0) === true guard let a real session's pid
+        // (41233) compare unequal to a bogus "self" pid of 0 and stay listed.
+        const side = buildSide('opencode', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home, OPENCODE_PID: '' },
+        });
+
+        const { peers } = await side.listPeers();
+        const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
+        expect(uuids).not.toContain('ses_self');
+        expect(uuids).not.toContain('ses_sibling');
+
+        // Our own slug is gone from the list entirely, so a self-send by
+        // that slug must never resolve to a deliverable peer.
+        const log = new MessageLog(join(logDir, 'messages.jsonl'));
+        const r = await createTools(side, log).send_peer({ peer: 'nimble-wizard', message: 'hi' });
+        expect(r.delivered).toBe(false);
+        expect(r.refusal).toBe('peer_unknown');
+      } finally {
+        await instance.close();
+        rmSync(logDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   test('selfName() resolves our own slug from ses_*.json, not the cwd basename', async () => {
     const instance = await fakeOpencodeInstance();
     try {

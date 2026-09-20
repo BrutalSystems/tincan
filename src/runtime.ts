@@ -15,7 +15,7 @@ import { createCodexEnv, parentPidLookup } from './codex/cli.js';
 import { pickSelfThreadId, ancestorPids } from './codex/self.js';
 import { listOpencodeSessions, type OpencodeSession } from './opencode/discover.js';
 import { sendToInstance } from './opencode/client.js';
-import { selfSessionId } from './opencode/self.js';
+import { selfSessionId, parseOpencodePid } from './opencode/self.js';
 import { runtimeSupportsUrgent } from './tools.js';
 
 export interface HostContext {
@@ -172,11 +172,16 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
           // file), fall back to excluding every session of our own
           // instance: over-excluding a sibling is safe, under-excluding
           // risks a self-send delivering to ourselves.
-          const selfPid = Number(env.OPENCODE_PID);
+          // Shared with self.ts's own guard (parseOpencodePid) rather than
+          // re-derived here — a duplicated `Number(env.OPENCODE_PID)` is
+          // exactly how the positive-integer check (Number('') is 0, and
+          // Number.isInteger(0) is true) got fixed in one copy and not the
+          // other.
+          const selfPid = parseOpencodePid(env);
           const opencodePeers = opencodeListing.peers
             .filter((s) => {
               if (selfSession !== undefined) return s.uuid !== selfSession;
-              if (Number.isInteger(selfPid)) return s.pid !== selfPid;
+              if (selfPid !== undefined) return s.pid !== selfPid;
               // We cannot identify ourselves at all — OPENCODE_PID itself is
               // missing or unparseable, so there is no pid to key the
               // instance-level fallback on either. Exclude every opencode
