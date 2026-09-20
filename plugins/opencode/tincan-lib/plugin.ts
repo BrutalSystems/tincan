@@ -75,7 +75,7 @@ export interface PluginDeps {
 }
 
 export interface PluginHooks {
-  event: (event: unknown) => Promise<void>;
+  event: (input: { event: unknown }) => Promise<void>;
   dispose: () => Promise<void>;
 }
 
@@ -143,9 +143,16 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
   };
 
   return {
-    event: async (event: unknown): Promise<void> => {
+    event: async (input: { event: unknown }): Promise<void> => {
       if (!server) return; // Advertising without a delivery path would be a lie.
       try {
+        // opencode's real contract wraps the payload as { event }. Tolerate a
+        // bare event too: getting this normalisation wrong produces silent
+        // inertness (effectOf sees no `type` and returns 'ignore' forever),
+        // the worst failure mode there is, and a future opencode change
+        // narrowing or widening the wrapper must not silently switch the
+        // plugin off again.
+        const event = (input as { event?: unknown } | null)?.event ?? input;
         const effect = effectOf(event);
         switch (effect.kind) {
           case 'upsert': {
@@ -174,6 +181,15 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
         if (server) await server.close();
       } catch (e) {
         log({ event: 'dispose.failed', detail: String(e) });
+      } finally {
+        // A closed ServerHandle is still a truthy object, and the event hook's
+        // only gate is `if (!server) return`. Without clearing these, a
+        // fire-and-forget onLine dispatch racing dispose could resurrect a
+        // deleted registry file pointing at a socket that no longer exists —
+        // exactly the undeliverable-entry state the self-check exists to
+        // prevent. Idempotent: a second dispose() finds server already null.
+        server = null;
+        known.clear();
       }
     },
   };

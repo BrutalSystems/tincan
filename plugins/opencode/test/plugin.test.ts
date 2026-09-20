@@ -44,7 +44,7 @@ describe('startPlugin — startup self-check', () => {
     const d = deps({ transport: { get: vi.fn().mockResolvedValue({ response: { status: 200 }, data: '<!doctype html>' }), post: vi.fn() } as unknown as Transport });
     const hooks = await startPlugin(d);
     expect(existsSync(join(dir, 'inst-self.sock'))).toBe(false);
-    await hooks.event({ type: 'session.created', properties: { info } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
     expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
     await hooks.dispose();
   });
@@ -66,7 +66,7 @@ describe('startPlugin — registry lifecycle', () => {
 
   it('writes a record on session.created', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.created', properties: { info } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
     const rec = JSON.parse(readFileSync(join(dir, 'ses_a.json'), 'utf8'));
     expect(rec.slug).toBe('nimble-wizard');
     expect(rec.state).toBe('idle');
@@ -76,36 +76,50 @@ describe('startPlugin — registry lifecycle', () => {
     await hooks.dispose();
   });
 
+  it('tolerates a bare event too, not just opencode\'s real wrapped { event } shape', async () => {
+    // opencode's actual contract is `event: (input: { event: Event }) => ...`,
+    // but a future opencode version changing that wrapper must not silently
+    // switch the plugin off again — see the normalisation comment in
+    // startPlugin's event hook. Cast past PluginHooks' declared (accurate)
+    // type to exercise the runtime tolerance deliberately.
+    const hooks = await startPlugin(deps());
+    const bare = { type: 'session.created', properties: { info } };
+    await (hooks.event as unknown as (i: unknown) => Promise<void>)(bare);
+    const rec = JSON.parse(readFileSync(join(dir, 'ses_a.json'), 'utf8'));
+    expect(rec.slug).toBe('nimble-wizard');
+    await hooks.dispose();
+  });
+
   it('flips state to busy then back to idle', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.created', properties: { info } });
-    await hooks.event({ type: 'session.status', properties: { sessionID: 'ses_a', status: { type: 'busy' } } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    await hooks.event({ event: { type: 'session.status', properties: { sessionID: 'ses_a', status: { type: 'busy' } } } });
     expect(JSON.parse(readFileSync(join(dir, 'ses_a.json'), 'utf8')).state).toBe('busy');
-    await hooks.event({ type: 'session.idle', properties: { sessionID: 'ses_a' } });
+    await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'ses_a' } } });
     expect(JSON.parse(readFileSync(join(dir, 'ses_a.json'), 'utf8')).state).toBe('idle');
     await hooks.dispose();
   });
 
   it('ignores a state event for a session it never heard announced', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.status', properties: { sessionID: 'ses_unknown', status: { type: 'busy' } } });
+    await hooks.event({ event: { type: 'session.status', properties: { sessionID: 'ses_unknown', status: { type: 'busy' } } } });
     expect(existsSync(join(dir, 'ses_unknown.json'))).toBe(false);
     await hooks.dispose();
   });
 
   it('removes the record on session.deleted', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.created', properties: { info } });
-    await hooks.event({ type: 'session.deleted', properties: { info } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    await hooks.event({ event: { type: 'session.deleted', properties: { info } } });
     expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
     await hooks.dispose();
   });
 
   it('does not rewrite the file when nothing but the clock changed', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.created', properties: { info } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
     const first = readFileSync(join(dir, 'ses_a.json'), 'utf8');
-    await hooks.event({ type: 'session.updated', properties: { info } });
+    await hooks.event({ event: { type: 'session.updated', properties: { info } } });
     // The clock advanced between the two events, so a rewrite WOULD change
     // updated_at. Identical bytes therefore prove the write was skipped.
     expect(readFileSync(join(dir, 'ses_a.json'), 'utf8')).toBe(first);
@@ -114,9 +128,9 @@ describe('startPlugin — registry lifecycle', () => {
 
   it('rewrites the file when the title changes', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.created', properties: { info } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
     const first = readFileSync(join(dir, 'ses_a.json'), 'utf8');
-    await hooks.event({ type: 'session.updated', properties: { info: { ...info, title: 'PONG' } } });
+    await hooks.event({ event: { type: 'session.updated', properties: { info: { ...info, title: 'PONG' } } } });
     const after = readFileSync(join(dir, 'ses_a.json'), 'utf8');
     expect(after).not.toBe(first);
     expect(JSON.parse(after).title).toBe('PONG');
@@ -125,8 +139,8 @@ describe('startPlugin — registry lifecycle', () => {
 
   it('never throws out of the event hook on a malformed event', async () => {
     const hooks = await startPlugin(deps());
-    await expect(hooks.event(null)).resolves.toBeUndefined();
-    await expect(hooks.event({ type: 'session.created', properties: {} })).resolves.toBeUndefined();
+    await expect((hooks.event as unknown as (i: unknown) => Promise<void>)(null)).resolves.toBeUndefined();
+    await expect(hooks.event({ event: { type: 'session.created', properties: {} } })).resolves.toBeUndefined();
     await hooks.dispose();
   });
 });
@@ -134,7 +148,7 @@ describe('startPlugin — registry lifecycle', () => {
 describe('startPlugin — dispose', () => {
   it('removes this instance’s records and the socket', async () => {
     const hooks = await startPlugin(deps());
-    await hooks.event({ type: 'session.created', properties: { info } });
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
     await hooks.dispose();
     expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
     expect(existsSync(join(dir, 'inst-self.sock'))).toBe(false);
@@ -144,5 +158,23 @@ describe('startPlugin — dispose', () => {
     const d = deps({ transport: { get: vi.fn().mockRejectedValue(new Error('gone')), post: vi.fn() } as unknown as Transport });
     const hooks = await startPlugin(d);
     await expect(hooks.dispose()).resolves.toBeUndefined();
+  });
+
+  it('is safe to call twice', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    await hooks.dispose();
+    await expect(hooks.dispose()).resolves.toBeUndefined();
+  });
+
+  it('writes nothing for an event that arrives after dispose', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    await hooks.dispose();
+    // A closed ServerHandle is still a truthy object; the event hook must
+    // still no-op once dispose has run, or a late fire-and-forget dispatch
+    // could resurrect a deleted registry file pointing at a dead socket.
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+    expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
   });
 });
