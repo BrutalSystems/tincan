@@ -90,6 +90,37 @@ export interface SideDeps {
 }
 
 /**
+ * What `peers` says when nothing at all is reachable. It names the runtimes
+ * worth starting AND keeps the "first turn" hint: a Codex thread reaches
+ * `thread/list` only after its first turn, which is the single most common
+ * reason a user sees an empty list while a session is plainly running.
+ * README's troubleshooting section points at this field.
+ */
+export const NO_PEERS_DIAGNOSTIC =
+  'No other agent sessions are running. Start a Codex, Claude Code, or opencode ' +
+  'session, or check that it has taken its first turn.';
+
+/**
+ * The diagnostic for an empty peer list.
+ *
+ * The opencode note is an *addition*, never a substitute. It is produced on a
+ * plain ENOENT of the opencode registry, which is the normal state for every
+ * user who does not run opencode — so letting it win replaced the one hint
+ * that actually applies to the host with advice about a runtime the user
+ * never asked for. Change notice §1 asked that an empty *opencode* list name
+ * the plugin; it did not ask for that to outrank everything else.
+ */
+export function composeEmptyDiagnostic(
+  primary: string | undefined,
+  opencodeNote: string | undefined,
+): string | undefined {
+  const parts = [primary, opencodeNote].filter(
+    (s): s is string => s !== undefined && s !== '',
+  );
+  return parts.length === 0 ? undefined : parts.join(' ');
+}
+
+/**
  * A host that names itself from its own environment resolves nothing per
  * call: only the opencode arm has an answer that can change underneath it.
  */
@@ -126,7 +157,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           ];
           const diagnostic =
             peers.length === 0
-              ? (opencodeListing.diagnostic ?? codexListing.diagnostic)
+              ? composeEmptyDiagnostic(codexListing.diagnostic, opencodeListing.diagnostic)
               : codexListing.diagnostic;
           return {
             peers,
@@ -234,11 +265,10 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           if (peers.length === 0) {
             return {
               peers,
-              diagnostic:
-                opencodeListing.diagnostic ??
-                codexListing.diagnostic ??
-                'No other agent sessions are running. Start a Codex, Claude Code, or ' +
-                  'opencode session.',
+              diagnostic: composeEmptyDiagnostic(
+                codexListing.diagnostic ?? NO_PEERS_DIAGNOSTIC,
+                opencodeListing.diagnostic,
+              ),
             };
           }
           return {
@@ -308,11 +338,10 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           if (peers.length === 0) {
             return {
               peers,
-              diagnostic:
-                opencodeListing.diagnostic ??
-                codexListing.diagnostic ??
-                'No other agent sessions are running. Start a Codex, Claude Code, or ' +
-                  'opencode session.',
+              diagnostic: composeEmptyDiagnostic(
+                codexListing.diagnostic ?? NO_PEERS_DIAGNOSTIC,
+                opencodeListing.diagnostic,
+              ),
             };
           }
           return {

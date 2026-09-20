@@ -1,8 +1,16 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf, makeSelfNameResolver } from '../src/runtime.js';
+import {
+  detectRuntime,
+  selfNameFor,
+  buildSide,
+  codexSelfNameOf,
+  makeSelfNameResolver,
+  composeEmptyDiagnostic,
+  NO_PEERS_DIAGNOSTIC,
+} from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
 import { createTools } from '../src/tools.js';
 import { MessageLog } from '../src/log.js';
@@ -102,6 +110,28 @@ describe('codexSelfNameOf', () => {
   });
 });
 
+describe('the empty-list diagnostic', () => {
+  test('the generic keeps the "first turn" hint that README troubleshooting points at', () => {
+    expect(NO_PEERS_DIAGNOSTIC).toMatch(/first turn/);
+  });
+
+  test('the opencode note is appended after the host hint, never substituted for it', () => {
+    // ENOENT on the opencode registry is the normal state for everyone who
+    // does not run opencode, so it must not outrank the diagnostic that
+    // actually explains an empty list.
+    const note = 'No opencode peers: the Tin Can opencode plugin does not appear to be installed.';
+    const d = composeEmptyDiagnostic(NO_PEERS_DIAGNOSTIC, note)!;
+    expect(d).toContain('first turn');
+    expect(d.indexOf('first turn')).toBeLessThan(d.indexOf('opencode plugin'));
+  });
+
+  test('either half alone still produces a diagnostic, and neither produces none', () => {
+    expect(composeEmptyDiagnostic('codex hint', undefined)).toBe('codex hint');
+    expect(composeEmptyDiagnostic(undefined, 'opencode note')).toBe('opencode note');
+    expect(composeEmptyDiagnostic(undefined, undefined)).toBeUndefined();
+  });
+});
+
 describe('buildSide', () => {
   test('hosted in Claude Code, it exposes Codex and opencode peers', () => {
     // Claude Code reaches its own sessions natively via SendMessage, so its
@@ -189,6 +219,36 @@ describe('buildSide', () => {
           await instance.close();
         }
       } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test(
+    'hosted in Codex with nothing reachable anywhere, the Codex hint comes first and the ' +
+      'opencode plugin note follows it — a Codex user who never asked for opencode must ' +
+      'not lose the only hint that applies to them',
+    async () => {
+      // No `codex` on PATH makes the Codex diagnostic deterministic here; the
+      // generic "first turn" wording is covered by its own test above.
+      vi.stubEnv('PATH', join(dir, 'no-such-bin'));
+      const home = mkdtempSync(join(tmpdir(), 'tincan-oc-empty-'));
+      try {
+        // Deliberately no peers/opencode directory: plain ENOENT, the normal
+        // state for a machine that does not run opencode.
+        const side = buildSide('codex', {
+          registryDir: join(dir, 'sessions'),
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home },
+        });
+        const { peers, diagnostic } = await side.listPeers(await side.resolveSelf());
+        expect(peers).toEqual([]);
+        expect(diagnostic).toMatch(/codex/i);
+        expect(diagnostic).toMatch(/plugin/i);
+        expect(diagnostic!.indexOf('PATH')).toBeLessThan(diagnostic!.indexOf('plugin'));
+      } finally {
+        vi.unstubAllEnvs();
         rmSync(home, { recursive: true, force: true });
       }
     },
