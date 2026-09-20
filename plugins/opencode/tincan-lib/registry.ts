@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { sessionFile } from './paths.js';
+import { sessionFile, socketPath } from './paths.js';
 import type { RegistryRecord, SessionInfo, SessionState } from './types.js';
 
 export interface RecordContext {
@@ -104,7 +104,7 @@ export async function sweepOrphans(
   const entryFor = (id: string) => {
     let entry = instances.get(id);
     if (!entry) {
-      entry = { files: [], socket: join(dir, `${id}.sock`) };
+      entry = { files: [], socket: socketPath(dir, id) };
       instances.set(id, entry);
     }
     return entry;
