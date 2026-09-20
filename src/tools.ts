@@ -212,41 +212,44 @@ export function labelList(runtimes: RuntimeName[]): string {
 }
 
 /**
- * Why a successful opencode send may still never be read.
+ * Why a successful opencode send may still never be acted on.
  *
- * Tin Can's plugin POSTs to `/api/session/{id}/prompt`, which answers 200
- * with an `admittedSeq` and makes the text a `type:"user"` message. The
- * endpoint's own OpenAPI summary promises more than that — "Durably admit one
- * session input and schedule agent-loop execution unless resume is false" —
- * but on a TUI-hosted session that is idle, the admission happens and the
- * scheduling does not. Reproduced against opencode 1.18.31 on 2026-09-20:
- * the message sits as the session's only message with no assistant reply,
- * across minutes, and neither `delivery: "steer"`, `resume: true`, nor a
- * keystroke in the TUI drains it. A session that was BUSY on arrival does run
- * it, and so does one hosted by `opencode serve`.
+ * Not because the turn is never scheduled — 0.5.7 said that, and it was
+ * wrong. Read from opencode's own log (1.18.31, 2026-09-20): a peer message
+ * admitted at 20:01:13.678 produced a drain at 20:01:13.746, sixty-eight
+ * milliseconds later, on a session that had been idle for a minute. The
+ * source agrees — `session.prompt` calls `execution.wake` unless
+ * `resume === false`, and the run coordinator starts a drain immediately when
+ * nothing is active. Admission schedules execution exactly as the endpoint's
+ * OpenAPI summary promises.
  *
- * Tin Can cannot observe any of that. `client.ts` writes a line to the
- * plugin's socket and never reads a response, so `delivered` on this leg means
- * "the plugin accepted the line" — two layers above the thing that decides
- * whether an agent ever runs. Reporting that bare truth as though it matched
- * the Codex queue and the Claude Code inbox, which do both run the message, is
- * the actual defect. So: still delivered, because the message is durably there
- * for a human who opens that session, plus a notice that says what is
- * uncertain. The same shape as the Claude inbox hold receipt — a notice, not a
- * failure.
+ * What actually happened is that the scheduled turn *failed*
+ * (`ModelUnavailableError`), and the failure reached nobody who could act on
+ * it: the POST had already returned 200 with an `admittedSeq`, no error
+ * message was written into the session, and the only trace was a single ERROR
+ * line in `~/.local/share/opencode/log`. A turn can die after admission and
+ * look exactly like a turn that went perfectly.
  *
- * Narrow on purpose. `busy` is left alone because a mid-turn session drains
- * it, and we cannot tell a TUI-hosted session from a served one, so the idle
- * case is the only one we can name honestly.
+ * Tin Can sees even less than that. `client.ts` writes a line to the plugin's
+ * socket and never reads a response, so `delivered` on this leg means "the
+ * plugin accepted the line" — two layers above the thing that decides whether
+ * an agent ever answers. So: still delivered, because the message is durably
+ * there, plus a notice that says what cannot be known. The same shape as the
+ * Claude inbox hold receipt — a notice, not a failure.
+ *
+ * Every opencode peer, regardless of state. 0.5.7 exempted busy ones on the
+ * theory that idle sessions were never scheduled; both are scheduled and
+ * neither can be confirmed, so the peer's state was never the thing that
+ * mattered.
  */
-export function admissionNotice(runtime: RuntimeName, state: PeerState): string | undefined {
-  if (runtime !== 'opencode' || state !== 'idle') return undefined;
+export function admissionNotice(runtime: RuntimeName, _state: PeerState): string | undefined {
+  if (runtime !== 'opencode') return undefined;
   return (
-    'This opencode session was idle. The message is durably admitted — it is a real ' +
-    'user message in that session — but an idle opencode session may not schedule an ' +
-    'agent turn for it, so the peer may not act on it until a human opens that session. ' +
-    'Tin Can cannot confirm execution on this leg: it sees the plugin accept the message, ' +
-    'not the agent run it.'
+    'Tin Can cannot confirm that an opencode peer acted on this. The message is durably ' +
+    'admitted and opencode does schedule a turn for it, but that turn can fail after ' +
+    'admission — an unresolvable model, for instance — and the failure reaches neither this ' +
+    'result nor the peer\u2019s session; it appears only in opencode\u2019s own log. Check the peer ' +
+    'if the answer matters.'
   );
 }
 

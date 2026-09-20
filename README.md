@@ -121,40 +121,45 @@ from the session registry. opencode peers report real state too, pushed live
 by the plugin from opencode's own event bus — Tin Can never has to probe an
 opencode peer to know whether it is busy.
 
-### opencode: admitted is not the same as acted on
+### opencode: delivery cannot be confirmed
 
-**A successful send to an idle opencode session may never be read.** Verified
-against opencode 1.18.31 on 2026-09-20.
+**A successful send to an opencode peer may still never be answered**, and Tin
+Can cannot tell the difference. Investigated against opencode 1.18.31 on
+2026-09-20.
 
-Tin Can's opencode plugin POSTs to `/api/session/{id}/prompt`. That returns
-200 with an `admittedSeq`, and the text becomes a real `type:"user"` message in
-the session — durable, and visible to a human who opens it. The endpoint's own
-OpenAPI summary promises more: *"Durably admit one session input and schedule
-agent-loop execution unless resume is false."* On a TUI-hosted session that is
-**idle**, the admission happens and the scheduling does not. The message parks
-indefinitely; neither `delivery: "steer"`, nor `resume: true`, nor a keystroke
-in the TUI drains it.
+Tin Can's plugin POSTs to `/api/session/{id}/prompt`, which returns 200 with an
+`admittedSeq` and makes the text a real `type:"user"` message. opencode then
+**does** schedule a turn — that part works, exactly as the endpoint's OpenAPI
+summary promises. In the case we traced, a message admitted at 20:01:13.678
+produced a drain 68ms later, on a session that had been idle for a minute.
 
-| Target | Result |
+The turn then failed, with `ModelUnavailableError`. And that failure reached
+nobody who could act on it:
+
+| Who could have learned the turn died | What they saw |
 |---|---|
-| opencode, idle, TUI-hosted | admitted, **no agent turn** |
-| opencode, busy on arrival | drains — the turn is attempted |
-| opencode, `opencode serve` | runs normally |
-| Codex, Claude Code | queue and inbox both run the message |
+| The HTTP caller (our plugin) | 200 and an `admittedSeq`, already returned |
+| The peer's session | nothing — no error message is written into it |
+| A human reading the session | a user message with no reply |
+| `~/.local/share/opencode/log` | one `ERROR "Failed to drain Session"` line |
 
-So `send_peer` to an **idle** opencode peer returns `delivered: true` with a
-`notice` saying the peer may not act until a human opens that session, and the
-same caveat is written to `~/.tincan/messages.jsonl`. It is not reported as a
-failure, because the message really is there.
+So a turn that dies after admission is indistinguishable, from outside, from a
+turn that went perfectly.
 
-Tin Can cannot do better than a caveat on this leg. `src/opencode/client.ts`
-writes a line to the plugin's socket and never reads a response, so what it
-knows is "the plugin accepted the line" — two layers above whatever decides
-that an agent runs. Found by the Muster session while probing the same
-endpoint; the split is TUI-hosted versus server-hosted, not anything in Tin
-Can's socket layer.
+Tin Can sees less again: `src/opencode/client.ts` writes a line to the
+plugin's socket and never reads a response, so what it knows is "the plugin
+accepted the line" — two layers above whatever decides that an agent answers.
+`send_peer` to any opencode peer therefore returns `delivered: true` with a
+`notice` saying execution cannot be confirmed, and the same caveat is written
+to `~/.tincan/messages.jsonl`. Not a failure: the message really is there.
 
-### A known gap in the log
+**An earlier version of this section (0.5.7) claimed opencode admits the
+message without ever scheduling a turn.** That was wrong — it was inferred from
+the absence of a reply, before anyone read opencode's log or its scheduling
+code. The observable symptom is the same; the mechanism is not. Corrected in
+0.5.8.
+
+### A known gap in the log### A known gap in the log
 
 Claude↔Claude traffic goes through `SendMessage`, not Tin Can, so **it does not
 appear in `~/.tincan/messages.jsonl`**. The log is a complete record of what
