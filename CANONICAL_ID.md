@@ -34,7 +34,8 @@ Neither name is guaranteed unique, and neither is stable: **a name belongs to a
 process and dies with it.** Key durable records on the id, never on the address.
 
 `peers` exposes that id on every peer — `thread_id` for Codex, `session_id` for
-Claude Code — so a caller never has to derive it from an address.
+Claude Code and for opencode — so a caller never has to derive it from an
+address.
 
 ## Slugify
 
@@ -175,9 +176,11 @@ then refuses to resolve either, listing two identical candidates — a refusal
 that tells the caller to disambiguate using a string that does not
 disambiguate. The peers are unaddressable until one exits.
 
-Probability is roughly 1 in 4096 *given* a slug collision, and slug collisions
-are not rare: Codex titles threads from their first prompt, so two sessions
-started from similar prompts collide readily.
+Probability is roughly 1 in 4096 *given* a slug collision — slightly above
+that for opencode ids, whose base62 tail skews the surviving hex (see
+[Suffix](#suffix)) — and slug collisions are not rare: Codex titles threads
+from their first prompt, so two sessions started from similar prompts collide
+readily.
 
 **Consumers must therefore treat `canonical_id` as a display and correlation
 aid, not a primary key.** Key on `thread_id` / `session_id`.
