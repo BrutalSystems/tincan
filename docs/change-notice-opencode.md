@@ -252,6 +252,23 @@ whose `pid` equals it, and take its `session_id`. The `pid` is on the file
 itself, so this works even before any session has been advertised, and it needs
 no process-tree walk.
 
+**Known limitation — a concurrent sibling can make us resolve the wrong self.**
+The caller file is scoped to the *instance*, not to a call: whichever session's
+`tool.execute.before` fires most recently overwrites it. So if session A is
+mid-request when sibling B in the same instance invokes a Tin Can tool, A reads
+B's id, excludes B, and leaves **A itself** in A's own peer list — where a
+self-send resolves as an ordinary peer and delivers. The `isSelfAddress`
+backstop does not catch it, because `resolvePeer` reports a genuine match
+rather than `unknown`.
+
+Closing it needs a change on the plugin side, not the Tin Can side: the hook
+already receives a `callID`, so the caller file could carry it (or the plugin
+could write one file per call and let the reader pick by recency plus id).
+Either is a spec change beyond the current interface, which is why it is
+recorded here rather than patched. The exposure is narrow — two sessions in one
+opencode instance both driving Tin Can within the same read window — and the
+failure is a message delivered to yourself, not to a wrong third party.
+
 Two caveats worth knowing:
 
 - The file is written when a tool whose id ends in `_peers`, `_send_peer` or
