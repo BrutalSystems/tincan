@@ -139,27 +139,38 @@ Registering a trusted publisher **requires 2FA** — npm refuses the operation
 to a token that bypasses it — so it cannot be scripted with a stored
 credential. Do it once per package:
 
+**Requires npm >= 12.** See the warning below — on npm 11 this fails with an
+error that does not mention the npm version.
+
 ```bash
+npm install -g npm@latest
 npm login   # interactive, prompts for an OTP
+
+# the environment must already exist on the GitHub side
+gh api -X PUT repos/BrutalSystems/<repo>/environments/npm
 
 npm trust github @brutalsystems/<package> \
   --file publish.yml \
   --repo BrutalSystems/<repo> \
-  --env npm
+  --env npm \
+  --allow-publish
 ```
 
-Then create an environment named `npm` in the repository's **Settings →
-Environments** (add required reviewers there if the publish set should be
-narrower than "anyone who can push a tag").
+Add required reviewers to that environment in the repository's **Settings →
+Environments** if the publish set should be narrower than "anyone who can push
+a tag".
 
 The equivalent web route is the package's **Settings → Trusted Publisher →
 GitHub Actions** on npmjs.com, with the same repository, workflow filename and
 environment.
 
-> `npm trust` has `--allow-publish` / `--allow-stage-publish` flags in the
-> published documentation, but **npm 11.13.0 rejects them** with `EUSAGE
-> Unknown flag` — the docs describe a newer CLI than the released one. Omit
-> them. If a future npm starts requiring a permission flag, add it then.
+> **On npm 11.x this fails two different ways, and neither says "upgrade
+> npm".** With `--allow-publish` you get `EUSAGE Unknown flag`, because the
+> flag does not exist yet. Without it you get a bare `E400 Bad Request` with
+> no explanation, because the registry requires a permissions field that npm
+> 11 does not send. Same root cause, two unrelated-looking errors. `npm trust
+> list <package>` is the useful diagnostic: if it answers, the credential is
+> fine and the problem is the request, not the login.
 
 ## Releasing
 
