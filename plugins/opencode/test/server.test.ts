@@ -1,9 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from 'node:net';
 import { listenLines, probeSocket, type ServerHandle } from '../tincan-lib/server.js';
+
+// Gated so every other test in this file runs against the real fs. There is
+// no way to make a chmod of a socket we just created fail for real.
+let chmodFails = false;
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    chmod: async (path: string, mode: number) => {
+      if (chmodFails && String(path).endsWith('.sock')) throw new Error('chmod refused');
+      return actual.chmod(path, mode);
+    },
+  };
+});
 
 let dir: string;
 let handle: ServerHandle | null = null;
@@ -147,6 +161,27 @@ describe('listenLines', () => {
     expect(lines).toEqual(['{"ok":1}']);
   });
 
+  it('destroys an idle connection and keeps accepting afterwards', async () => {
+    // Resource hygiene, not rate limiting: a sender that connects and never
+    // closes holds a file descriptor and up to MAX_LINE_BYTES of buffer
+    // inside the opencode process for as long as the instance lives.
+    const path = join(dir, 'inst-a.sock');
+    const { onLine, lines, ready } = waitForLines(1);
+    handle = await listenLines({ path, onLine, onError: () => {}, idleTimeoutMs: 50 });
+
+    const idle = connect(path);
+    await new Promise<void>((resolve, reject) => {
+      idle.on('connect', () => resolve());
+      idle.on('error', reject);
+    });
+    await new Promise<void>((resolve) => idle.on('close', () => resolve()));
+    expect(idle.destroyed).toBe(true);
+
+    await send(path, '{"ok":1}\n');
+    await ready;
+    expect(lines).toEqual(['{"ok":1}']);
+  });
+
   it('unlinks a stale socket file before binding', async () => {
     const path = join(dir, 'inst-a.sock');
     writeFileSync(path, '');
@@ -159,6 +194,22 @@ describe('listenLines', () => {
     const longDir = join(dir, 'd'.repeat(90));
     await expect(listenLines({ path: join(longDir, 'inst-a.sock'), onLine: () => {}, onError: () => {} }))
       .rejects.toThrow(/socket path too long/);
+  });
+
+  it('leaves no listening server behind when the post-listen chmod fails', async () => {
+    // Rejecting straight out of listenLines used to strand a listening
+    // server on a 0755 socket with no ServerHandle to close it.
+    const path = join(dir, 'inst-a.sock');
+    chmodFails = true;
+    try {
+      await expect(listenLines({ path, onLine: () => {}, onError: () => {} })).rejects.toThrow(/chmod refused/);
+    } finally {
+      chmodFails = false;
+    }
+    expect(await probeSocket(path)).toBe(false);
+    // And the path is free again, which an orphaned listener would deny.
+    handle = await listenLines({ path, onLine: () => {}, onError: () => {} });
+    expect(await probeSocket(path)).toBe(true);
   });
 
   it('removes the socket file on close', async () => {

@@ -4,10 +4,24 @@ import { dirname } from 'node:path';
 import { socketPathTooLong } from './paths.js';
 import { MAX_LINE_BYTES } from './wire.js';
 
+/**
+ * Resource hygiene on our own listener, not rate limiting — SPEC §8.6 puts
+ * throttling in Tin Can, and nothing here counts or delays messages. What
+ * these bound is file descriptors and buffers held inside the opencode
+ * process: a leaking sender that connects and never closes would otherwise
+ * accumulate sockets, each able to hold MAX_LINE_BYTES of unterminated
+ * buffer, until fd exhaustion wedges the host — which SPEC §8.1 calls a
+ * worse outcome than a missed message.
+ */
+export const MAX_CONNECTIONS = 64;
+export const IDLE_TIMEOUT_MS = 30_000;
+
 export interface ListenOptions {
   path: string;
   onLine: (line: string) => void;
   onError: (err: unknown) => void;
+  /** Overridable so tests need not wait out the real one. */
+  idleTimeoutMs?: number;
 }
 
 export interface ServerHandle {
@@ -87,11 +101,16 @@ export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
   }
 
   const sockets = new Set<Socket>();
+  const idleMs = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
   const server: Server = createServer((socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
+    // A sender writes one line and closes. Anything still idle after this
+    // is a leak, not a peer.
+    socket.setTimeout(idleMs, () => socket.destroy());
     frame(socket, opts);
   });
+  server.maxConnections = MAX_CONNECTIONS;
   server.on('error', (e) => safeOnError(opts, e));
 
   await new Promise<void>((resolve, reject) => {
@@ -99,8 +118,18 @@ export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
     server.listen(opts.path, () => resolve());
   });
 
-  // Neither node:net nor Bun.listen honours 0600 on creation. SPEC §4.
-  await chmod(opts.path, 0o600);
+  const closeServer = () => new Promise<void>((resolve) => server.close(() => resolve()));
+
+  try {
+    // Neither node:net nor Bun.listen honours 0600 on creation. SPEC §4.
+    await chmod(opts.path, 0o600);
+  } catch (e) {
+    // Rethrowing from here would leave a listening server on a 0755 socket
+    // that no ServerHandle exists to close.
+    await closeServer();
+    try { await unlink(opts.path); } catch { /* already gone */ }
+    throw e;
+  }
 
   let closed = false;
   return {
@@ -112,7 +141,7 @@ export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
       // peer would otherwise wedge this forever, and SPEC §8.1 names
       // wedging the user's session as worse than a missed message.
       for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer();
       try {
         await unlink(opts.path);
       } catch {
