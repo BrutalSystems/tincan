@@ -137,6 +137,21 @@ environment decides which runtime is hosting.
 npm install -g @brutalsystems/tincan
 ```
 
+**Updating.** Publishing a new version does not touch an installed copy —
+`tincan --version` keeps reporting the old one until you pull it:
+
+```bash
+npm update -g @brutalsystems/tincan
+tincan --version
+```
+
+If `which tincan` points at a version manager's shim (`~/.asdf/shims/tincan`,
+for instance), run the update under the node version that shim resolves to,
+and reshim afterwards — `asdf reshim nodejs`. **Then restart your sessions:**
+MCP servers are started once at session startup, so a session running the old
+binary keeps running it until it restarts. Sessions pointed at a working copy
+rather than the global install are already current.
+
 **Install it on every side you want addressable.** A session can only be
 *reached* if it has Tin Can too, so register it with each runtime you want to
 talk to. None of the references below need a path — the `tincan` command is on
@@ -619,11 +634,41 @@ npm run typecheck:plugin  # separate tsconfig for plugins/opencode, which ships 
 normative — a change to it is a breaking release.
 [`RELEASING.md`](./RELEASING.md) covers cutting one.
 
+### Publishing
+
 **CI and publishing both run in GitHub Actions.** Every push and PR to `main`
-runs `ci.yml` — build, plugin typecheck, the suite on Node 22 and 24, and the
-tarball check. Publishing is separate and **tag-driven**: pushing a `v*.*.*`
-tag runs `publish.yml`, which releases to npm over OIDC with provenance and no
-stored token. A branch push builds and tests; it never publishes. See
+runs `ci.yml` — build, plugin typecheck, the suite on Node 22 and 24, the
+tarball check, and a check that all four version sites agree. Publishing is
+separate and **tag-driven**: pushing a `v*.*.*` tag runs `publish.yml`, which
+releases to npm over OIDC with provenance and no stored token. A branch push
+builds and tests; it never publishes.
+
+A release is two commands — the change, then the version:
+
+```bash
+git commit -am "<what changed>"
+npm version patch -m "%s — <what changed>"     # or minor / major
+```
+
+`npm version` rewrites all four version sites (`package.json`,
+`test/fixtures/canonical-id.json`, `plugins/opencode/tincan-lib/types.ts` and
+`CANONICAL_ID.md`) through `scripts/sync-version.mjs` on the `version`
+lifecycle hook, commits them, tags `v0.5.6`, and pushes commit and tag via
+`postversion`. That tag is what publishes. Watch it:
+
+```bash
+gh run watch --repo BrutalSystems/tincan
+```
+
+It needs a clean tree, which is why the change is committed first. A bare
+`git push` sends the commit only: CI runs, nothing publishes.
+`npm run check-version` reports version drift without changing anything.
+
+Only BrutalSystems org owners can push, and therefore only they can publish —
+npm trusted publishing grants release rights to whoever can push a tag.
+Outside contributions go through a fork and a pull request.
+
+Full procedure and the trusted-publisher setup:
 [`RELEASING.md`](./RELEASING.md) and
 [`docs/ci-cd-standard.md`](./docs/ci-cd-standard.md).
 
