@@ -14,6 +14,8 @@ import { listCodexPeers, type CodexEnv } from './codex/discover.js';
 import { createCodexEnv, parentPidLookup } from './codex/cli.js';
 import { pickSelfThreadId, ancestorPids } from './codex/self.js';
 import { listOpencodeSessions, type OpencodeSession } from './opencode/discover.js';
+import { sendToInstance } from './opencode/client.js';
+import { runtimeSupportsUrgent } from './tools.js';
 
 export interface HostContext {
   registryDir: string;
@@ -78,7 +80,7 @@ function findSessionName(
 
 export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
   const env = ctx.env ?? process.env;
-  const common = { selfRuntime: runtime, selfCwd: ctx.cwd, supportsUrgent: false };
+  const common = { selfRuntime: runtime, selfCwd: ctx.cwd };
 
   switch (runtime) {
     case 'claude-code': {
@@ -88,10 +90,12 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
       const codex = createCodexEnv();
       const name = selfNameFor(runtime, ctx);
       const registryDir = opencodeRegistryDir(env);
+      const peerRuntimes: RuntimeName[] = ['codex', 'opencode'];
       return {
         ...common,
         selfName: async () => name,
-        peerRuntimes: ['codex', 'opencode'],
+        peerRuntimes,
+        supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
         limitsFor,
         async listPeers() {
           const [codexListing, opencodeListing] = await Promise.all([
@@ -111,9 +115,8 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
             ...(diagnostic !== undefined && { diagnostic }),
           };
         },
-        // An opencode peer is not deliverable yet — Task 3. `deliver` is
-        // unchanged and only ever called for a Codex peer from this side.
-        deliver: (peer, id, text) => deliverTo(codex, ctx, peer, id, text),
+        deliver: (peer, id, text, urgent) =>
+          deliverTo(codex, ctx, peer, id, text, urgent, async () => name),
       };
     }
 
@@ -135,11 +138,13 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
         () => codexThreadName(codexForSelf, ctx, env),
         ctx.cwd,
       );
+      const peerRuntimes: RuntimeName[] = ['codex', 'claude-code'];
 
       return {
         ...common,
         selfName,
-        peerRuntimes: ['codex', 'claude-code'],
+        peerRuntimes,
+        supportsUrgent: peerRuntimes.some(runtimeSupportsUrgent),
         limitsFor,
 
         async listPeers() {
@@ -179,7 +184,8 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext): Side {
           };
         },
 
-        deliver: (peer, id, text) => deliverTo(codexForSelf, ctx, peer, id, text),
+        deliver: (peer, id, text, urgent) =>
+          deliverTo(codexForSelf, ctx, peer, id, text, urgent, selfName),
       };
     }
 
@@ -229,13 +235,24 @@ function toOpencodeSidePeer(p: OpencodeSession): SidePeer {
   };
 }
 
-/** Delivery dispatches on the peer's runtime, not on the host's. */
+/**
+ * Delivery dispatches on the peer's runtime, not on the host's.
+ *
+ * `urgent` must reach every branch that can act on it. It is threaded through
+ * explicitly here — rather than folded into a closure captured elsewhere —
+ * because an arrow with fewer parameters than `Side.deliver`'s declared type
+ * is assignable to it with no compiler error (see runtime.test.ts and
+ * tools.test.ts's end-to-end `urgent` tests). `selfName` is only needed for
+ * the opencode wire, which is the one that carries a sender field explicitly.
+ */
 async function deliverTo(
   codex: CodexEnv,
   ctx: HostContext,
   peer: SidePeer,
   id: string,
   text: string,
+  urgent: boolean,
+  selfName: () => Promise<string>,
 ): Promise<DeliveryOutcome> {
   switch (peer.runtime) {
     case 'codex': {
@@ -261,10 +278,26 @@ async function deliverTo(
         ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
       };
     }
-    case 'opencode':
-      // Loud, not silent: until Task 3, an opencode peer must never be sent
-      // down the Claude inbox protocol against peer.socketPath!.
-      throw new Error('opencode delivery not implemented (Task 3)');
+    case 'opencode': {
+      const r = await sendToInstance({
+        socketPath: peer.socketPath!,
+        toSession: peer.uuid,
+        from: await selfName(),
+        text,
+        // opencode's own default is "steer"; Tin Can's policy is queue-by-
+        // default (SPEC §7 / change-notice-opencode.md §3). This field must
+        // always be set explicitly — never leave it to inherit opencode's
+        // default, which would silently invert the policy.
+        delivery: urgent ? 'steer' : 'queue',
+        messageId: id,
+      });
+      return {
+        delivered: r.delivered,
+        method: 'opencode/prompt',
+        ...(r.error !== undefined && { error: r.error }),
+        ...(r.unreachable !== undefined && { unreachable: r.unreachable }),
+      };
+    }
     default:
       return assertNever(peer.runtime, 'deliverTo');
   }

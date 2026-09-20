@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { detectRuntime, selfNameFor, buildSide, codexSelfNameOf, makeSelfNameResolver } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
-import { fakeInbox } from './fakes.js';
+import { fakeInbox, fakeOpencodeInstance } from './fakes.js';
 
 let dir: string;
 beforeEach(() => {
@@ -146,6 +146,50 @@ describe('buildSide', () => {
     }
   });
 
+  test(
+    'the urgent flag reaches the opencode wire as delivery:"steer"/"queue" — the exact seam ' +
+      'where an arrow with a dropped parameter would type-check but silently always queue',
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), 'tincan-oc-home2-'));
+      try {
+        const registryDir = join(home, 'peers', 'opencode');
+        mkdirSync(registryDir, { recursive: true });
+        const instance = await fakeOpencodeInstance();
+        try {
+          writeFileSync(
+            join(registryDir, 'ses_b.json'),
+            JSON.stringify({
+              session_id: 'ses_b',
+              slug: 'nimble-wizard',
+              directory: '/repo',
+              state: 'idle',
+              socket: instance.path,
+              instance_id: 'inst-b91f',
+              pid: 4242,
+            }),
+          );
+          const side = buildSide('claude-code', {
+            registryDir: join(dir, 'sessions'),
+            pid: 1,
+            cwd: '/src/x',
+            env: { TINCAN_HOME: home },
+          });
+          const { peers } = await side.listPeers();
+          const ocPeer = peers.find((p) => p.runtime === 'opencode')!;
+
+          await side.deliver(ocPeer, 'msg_urgent', 'hi urgent', true);
+          await side.deliver(ocPeer, 'msg_queued', 'hi queued', false);
+
+          expect(instance.rawLines.map((l) => JSON.parse(l).delivery)).toEqual(['steer', 'queue']);
+        } finally {
+          await instance.close();
+        }
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
   test('hosted in Codex, it exposes both runtimes', () => {
     // Codex's collaboration tools only reach its own spawn tree, so it has no
     // native path to either an independent Codex session or a Claude one.
@@ -165,9 +209,16 @@ describe('buildSide', () => {
     expect(await side.selfName()).toBe('auth-service');
   });
 
-  test('reports urgent as unsupported on both sides, because neither peer can be steered', () => {
-    for (const r of ['claude-code', 'codex'] as const) {
-      expect(buildSide(r, { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent).toBe(false);
-    }
+  test('reports urgent as supported once opencode is among the peer runtimes, unsupported otherwise', () => {
+    // claude-code hosted lists opencode peers, which opencode's own wire
+    // format can steer (delivery: "steer"). codex hosted lists only Codex and
+    // Claude Code peers, neither of which exposes any way to interrupt a
+    // running turn.
+    expect(
+      buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
+    ).toBe(true);
+    expect(
+      buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' }).supportsUrgent,
+    ).toBe(false);
   });
 });

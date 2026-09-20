@@ -1,5 +1,6 @@
 import net from 'node:net';
-import { mkdtempSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,5 +48,75 @@ export async function fakeInbox(opts: { accept?: boolean } = {}): Promise<FakeIn
     lines,
     replyWith,
     close: () => new Promise<void>((res) => server.close(() => res())),
+  };
+}
+
+export interface FakeOpencodeInstance {
+  path: string;
+  /** Raw, unparsed lines as they arrived — for exact-wire-format assertions. */
+  rawLines: string[];
+  close(): Promise<void>;
+}
+
+/** A stand-in for the opencode plugin's per-instance Unix socket (SPEC.md §7). */
+export async function fakeOpencodeInstance(): Promise<FakeOpencodeInstance> {
+  const dir = mkdtempSync(join(tmpdir(), 'tincan-oc-sock-'));
+  const path = join(dir, 'inst-test.sock');
+  const rawLines: string[] = [];
+
+  const server = net.createServer((conn) => {
+    let buf = '';
+    conn.on('data', (d) => {
+      buf += d.toString();
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        rawLines.push(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+      }
+    });
+    conn.on('error', () => {});
+  });
+
+  await new Promise<void>((res) => server.listen(path, res));
+
+  return {
+    path,
+    rawLines,
+    close: () => new Promise<void>((res) => server.close(() => res())),
+  };
+}
+
+/**
+ * A socket path that refuses connections because the process behind it is
+ * gone — the real "stale socket after a crash" case (SPEC §6), not merely an
+ * unbound path. Achieved by spawning a child that binds the socket, then
+ * SIGKILLing it before it can clean up, so the file survives but nothing
+ * answers. Returns the path plus a cleanup for the leftover file.
+ */
+export async function deadOpencodeSocket(): Promise<{ path: string; cleanup(): void }> {
+  const dir = mkdtempSync(join(tmpdir(), 'tincan-oc-dead-'));
+  const path = join(dir, 'inst-dead.sock');
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      '-e',
+      `require('node:net').createServer(()=>{}).listen(${JSON.stringify(path)}, () => { console.log('up'); }); setInterval(()=>{}, 1000);`,
+    ]);
+    const onData = (d: Buffer) => {
+      if (d.toString().includes('up')) {
+        child.stdout.off('data', onData);
+        child.kill('SIGKILL');
+        setTimeout(resolve, 200);
+      }
+    };
+    child.stdout.on('data', onData);
+    child.on('error', reject);
+  });
+
+  return {
+    path,
+    cleanup: () => {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    },
   };
 }

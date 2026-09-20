@@ -1,5 +1,6 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
 import type { RuntimeName } from './naming.js';
+import { runtimeSupportsUrgent } from './tools.js';
 
 export interface ToolDefinition {
   name: string;
@@ -19,6 +20,16 @@ const LABEL: Record<RuntimeName, string> = {
 
 export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
   const peer = peerRuntimes.map((r) => LABEL[r]).join(' and ');
+  const steerable = peerRuntimes.filter(runtimeSupportsUrgent);
+  const notSteerable = peerRuntimes.filter((r) => !runtimeSupportsUrgent(r));
+  const urgentDescription =
+    steerable.length === 0
+      ? `Ask to interrupt a running turn. Unsupported on ${peer}; the message is queued either way.`
+      : notSteerable.length === 0
+        ? `Ask to interrupt a running turn instead of queuing behind it.`
+        : `Ask to interrupt a running turn instead of queuing behind it. Only takes effect for ` +
+          `${steerable.map((r) => LABEL[r]).join(' and ')} peers; ` +
+          `${notSteerable.map((r) => LABEL[r]).join(' and ')} peers are always queued regardless.`;
   return [
     {
       name: 'peers',
@@ -59,9 +70,7 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
           urgent: {
             type: 'boolean',
             default: false,
-            description:
-              'Ask to interrupt a running turn. Currently unsupported on both runtimes; ' +
-              'the message is queued either way.',
+            description: urgentDescription,
           },
         },
         required: ['peer', 'message'],

@@ -125,10 +125,22 @@ describe('peers', () => {
     expect(r.diagnostic).toContain('codex');
   });
 
-  test('reports that urgent has no effect when the runtime cannot be steered', async () => {
+  test('names the specific runtime that cannot be steered, not "neither"', async () => {
     const { side } = makeSide();
     const r = await tools(side).peers();
     expect(r.notes?.join(' ')).toMatch(/urgent/i);
+    expect(r.notes?.join(' ')).toContain('codex');
+    expect(r.notes?.join(' ')).not.toMatch(/neither/i);
+  });
+
+  test('emits no urgent note when every listed peer runtime can be steered', async () => {
+    const { side } = makeSide({
+      peerRuntimes: ['opencode'],
+      supportsUrgent: true,
+      listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
+    });
+    const r = await tools(side).peers();
+    expect(r.notes ?? []).toEqual([]);
   });
 });
 
@@ -209,6 +221,34 @@ describe('send_peer', () => {
     expect(delivered[0]!.text).toContain('<peer_message from="billing-api"');
     expect(delivered[0]!.text).toContain('why does verifyToken skew?');
     expect(delivered[0]!.text).toContain('</peer_message>');
+  });
+
+  test(
+    'passes urgent through to Side.deliver — the exact seam where an arrow with a dropped ' +
+      'parameter type-checks but silently always queues (C2)',
+    async () => {
+      const recorded: boolean[] = [];
+      const { side } = makeSide({
+        deliver: async (_p, _e, _t, urgent) => {
+          recorded.push(urgent);
+          return { delivered: true, method: 'thread/queue/add' as const };
+        },
+      });
+      await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi', urgent: true });
+      expect(recorded).toEqual([true]);
+    },
+  );
+
+  test('defaults urgent to false when omitted, and Side.deliver sees false, not undefined', async () => {
+    const recorded: boolean[] = [];
+    const { side } = makeSide({
+      deliver: async (_p, _e, _t, urgent) => {
+        recorded.push(urgent);
+        return { delivered: true, method: 'thread/queue/add' as const };
+      },
+    });
+    await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
+    expect(recorded).toEqual([false]);
   });
 
   test('always populates method and peer_state', async () => {

@@ -110,6 +110,16 @@ export function durableIdOf(p: SidePeer): { thread_id: string } | { session_id: 
   }
 }
 
+/**
+ * Whether a peer on this runtime can have a running turn interrupted at all.
+ * Only opencode's wire protocol exposes that (`delivery: "steer"`); Codex's
+ * queue and the Claude Code inbox have no such notion. Single source of
+ * truth for both `buildSide`'s `supportsUrgent` and the `peers` note below.
+ */
+export function runtimeSupportsUrgent(runtime: RuntimeName): boolean {
+  return runtime === 'opencode';
+}
+
 export function methodFor(runtime: RuntimeName): DeliveryMethod {
   switch (runtime) {
     case 'codex':
@@ -150,10 +160,14 @@ export function createTools(side: Side, log: MessageLog) {
     async peers(): Promise<PeersResult> {
       const { named: list, diagnostic } = await named();
       const notes: string[] = [];
-      if (!side.supportsUrgent && list.length > 0) {
+      const nonSteerable = [...new Set(side.peerRuntimes)].filter(
+        (r) => !runtimeSupportsUrgent(r),
+      );
+      if (nonSteerable.length > 0 && list.length > 0) {
         notes.push(
-          `urgent has no effect: neither runtime exposes a way to interrupt a running ` +
-            `turn, so every message is queued.`,
+          `urgent has no effect for ${nonSteerable.join(' and ')} peers: ` +
+            `${nonSteerable.length > 1 ? 'those runtimes expose' : 'that runtime exposes'} ` +
+            `no way to interrupt a running turn, so messages to them are always queued.`,
         );
       }
       return {
