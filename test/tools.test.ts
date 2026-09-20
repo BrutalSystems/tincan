@@ -129,8 +129,23 @@ describe('peers', () => {
     const { side } = makeSide();
     const r = await tools(side).peers();
     expect(r.notes?.join(' ')).toMatch(/urgent/i);
-    expect(r.notes?.join(' ')).toContain('codex');
+    // The human label, the same one tool-definitions.ts uses — not the raw
+    // RuntimeName token.
+    expect(r.notes?.join(' ')).toContain('Codex');
     expect(r.notes?.join(' ')).not.toMatch(/neither/i);
+  });
+
+  test('labels runtimes in the urgent note exactly as the tool descriptions do', async () => {
+    // tool-definitions.ts renders "Codex and Claude Code"; this note used to
+    // join the raw tokens and render "codex and claude-code" for the same
+    // pair of runtimes, in the same tool output.
+    const { side } = makeSide({
+      peerRuntimes: ['codex', 'claude-code'],
+      listPeers: async () => ({ peers: [peer()] }),
+    });
+    const r = await tools(side).peers();
+    expect(r.notes?.join(' ')).toContain('Codex and Claude Code');
+    expect(r.notes?.join(' ')).not.toContain('claude-code');
   });
 
   test('emits no urgent note when every listed peer runtime can be steered', async () => {

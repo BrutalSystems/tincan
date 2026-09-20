@@ -1,5 +1,5 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
-import type { RuntimeName } from './naming.js';
+import { LABEL, type RuntimeName } from './naming.js';
 import { runtimeSupportsUrgent } from './tools.js';
 
 export interface ToolDefinition {
@@ -11,12 +11,6 @@ export interface ToolDefinition {
     required?: string[];
   };
 }
-
-const LABEL: Record<RuntimeName, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  opencode: 'opencode',
-};
 
 export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
   const peer = peerRuntimes.map((r) => LABEL[r]).join(' and ');

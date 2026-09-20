@@ -1,7 +1,15 @@
 /** The three tools (§7), identical on both sides. */
 import { z } from 'zod';
 import { basename } from 'node:path';
-import { assertNever, assignNames, resolvePeer, slugify, type NamedPeer, type RuntimeName } from './naming.js';
+import {
+  assertNever,
+  assignNames,
+  resolvePeer,
+  slugify,
+  LABEL,
+  type NamedPeer,
+  type RuntimeName,
+} from './naming.js';
 import { buildEnvelope, newMessageId, renderEnvelope, type DeliveryMethod } from './envelope.js';
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
 import { MessageLog, type LogRecord } from './log.js';
@@ -209,7 +217,11 @@ export function createTools(side: Side, log: MessageLog) {
       );
       if (nonSteerable.length > 0 && list.length > 0) {
         notes.push(
-          `urgent has no effect for ${nonSteerable.join(' and ')} peers: ` +
+          // LABEL, not the raw RuntimeName tokens: tool-definitions.ts
+          // renders "Codex and Claude Code" for the same pair, and two
+          // spellings in one tool's output is a bug the reader has to
+          // resolve.
+          `urgent has no effect for ${nonSteerable.map((r) => LABEL[r]).join(' and ')} peers: ` +
             `${nonSteerable.length > 1 ? 'those runtimes expose' : 'that runtime exposes'} ` +
             `no way to interrupt a running turn, so messages to them are always queued.`,
         );

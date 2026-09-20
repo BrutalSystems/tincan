@@ -2,6 +2,18 @@
 
 export type RuntimeName = 'claude-code' | 'codex' | 'opencode';
 
+/**
+ * How a runtime is written for a human to read. Lives here, beside
+ * `RuntimeName` itself, so that `tools.ts` and `tool-definitions.ts` can both
+ * use it without importing each other — two spellings of the same runtime in
+ * one tool's output is exactly what this is for.
+ */
+export const LABEL: Record<RuntimeName, string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  opencode: 'opencode',
+};
+
 export interface PeerBase {
   runtime: RuntimeName;
   /** Harness-supplied name; Codex threads may be unnamed. */
