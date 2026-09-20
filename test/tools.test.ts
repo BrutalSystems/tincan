@@ -454,6 +454,91 @@ describe('send_peer', () => {
   );
 });
 
+describe('opencode admission is not execution', () => {
+  // Reproduced 2026-09-20 against opencode 1.18.31: Tin Can's plugin POSTs to
+  // /api/session/{id}/prompt, which returns 200 with an admittedSeq and makes
+  // the text a type:"user" message — and on a TUI-hosted session that is
+  // IDLE, no agent turn is ever scheduled. The message parks forever. Tin Can
+  // cannot see any of this: client.ts never reads a response, so `delivered`
+  // here means "the plugin accepted the line", nothing more.
+  const ocPeer = (state: 'idle' | 'busy') =>
+    peer({ runtime: 'opencode', rawName: 'witty-orchid', socketPath: '/tmp/x.sock', state, threadId: undefined });
+
+  const sendTo = async (state: 'idle' | 'busy') => {
+    const { side } = makeSide({
+      selfRuntime: 'claude-code',
+      peerRuntimes: ['codex', 'opencode'],
+      listPeers: async () => ({ peers: [ocPeer(state)] }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const }),
+    });
+    return tools(side).send_peer({ peer: 'witty-orchid', message: 'hello' });
+  };
+
+  test('warns that an idle opencode peer may never act on the message', async () => {
+    const r = await sendTo('idle');
+    expect(r.delivered).toBe(true);
+    expect(r.notice).toBeDefined();
+    expect(r.notice).toMatch(/idle/i);
+    expect(r.notice).toMatch(/may not|might not/i);
+  });
+
+  test('still reports delivered — the plugin did accept it', async () => {
+    // Not a failure: the message is durably admitted and a human opening that
+    // session sees it. Calling this delivered:false would be as wrong as
+    // calling it silently fine.
+    expect((await sendTo('idle')).delivered).toBe(true);
+    expect((await sendTo('idle')).refusal).toBeUndefined();
+  });
+
+  test('does not warn for a busy opencode peer', async () => {
+    // A session that was mid-turn at arrival does drain it.
+    expect((await sendTo('busy')).notice).toBeUndefined();
+  });
+
+  test('does not warn for Codex or Claude Code peers', async () => {
+    // Their queue and inbox both genuinely run the message.
+    for (const runtime of ['codex', 'claude-code'] as const) {
+      const { side } = makeSide({
+        selfRuntime: 'opencode',
+        peerRuntimes: ['codex', 'claude-code'],
+        listPeers: async () => ({
+          peers: [peer({ runtime, rawName: 'other', state: 'idle', ...(runtime === 'claude-code' ? { threadId: undefined } : {}) })],
+        }),
+      });
+      const r = await tools(side).send_peer({ peer: 'other', message: 'hello' });
+      expect(r.notice).toBeUndefined();
+    }
+  });
+
+  test('records the caveat in the message log, not only in the tool result', async () => {
+    // A log line reading "delivered" with no detail, beside a tool result
+    // that hedges, is the drift this codebase keeps closing. Before the fix
+    // the log took outcome.notice, which is undefined on this path.
+    const { side } = makeSide({
+      peerRuntimes: ['codex', 'opencode'],
+      listPeers: async () => ({ peers: [ocPeer('idle')] }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const }),
+    });
+    await tools(side).send_peer({ peer: 'witty-orchid', message: 'hello' });
+    // read() folds the outcome onto the sent record as `notice`.
+    const records = log.read({ last_n: 10 }) as Array<{ delivered?: boolean; notice?: string }>;
+    const rec = records.at(-1);
+    expect(rec?.delivered).toBe(true);
+    expect(rec?.notice).toMatch(/idle/i);
+  });
+
+  test('does not clobber a notice the delivery itself produced', async () => {
+    const { side } = makeSide({
+      peerRuntimes: ['codex', 'opencode'],
+      listPeers: async () => ({ peers: [ocPeer('idle')] }),
+      deliver: async () => ({ delivered: true, method: 'opencode/prompt' as const, notice: 'held by the peer' }),
+    });
+    const r = await tools(side).send_peer({ peer: 'witty-orchid', message: 'hello' });
+    expect(r.notice).toContain('held by the peer');
+    expect(r.notice).toMatch(/idle/i);
+  });
+});
+
 describe('message_log', () => {
   test('reads back what was sent, as one record per message', async () => {
     const { side } = makeSide();

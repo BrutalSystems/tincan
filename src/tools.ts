@@ -211,6 +211,45 @@ export function labelList(runtimes: RuntimeName[]): string {
   return `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
 }
 
+/**
+ * Why a successful opencode send may still never be read.
+ *
+ * Tin Can's plugin POSTs to `/api/session/{id}/prompt`, which answers 200
+ * with an `admittedSeq` and makes the text a `type:"user"` message. The
+ * endpoint's own OpenAPI summary promises more than that — "Durably admit one
+ * session input and schedule agent-loop execution unless resume is false" —
+ * but on a TUI-hosted session that is idle, the admission happens and the
+ * scheduling does not. Reproduced against opencode 1.18.31 on 2026-09-20:
+ * the message sits as the session's only message with no assistant reply,
+ * across minutes, and neither `delivery: "steer"`, `resume: true`, nor a
+ * keystroke in the TUI drains it. A session that was BUSY on arrival does run
+ * it, and so does one hosted by `opencode serve`.
+ *
+ * Tin Can cannot observe any of that. `client.ts` writes a line to the
+ * plugin's socket and never reads a response, so `delivered` on this leg means
+ * "the plugin accepted the line" — two layers above the thing that decides
+ * whether an agent ever runs. Reporting that bare truth as though it matched
+ * the Codex queue and the Claude Code inbox, which do both run the message, is
+ * the actual defect. So: still delivered, because the message is durably there
+ * for a human who opens that session, plus a notice that says what is
+ * uncertain. The same shape as the Claude inbox hold receipt — a notice, not a
+ * failure.
+ *
+ * Narrow on purpose. `busy` is left alone because a mid-turn session drains
+ * it, and we cannot tell a TUI-hosted session from a served one, so the idle
+ * case is the only one we can name honestly.
+ */
+export function admissionNotice(runtime: RuntimeName, state: PeerState): string | undefined {
+  if (runtime !== 'opencode' || state !== 'idle') return undefined;
+  return (
+    'This opencode session was idle. The message is durably admitted — it is a real ' +
+    'user message in that session — but an idle opencode session may not schedule an ' +
+    'agent turn for it, so the peer may not act on it until a human opens that session. ' +
+    'Tin Can cannot confirm execution on this leg: it sees the plugin accept the message, ' +
+    'not the agent run it.'
+  );
+}
+
 export function methodFor(runtime: RuntimeName): DeliveryMethod {
   switch (runtime) {
     case 'codex':
@@ -388,10 +427,23 @@ export function createTools(side: Side, log: MessageLog) {
         args.urgent,
       );
 
+      // Both, when both apply: the delivery's own notice describes what the
+      // peer's harness said, the admission notice what it did not say.
+      // Computed before the log is written, not after, so `message_log` and
+      // the tool result carry the same caveat — a log that says "delivered"
+      // with no note, beside a result that hedges, is the drift this file
+      // keeps trying to avoid.
+      const notice = [
+        outcome.notice,
+        outcome.delivered ? admissionNotice(target.side.runtime, target.side.state) : undefined,
+      ]
+        .filter((n): n is string => n !== undefined && n !== '')
+        .join(' ');
+
       log.appendOutcome(
         envelope.id,
         outcome.delivered,
-        outcome.notice ?? (outcome.delivered ? undefined : outcome.error),
+        notice !== '' ? notice : outcome.delivered ? undefined : outcome.error,
       );
 
       return {
@@ -399,7 +451,7 @@ export function createTools(side: Side, log: MessageLog) {
         method: outcome.method,
         peer_state: target.side.state,
         message_id: envelope.id,
-        ...(outcome.notice !== undefined && { notice: outcome.notice }),
+        ...(notice !== '' && { notice }),
         ...(!outcome.delivered && {
           refusal: 'delivery_failed' as const,
           detail: outcome.error ?? 'The peer runtime did not accept the message.',

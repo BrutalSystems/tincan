@@ -121,6 +121,39 @@ from the session registry. opencode peers report real state too, pushed live
 by the plugin from opencode's own event bus — Tin Can never has to probe an
 opencode peer to know whether it is busy.
 
+### opencode: admitted is not the same as acted on
+
+**A successful send to an idle opencode session may never be read.** Verified
+against opencode 1.18.31 on 2026-09-20.
+
+Tin Can's opencode plugin POSTs to `/api/session/{id}/prompt`. That returns
+200 with an `admittedSeq`, and the text becomes a real `type:"user"` message in
+the session — durable, and visible to a human who opens it. The endpoint's own
+OpenAPI summary promises more: *"Durably admit one session input and schedule
+agent-loop execution unless resume is false."* On a TUI-hosted session that is
+**idle**, the admission happens and the scheduling does not. The message parks
+indefinitely; neither `delivery: "steer"`, nor `resume: true`, nor a keystroke
+in the TUI drains it.
+
+| Target | Result |
+|---|---|
+| opencode, idle, TUI-hosted | admitted, **no agent turn** |
+| opencode, busy on arrival | drains — the turn is attempted |
+| opencode, `opencode serve` | runs normally |
+| Codex, Claude Code | queue and inbox both run the message |
+
+So `send_peer` to an **idle** opencode peer returns `delivered: true` with a
+`notice` saying the peer may not act until a human opens that session, and the
+same caveat is written to `~/.tincan/messages.jsonl`. It is not reported as a
+failure, because the message really is there.
+
+Tin Can cannot do better than a caveat on this leg. `src/opencode/client.ts`
+writes a line to the plugin's socket and never reads a response, so what it
+knows is "the plugin accepted the line" — two layers above whatever decides
+that an agent runs. Found by the Muster session while probing the same
+endpoint; the split is TUI-hosted versus server-hosted, not anything in Tin
+Can's socket layer.
+
 ### A known gap in the log
 
 Claude↔Claude traffic goes through `SendMessage`, not Tin Can, so **it does not
