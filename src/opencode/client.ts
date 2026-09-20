@@ -100,7 +100,14 @@ export function sendToInstance(
       wrote = true;
     });
 
-    conn.on('close', () => finish({ delivered: true }));
+    // Gated on `wrote` for exactly the reason the fallback timer above is:
+    // the peer closing its side is only an implicit ack if we actually put
+    // the line on the socket first. A connection that closes before the
+    // write lands — the accept never completes, the peer goes away mid-
+    // handshake — delivered nothing.
+    conn.on('close', () =>
+      finish(wrote ? { delivered: true } : { delivered: false, unreachable: true }),
+    );
 
     conn.on('error', (e: NodeJS.ErrnoException) => {
       // ECONNREFUSED: a dead instance's leftover socket (SPEC §6). ENOENT: no

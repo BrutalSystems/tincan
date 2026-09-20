@@ -112,6 +112,37 @@ describe('sendToInstance', () => {
     }
   });
 
+  test(
+    'a connection that closes without the write ever landing reports delivered:false — ' +
+      'the close handler and the fallback timer must agree on what `wrote` means',
+    async () => {
+      // No 'connect', so the write never happens; the peer's side just goes
+      // away. Resolving delivered:true here reported success for a message
+      // that was never put on the socket at all, and nothing downstream —
+      // Tin Can's own log included — could ever contradict it.
+      const fake = new EventEmitter() as unknown as net.Socket;
+      fake.end = (() => fake) as net.Socket['end'];
+      fake.destroy = (() => fake) as net.Socket['destroy'];
+
+      const pending = sendToInstance(
+        {
+          socketPath: '/does/not/matter',
+          toSession: 'ses_abc123',
+          from: 'billing-api',
+          text: 'hi',
+          delivery: 'queue',
+          messageId: 'msg_01J8',
+          // Long enough that only the close handler can settle this.
+          fallbackMs: 10_000,
+        },
+        { connect: () => fake },
+      );
+      fake.emit('close');
+
+      expect(await pending).toEqual({ delivered: false, unreachable: true });
+    },
+  );
+
   describe('the fallback timer (peer never closes its side, or never connects at all)', () => {
     test('resolves delivered:true once the write has happened, even if the peer never closes', async () => {
       instance = await fakeOpencodeInstanceNeverCloses();
