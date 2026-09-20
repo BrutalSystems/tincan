@@ -178,3 +178,44 @@ describe('startPlugin — dispose', () => {
     expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
   });
 });
+
+describe('startPlugin — caller identity', () => {
+  it('records the session that invoked a Tin Can tool', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'tincan_send_peer', sessionID: 'ses_caller', callID: 'c1' });
+    const rec = JSON.parse(readFileSync(join(dir, 'inst-self.caller.json'), 'utf8'));
+    expect(rec.session_id).toBe('ses_caller');
+    expect(rec.instance_id).toBe('inst-self');
+    expect(rec.pid).toBe(4242);
+    await hooks.dispose();
+  });
+
+  it('ignores tools that are not Tin Can’s', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'bash', sessionID: 'ses_other', callID: 'c1' });
+    expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(false);
+    await hooks.dispose();
+  });
+
+  it('writes nothing when startup never bound anything', async () => {
+    const d = deps({ transport: { get: vi.fn().mockRejectedValue(new Error('gone')), post: vi.fn() } as unknown as Transport });
+    const hooks = await startPlugin(d);
+    await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_caller', callID: 'c1' });
+    expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(false);
+    await hooks.dispose();
+  });
+
+  it('never throws on a malformed hook input', async () => {
+    const hooks = await startPlugin(deps());
+    await expect(hooks['tool.execute.before'](null)).resolves.toBeUndefined();
+    await expect(hooks['tool.execute.before']({})).resolves.toBeUndefined();
+    await hooks.dispose();
+  });
+
+  it('dispose removes the caller file along with the records', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_caller', callID: 'c1' });
+    await hooks.dispose();
+    expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(false);
+  });
+});

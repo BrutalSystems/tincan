@@ -1,5 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { sessionFile, socketPath } from './paths.js';
 import type { RegistryRecord, SessionInfo, SessionState } from './types.js';
 
@@ -38,18 +39,28 @@ export function sameIgnoringTimestamp(a: RegistryRecord, b: RegistryRecord): boo
   return JSON.stringify(restA) === JSON.stringify(restB);
 }
 
-/** Atomic: temp file in the same directory, then rename. SPEC §4. */
-export async function writeRecord(dir: string, rec: RegistryRecord): Promise<void> {
+/**
+ * Atomic: temp file in the same directory, then rename. SPEC §4.
+ *
+ * The temp suffix includes both the pid (disambiguates between processes)
+ * and a random token (disambiguates between two concurrent writes to the
+ * same path inside one process — the pid alone collides there).
+ */
+export async function writeJsonAtomic(finalPath: string, value: unknown): Promise<void> {
+  const dir = dirname(finalPath);
   // mkdir's `mode` is ignored when the directory already exists — and Tin Can
   // itself may have created ~/.tincan/peers at 0755. chmod unconditionally, or
   // the 0700 parent that closes the bind-to-chmod race in SPEC §8.3 is a
   // fiction.
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
-  const final = sessionFile(dir, rec.session_id);
-  const tmp = `${final}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(rec, null, 2)}\n`, { mode: 0o600 });
-  await rename(tmp, final);
+  const tmp = `${finalPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await rename(tmp, finalPath);
+}
+
+export async function writeRecord(dir: string, rec: RegistryRecord): Promise<void> {
+  await writeJsonAtomic(sessionFile(dir, rec.session_id), rec);
 }
 
 export async function removeRecord(dir: string, sessionID: string): Promise<void> {

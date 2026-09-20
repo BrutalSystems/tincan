@@ -1,3 +1,4 @@
+import { composeCaller, isTincanTool, writeCaller } from './caller.js';
 import { deliver } from './delivery.js';
 import { effectOf } from './events.js';
 import { makeLogger, type Logger } from './log.js';
@@ -76,6 +77,7 @@ export interface PluginDeps {
 
 export interface PluginHooks {
   event: (input: { event: unknown }) => Promise<void>;
+  'tool.execute.before': (input: unknown) => Promise<void>;
   dispose: () => Promise<void>;
 }
 
@@ -172,6 +174,18 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
         }
       } catch (e) {
         log({ event: 'event.failed', detail: String(e) });
+      }
+    },
+
+    'tool.execute.before': async (input: unknown): Promise<void> => {
+      if (!server) return; // No delivery path, so no session worth excluding.
+      try {
+        const i = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+        if (typeof i.tool !== 'string' || typeof i.sessionID !== 'string') return;
+        if (!isTincanTool(i.tool)) return;
+        await writeCaller(deps.dir, composeCaller(i.sessionID, i.tool, ctx));
+      } catch (e) {
+        log({ event: 'caller.failed', detail: String(e) });
       }
     },
 

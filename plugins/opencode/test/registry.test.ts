@@ -87,6 +87,11 @@ describe('writeRecord', () => {
     expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
 
+  it('writes the record file at 0600', async () => {
+    await writeRecord(dir, composeRecord(info, 'idle', ctx));
+    expect(statSync(join(dir, `${info.id}.json`)).mode & 0o777).toBe(0o600);
+  });
+
   it('overwrites an existing record', async () => {
     await writeRecord(dir, composeRecord(info, 'idle', ctx));
     await writeRecord(dir, composeRecord(info, 'busy', ctx));
