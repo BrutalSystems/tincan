@@ -31,6 +31,7 @@
     "CANONICAL_ID.md",
     "test/fixtures/canonical-id.json",
     "plugins/opencode/tincan.ts",
+    "plugins/opencode/LICENSE",
     "plugins/opencode/tincan-lib",
     "plugins/opencode/README.md"
   ],
