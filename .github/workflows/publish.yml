@@ -124,6 +124,7 @@ jobs:
         run: npm publish "./${{ steps.pack.outputs.tarball }}" --provenance
 
       - name: Confirm the registry is serving it
+        id: served
         if: steps.published.outputs.skip == 'false'
         run: |
           pkg=$(node -p "require('./package.json').version")
@@ -131,11 +132,30 @@ jobs:
             if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
               echo "registry serving $pkg"
               npm view "@brutalsystems/tincan@$pkg" dist.integrity
+              echo "served=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "not yet (attempt $i), waiting 20s"; sleep 20
           done
+          echo "served=false" >> "$GITHUB_OUTPUT"
           echo "::warning::registry still not serving $pkg — publishes lag by 1-2 minutes"
+
+      # Everything above inspects a local build. This is the only check that
+      # sees what a consumer actually downloads. Skipped, not failed, when the
+      # registry has not caught up — the publish itself already succeeded.
+      - name: Verify the PUBLISHED artifact
+        if: steps.published.outputs.skip == 'false' && steps.served.outputs.served == 'true'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          mkdir -p /tmp/published
+          npm pack "@brutalsystems/tincan@$pkg" --pack-destination /tmp/published >/dev/null
+          tar tzf "/tmp/published/brutalsystems-tincan-$pkg.tgz" | sed 's|^package/||' | grep -v '/$' | sort > /tmp/remote.txt
+          tar tzf "./${{ steps.pack.outputs.tarball }}"          | sed 's|^package/||' | grep -v '/$' | sort > /tmp/local.txt
+          if ! diff -u /tmp/local.txt /tmp/remote.txt; then
+            echo "::error::the published tarball does not match what this run packed"
+            exit 1
+          fi
+          echo "published artifact matches — $(wc -l < /tmp/remote.txt) files"
 
       # Tincan has no RELEASE_NOTES.md; the tag annotation is its release
       # record. A repo that keeps release notes extracts that version's

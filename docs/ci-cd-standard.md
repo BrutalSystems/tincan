@@ -92,7 +92,13 @@ full install and test run.
     --provenance` — so what ships is exactly what was smoke-tested.
 11. **Confirm the registry serves it**, and print `dist.integrity`. Publishes
     lag one to two minutes; poll rather than asserting once.
-12. **Create the GitHub Release.**
+12. **Verify the published artifact.** Download it back with `npm pack
+    <package>@<version>` and diff its file list against the tarball this run
+    packed. Every earlier check inspects a local build; this is the only one
+    that sees what a consumer actually downloads. Skip it — do not fail —
+    when the registry has not caught up, since the publish itself already
+    succeeded.
+13. **Create the GitHub Release.**
 
 ## `scripts/verify-tarball.mjs`
 
