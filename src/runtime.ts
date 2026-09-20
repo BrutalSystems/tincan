@@ -477,8 +477,17 @@ async function deliverTo(
  * it either returns a misleading `peer_unknown`, or, when the caller file is
  * absent, is not excluded at all and delivers.
  *
+ * Slugified, exactly as the Codex path slugifies its thread title
+ * (`codexSelfNameOf`). The registry slug is the plugin's to write and is
+ * interpolated straight into `from="…"` by `renderEnvelope`, which does no
+ * escaping — a slug containing `"` or a literal `</peer_message>` would break
+ * the framing of the one control that marks a message as a peer's (SPEC §7).
+ * It is also what a peer has to type back into `send_peer`, which is reason
+ * enough on its own.
+ *
  * Falls back to the directory name, the same as every other host, whenever a
- * session cannot be resolved or its record has no slug.
+ * session cannot be resolved, its record has no slug, or the slug survives
+ * slugify as nothing.
  */
 async function opencodeSelfName(
   registryDir: string,
@@ -486,7 +495,8 @@ async function opencodeSelfName(
   cwd: string,
 ): Promise<string> {
   const raw = sessionId === undefined ? undefined : readOpencodeSlug(registryDir, sessionId);
-  return raw ?? (basename(cwd) || 'opencode');
+  const slug = raw === undefined ? '' : slugify(raw);
+  return slug !== '' ? slug : basename(cwd) || 'opencode';
 }
 
 function readOpencodeSlug(registryDir: string, sessionId: string): string | undefined {
