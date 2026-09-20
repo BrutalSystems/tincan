@@ -100,9 +100,13 @@ npm pack @brutalsystems/tincan@0.1.2 && tar tzf brutalsystems-tincan-0.1.2.tgz
 
 **Publishing is tag-driven and runs in CI.** Pushing a `v*` tag triggers
 `.github/workflows/publish.yml`, which refuses the release unless the tag
-matches `package.json`, refuses to republish a version already on the
-registry, runs build, plugin typecheck and the full suite, and then publishes
-with npm provenance. Nothing publishes from a branch push.
+matches `package.json`, runs build, plugin typecheck and the full suite, and
+then publishes with npm provenance. Nothing publishes from a branch push.
+
+If the version is already on the registry — a re-pushed tag, or a release
+published by hand — the job says so and finishes green without republishing.
+Shipping the *wrong* version is what the tag check catches, and that one
+fails the run.
 
 So the normal release is steps 1-4 and then nothing — watch the run:
 

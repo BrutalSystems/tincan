@@ -55,24 +55,35 @@ jobs:
           fi
           echo "publishing $pkg"
 
-      - name: Refuse to republish an existing version
+      # A version already on the registry is not an error — a re-pushed tag,
+      # or a release published by hand, should leave this run green with
+      # nothing to do. Shipping the WRONG version is what the tag check above
+      # catches, and that one does fail.
+      - name: Already published?
+        id: published
         run: |
           pkg=$(node -p "require('./package.json').version")
           if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
-            echo "::error::@brutalsystems/tincan@$pkg is already on the registry"
-            exit 1
+            echo "::notice::@brutalsystems/tincan@$pkg is already on the registry — nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
       # prepublishOnly runs build + typecheck:plugin + test, so a broken
       # build cannot ship. Running them here too makes the failure legible
       # in its own step rather than buried in npm's output.
       - run: npm run build
+        if: steps.published.outputs.skip == 'false'
       - run: npm run typecheck:plugin
+        if: steps.published.outputs.skip == 'false'
       - run: npm test
+        if: steps.published.outputs.skip == 'false'
 
       # No NODE_AUTH_TOKEN. OIDC supplies the credential, and provenance is
       # generated automatically because the credential is a trusted publisher.
       - name: Publish
+        if: steps.published.outputs.skip == 'false'
         run: npm publish
 
       - name: Verify against the registry
