@@ -77,3 +77,69 @@ export async function removeAllForInstance(dir: string, instanceID: string): Pro
     }
   }
 }
+
+/**
+ * Delete the socket and registry files of every instance whose socket refuses
+ * a connection. The instance id is fresh on every load, so without this a
+ * `kill -9` leaves files nobody will ever reclaim. SPEC §6.
+ *
+ * Sockets are enumerated directly rather than read off records: because the
+ * plugin advertises nothing at load (SPEC §5), a crashed instance that never
+ * saw a session event leaves a socket with no record pointing at it, and that
+ * is the common case, not an edge case.
+ */
+export async function sweepOrphans(
+  dir: string,
+  selfInstance: string,
+  probe: (socketPath: string) => Promise<boolean>,
+): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const instances = new Map<string, { files: string[]; socket: string }>();
+  const entryFor = (id: string) => {
+    let entry = instances.get(id);
+    if (!entry) {
+      entry = { files: [], socket: join(dir, `${id}.sock`) };
+      instances.set(id, entry);
+    }
+    return entry;
+  };
+
+  for (const name of names) {
+    if (name.endsWith('.sock')) {
+      const id = name.slice(0, -'.sock'.length);
+      if (id !== selfInstance) entryFor(id);
+      continue;
+    }
+    if (!name.endsWith('.json')) continue;
+    try {
+      const rec = JSON.parse(await readFile(join(dir, name), 'utf8')) as RegistryRecord;
+      if (typeof rec.instance_id !== 'string' || rec.instance_id === selfInstance) continue;
+      entryFor(rec.instance_id).files.push(join(dir, name));
+    } catch {
+      // Unreadable or unparseable: not ours to delete.
+    }
+  }
+
+  const swept: string[] = [];
+  for (const [instance, entry] of instances) {
+    let alive = false;
+    try {
+      alive = await probe(entry.socket);
+    } catch {
+      alive = false;
+    }
+    if (alive) continue;
+    for (const file of entry.files) {
+      try { await unlink(file); } catch { /* already gone */ }
+    }
+    try { await unlink(entry.socket); } catch { /* already gone */ }
+    swept.push(instance);
+  }
+  return swept;
+}

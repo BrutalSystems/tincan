@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync, chmodSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync, chmodSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeRecord, sameIgnoringTimestamp, writeRecord, removeRecord, removeAllForInstance, type RecordContext } from '../tincan-lib/registry.js';
+import { composeRecord, sameIgnoringTimestamp, writeRecord, removeRecord, removeAllForInstance, sweepOrphans, type RecordContext } from '../tincan-lib/registry.js';
 import type { SessionInfo } from '../tincan-lib/types.js';
 
 const info: SessionInfo = {
@@ -120,5 +120,81 @@ describe('removeAllForInstance', () => {
     writeFileSync(join(dir, 'ses_junk.json'), 'not json');
     await expect(removeAllForInstance(dir, 'inst-a91f')).resolves.toBeUndefined();
     expect(readdirSync(dir)).toEqual(['ses_junk.json']);
+  });
+});
+
+describe('sweepOrphans', () => {
+  const recFor = (sessionID: string, instance: string) => composeRecord(
+    { ...info, id: sessionID },
+    'idle',
+    { ...ctx, instance_id: instance, socket: join(dir, `${instance}.sock`) },
+  );
+
+  it('removes the files and socket of an instance whose socket is refused', async () => {
+    await writeRecord(dir, recFor('ses_dead', 'inst-dead'));
+    writeFileSync(join(dir, 'inst-dead.sock'), '');
+    const swept = await sweepOrphans(dir, 'inst-self', async () => false);
+    expect(swept).toEqual(['inst-dead']);
+    expect(existsSync(join(dir, 'ses_dead.json'))).toBe(false);
+    expect(existsSync(join(dir, 'inst-dead.sock'))).toBe(false);
+  });
+
+  it('sweeps a dead socket that has no registry files at all', async () => {
+    // The --continue-then-kill-9 case: bound a socket, never advertised.
+    writeFileSync(join(dir, 'inst-silent.sock'), '');
+    const swept = await sweepOrphans(dir, 'inst-self', async () => false);
+    expect(swept).toEqual(['inst-silent']);
+    expect(existsSync(join(dir, 'inst-silent.sock'))).toBe(false);
+  });
+
+  it('leaves a live sibling instance completely alone', async () => {
+    await writeRecord(dir, recFor('ses_live', 'inst-live'));
+    writeFileSync(join(dir, 'inst-live.sock'), '');
+    const swept = await sweepOrphans(dir, 'inst-self', async () => true);
+    expect(swept).toEqual([]);
+    expect(existsSync(join(dir, 'ses_live.json'))).toBe(true);
+    expect(existsSync(join(dir, 'inst-live.sock'))).toBe(true);
+  });
+
+  it('never sweeps our own instance, even when the probe says dead', async () => {
+    await writeRecord(dir, recFor('ses_mine', 'inst-self'));
+    writeFileSync(join(dir, 'inst-self.sock'), '');
+    const swept = await sweepOrphans(dir, 'inst-self', async () => false);
+    expect(swept).toEqual([]);
+    expect(existsSync(join(dir, 'ses_mine.json'))).toBe(true);
+    expect(existsSync(join(dir, 'inst-self.sock'))).toBe(true);
+  });
+
+  it('removes an orphan record whose socket file is already gone', async () => {
+    await writeRecord(dir, recFor('ses_dead', 'inst-gone'));
+    const swept = await sweepOrphans(dir, 'inst-self', async () => false);
+    expect(swept).toEqual(['inst-gone']);
+    expect(existsSync(join(dir, 'ses_dead.json'))).toBe(false);
+  });
+
+  it('returns an empty list for an empty or missing directory', async () => {
+    await expect(sweepOrphans(dir, 'inst-self', async () => false)).resolves.toEqual([]);
+    await expect(sweepOrphans(join(dir, 'nope'), 'inst-self', async () => false)).resolves.toEqual([]);
+  });
+
+  it('ignores unparseable files rather than throwing', async () => {
+    writeFileSync(join(dir, 'ses_junk.json'), 'not json');
+    await expect(sweepOrphans(dir, 'inst-self', async () => false)).resolves.toEqual([]);
+    expect(existsSync(join(dir, 'ses_junk.json'))).toBe(true);
+  });
+
+  it('probes each distinct instance only once', async () => {
+    await writeRecord(dir, recFor('ses_1', 'inst-dead'));
+    await writeRecord(dir, recFor('ses_2', 'inst-dead'));
+    writeFileSync(join(dir, 'inst-dead.sock'), '');
+    let probes = 0;
+    await sweepOrphans(dir, 'inst-self', async () => { probes += 1; return false; });
+    expect(probes).toBe(1);
+  });
+
+  it('treats a throwing probe as dead', async () => {
+    writeFileSync(join(dir, 'inst-boom.sock'), '');
+    const swept = await sweepOrphans(dir, 'inst-self', async () => { throw new Error('probe blew up'); });
+    expect(swept).toEqual(['inst-boom']);
   });
 });
