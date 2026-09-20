@@ -28,6 +28,7 @@ An address is built from two inputs:
 |---|---|---|
 | `codex` | thread title, or absent | `thread_id` |
 | `claude-code` | session name from the registry | `session_id` |
+| `opencode` | session slug | `session_id` |
 
 Neither name is guaranteed unique, and neither is stable: **a name belongs to a
 process and dies with it.** Key durable records on the id, never on the address.
@@ -67,11 +68,33 @@ is a timestamp, so every thread live on a machine at the same time shares its
 first characters. A leading suffix disambiguates nothing. This has been
 specified wrongly before — verify against the fixture.
 
+The same holds for opencode, for the same reason by a different route. An
+opencode session id is `ses_` followed by roughly twelve hex characters of
+descending timestamp, then roughly fourteen base62 (`[0-9a-zA-Z]`) random
+characters. Stripping to `[0-9a-f]` and taking the last three lands in that
+random tail, not the timestamp — exactly as it does for a Codex UUIDv7 or a
+Claude Code UUIDv4. `suffixOf('ses_f41a2b3c4ffeExampleSess01Z')` → `'e01'`.
+
 - `01a0b9b4-a33e-7ab1-80a0-bb715504a0fb` → `0fb`
 - `5af69d42-2214-41d9-b13f-9c3177eb60ce` → `0ce`
+- `ses_f41a2b3c4ffeExampleSess01Z` → `e01`
 - Uppercase hex is kept, then lowered: `...ABC` → `abc`
 - Fewer than three hex characters yields a shorter suffix: `z-9` → `9`
 - No hex at all yields an empty suffix: `zzzz` → `""`
+
+Two caveats specific to opencode's id shape:
+
+- **The random tail is base62, not hex, so filtering it down to `[0-9a-f]`
+  skews the alphabet.** `a`–`f` are reachable from two source characters each
+  (upper- and lower-case), while `0`–`9` are reachable from only one, so the
+  surviving hex digits are not uniform. Collision odds for the suffix
+  therefore sit slightly above the nominal 1 in 4096 for a uniform 3-hex-digit
+  space. Worth stating; not worth changing — see
+  [Changing this format](#changing-this-format).
+- **An opencode id can never produce the empty-suffix defect.** The fixed
+  `ses_` + hex-timestamp prefix guarantees at least three hex characters are
+  always present, so unlike an adversarial or degenerate id (`zzzz` above),
+  `suffixOf` never returns `""` for a real opencode session id.
 
 ## Forms
 
@@ -97,6 +120,19 @@ A peer is suffixed in its **display** form when either:
 
 Otherwise the display form is the bare slug. Only colliding peers are suffixed;
 peers that do not collide keep their bare names in the same listing.
+
+**Adding a runtime can change an existing peer's display.** `assignNames`
+computes collisions across the *whole* returned list, regardless of runtime.
+So a peer that displayed as a bare slug before opencode support existed can
+start displaying suffixed the moment an opencode peer (or any peer) slugging
+to the same string appears in the same listing — a Codex peer `foo` and an
+opencode session slugging to `foo` both flip from bare `foo` to qualified
+`foo.<suffix>` (see the fixture's "cross-runtime collision" case). This is
+inherent to the existing rule, not new behaviour introduced by opencode
+support, and it is correct: the two peers are genuinely indistinguishable by
+slug. It is called out here because Muster consumes `display`, and this
+should be an expected consequence of adding a runtime, not something its
+maintainer discovers by surprise.
 
 ## Resolution
 

@@ -17,6 +17,7 @@
   "suffix": [
     { "case": "codex thread id (uuidv7): last three hex", "input": "01a0b9b4-a33e-7ab1-80a0-bb715504a0fb", "output": "0fb" },
     { "case": "claude session id (uuidv4): last three hex", "input": "5af69d42-2214-41d9-b13f-9c3177eb60ce", "output": "0ce" },
+    { "case": "opencode session id (ses_ + hex timestamp + base62 random tail): last three hex", "input": "ses_f41a2b3c4ffeExampleSess01Z", "output": "e01" },
     { "case": "uppercase hex is lowercased", "input": "...ABC", "output": "abc" },
     { "case": "non-hex characters are stripped before slicing", "input": "z-9", "output": "9" },
     { "case": "no hex at all yields an empty suffix", "input": "zzzz", "output": "" },
@@ -33,6 +34,33 @@
       "case": "claude peers are qualified with their runtime",
       "peers": [ { "runtime": "claude-code", "rawName": "billing-api", "uuid": "5af69d42-2214-41d9-b13f-9c3177eb60ce" } ],
       "expect": [ { "display": "billing-api", "canonicalId": "claude-code:billing-api.0ce" } ]
+    },
+    {
+      "case": "opencode peer, no collision: display is the bare slug",
+      "peers": [ { "runtime": "opencode", "rawName": "nimble-wizard", "uuid": "ses_7f6e5d4c3b2aNimbleWizardQ7" } ],
+      "expect": [ { "display": "nimble-wizard", "canonicalId": "opencode:nimble-wizard.ad7" } ]
+    },
+    {
+      "case": "collision between two opencode sessions with the same slug: both suffixed",
+      "peers": [
+        { "runtime": "opencode", "rawName": "swift-otter", "uuid": "ses_8e7d6c5b4a39SwiftOtterAlpha" },
+        { "runtime": "opencode", "rawName": "swift-otter", "uuid": "ses_8e7d6c5b4a39SwiftOtterBeta7" }
+      ],
+      "expect": [
+        { "display": "swift-otter.eaa", "canonicalId": "opencode:swift-otter.eaa" },
+        { "display": "swift-otter.ea7", "canonicalId": "opencode:swift-otter.ea7" }
+      ]
+    },
+    {
+      "case": "cross-runtime collision: an opencode peer and a codex peer sharing a slug both flip to suffixed",
+      "peers": [
+        { "runtime": "opencode", "rawName": "auth-refactor", "uuid": "ses_9f8e7d6c5b4aAuthRefactorX9" },
+        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "01b1c2d3-e4f5-7a6b-90c1-d2e3f4a5b6c7" }
+      ],
+      "expect": [
+        { "display": "auth-refactor.ac9", "canonicalId": "opencode:auth-refactor.ac9" },
+        { "display": "auth-refactor.6c7", "canonicalId": "codex:auth-refactor.6c7" }
+      ]
     },
     {
       "case": "collision: every colliding peer is suffixed, and only those",
