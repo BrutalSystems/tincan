@@ -3,6 +3,9 @@ import { MESSAGE_ID_RE, SESSION_ID_RE, type Delivery, type InboundMessage } from
 /** One line, one message. Anything larger is a sender bug or an attack. */
 export const MAX_LINE_BYTES = 256 * 1024;
 
+/** Session and message IDs must be bounded to prevent body leakage via overlong ids. */
+export const MAX_ID_BYTES = 128;
+
 export type ParseResult =
   | { ok: true; message: InboundMessage }
   | { ok: false; reason: string };
@@ -32,7 +35,9 @@ export function parseLine(line: string): ParseResult {
   if (!str(o.message_id)) return { ok: false, reason: 'missing message_id' };
 
   if (!SESSION_ID_RE.test(o.to_session)) return { ok: false, reason: 'bad to_session' };
+  if (Buffer.byteLength(o.to_session, 'utf8') > MAX_ID_BYTES) return { ok: false, reason: 'bad to_session' };
   if (!MESSAGE_ID_RE.test(o.message_id)) return { ok: false, reason: 'bad message_id' };
+  if (Buffer.byteLength(o.message_id, 'utf8') > MAX_ID_BYTES) return { ok: false, reason: 'bad message_id' };
   if (o.delivery !== 'queue' && o.delivery !== 'steer') return { ok: false, reason: 'bad delivery' };
 
   return {

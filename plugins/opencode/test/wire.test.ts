@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLine, MAX_LINE_BYTES } from '../tincan-lib/wire.js';
+import { parseLine, MAX_LINE_BYTES, MAX_ID_BYTES } from '../tincan-lib/wire.js';
 
 const good = {
   to_session: 'ses_f4185535affe0nxzk66nw19ihJ',
@@ -80,5 +80,29 @@ describe('parseLine', () => {
     const r = parseLine(JSON.stringify({ ...good, delivery: 'urgent', text: 'SECRET BODY' }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).not.toContain('SECRET');
+  });
+
+  it('rejects a to_session that exceeds MAX_ID_BYTES', () => {
+    const hostile = 'ses' + 'x'.repeat(MAX_ID_BYTES);
+    const r = parseLine(JSON.stringify({ ...good, to_session: hostile }));
+    expect(r).toEqual({ ok: false, reason: 'bad to_session' });
+  });
+
+  it('rejects a message_id that exceeds MAX_ID_BYTES', () => {
+    const hostile = 'msg_' + 'x'.repeat(MAX_ID_BYTES);
+    const r = parseLine(JSON.stringify({ ...good, message_id: hostile }));
+    expect(r).toEqual({ ok: false, reason: 'bad message_id' });
+  });
+
+  it('accepts a to_session at exactly MAX_ID_BYTES', () => {
+    const boundary = 'ses' + 'x'.repeat(MAX_ID_BYTES - 3);
+    const r = parseLine(JSON.stringify({ ...good, to_session: boundary }));
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepts a message_id at exactly MAX_ID_BYTES', () => {
+    const boundary = 'msg_' + 'x'.repeat(MAX_ID_BYTES - 4);
+    const r = parseLine(JSON.stringify({ ...good, message_id: boundary }));
+    expect(r.ok).toBe(true);
   });
 });

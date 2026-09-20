@@ -23,6 +23,17 @@ describe('formatLog', () => {
     const line = formatLog({ event: 'rejected', detail: 'line one\nline two' });
     expect(line).toBe('[tincan] event=rejected detail=line one line two');
   });
+
+  it('truncates hostile over-long values in whitelisted fields', () => {
+    const longBody = 'a'.repeat(256);
+    const line = formatLog({ event: 'delivered', session: longBody });
+    expect(line).toContain('session=');
+    expect(line).toContain('…');
+    // Confirm truncation at exactly 120 characters, with ellipsis
+    const sessionPart = line.split(' ').find((p) => p.startsWith('session='));
+    const valueWithEllipsis = sessionPart?.substring('session='.length);
+    expect(valueWithEllipsis).toBe('a'.repeat(120) + '…');
+  });
 });
 
 describe('makeLogger', () => {

@@ -111,4 +111,13 @@ describe('makeLineHandler', () => {
     await harness(vi.fn())(line({ text: secret, delivery: 'urgent' }));
     expect(logs.join('\n')).not.toContain('TOP SECRET');
   });
+
+  it('still resolves when the logger itself throws on every call', async () => {
+    const brokenLogger = vi.fn().mockImplementation(() => { throw new Error('logger exploded'); });
+    const transport = { post: vi.fn().mockResolvedValue(admitted), get: vi.fn() } as unknown as Transport;
+    const handler = makeLineHandler({ transport, known, sent, log: brokenLogger });
+    await expect(handler(line())).resolves.toBeUndefined();
+    // Despite logging failing, the handler still called transport.post
+    expect(transport.post).toHaveBeenCalled();
+  });
 });
