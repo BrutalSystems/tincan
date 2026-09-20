@@ -21,7 +21,44 @@ describe('formatLog', () => {
 
   it('collapses newlines so one event is always one line', () => {
     const line = formatLog({ event: 'rejected', detail: 'line one\nline two' });
-    expect(line).toBe('[tincan] event=rejected detail=line one line two');
+    expect(line).toBe('[tincan] event=rejected detail="line one line two"');
+  });
+
+  it('collapses U+2028 and U+2029, which are line terminators too', () => {
+    // A log viewer, a terminal and JavaScript itself all break a line on
+    // these; \r\n alone is not the whole set.
+    const line = formatLog({ event: 'rejected', detail: 'one\u2028two\u2029three' });
+    expect(line).toBe('[tincan] event=rejected detail="one two three"');
+    expect(line).not.toContain('\u2028');
+    expect(line).not.toContain('\u2029');
+  });
+
+  it('quotes a value containing a space so its parts cannot read as fields', () => {
+    expect(formatLog({ event: 'dropped', detail: 'unknown session' }))
+      .toBe('[tincan] event=dropped detail="unknown session"');
+  });
+
+  it('leaves a value with nothing to confuse a reader unquoted', () => {
+    expect(formatLog({ event: 'rejected', detail: 'SessionNotFoundError' }))
+      .toBe('[tincan] event=rejected detail=SessionNotFoundError');
+  });
+
+  it('stops a peer-controlled from= forging other fields', () => {
+    // message_from is whatever the sender called itself. Unquoted, this
+    // reads as three fields to anyone — human or grep — parsing the line
+    // during an incident.
+    const line = formatLog({ event: 'delivered', session: 'ses_real', from: 'x delivery=steer session=ses_victim' });
+    expect(line).toBe('[tincan] event=delivered session=ses_real from="x delivery=steer session=ses_victim"');
+    // A reader that respects quotes sees exactly one session field, and it
+    // is ours; the forgery is contained inside from=.
+    const fields = line.slice('[tincan] '.length).match(/\w+=(?:"(?:[^"\\]|\\.)*"|\S*)/g) ?? [];
+    expect(fields.filter((f) => f.startsWith('session='))).toEqual(['session=ses_real']);
+    expect(fields).toContain('from="x delivery=steer session=ses_victim"');
+  });
+
+  it('escapes an embedded quote rather than ending the value early', () => {
+    const line = formatLog({ event: 'delivered', from: 'say "hi"' });
+    expect(line).toBe('[tincan] event=delivered from="say \\"hi\\""');
   });
 
   it('truncates hostile over-long values in whitelisted fields', () => {
@@ -41,7 +78,7 @@ describe('makeLogger', () => {
     const seen: string[] = [];
     const log = makeLogger((l) => seen.push(l));
     log({ event: 'dropped', detail: 'bad json' });
-    expect(seen).toEqual(['[tincan] event=dropped detail=bad json']);
+    expect(seen).toEqual(['[tincan] event=dropped detail="bad json"']);
   });
 
   it('never throws when the sink throws', () => {

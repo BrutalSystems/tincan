@@ -51,21 +51,21 @@ describe('makeLineHandler', () => {
     const post = vi.fn();
     await harness(post)(line({ to_session: 'ses_unknown' }));
     expect(post).not.toHaveBeenCalled();
-    expect(logs.join('\n')).toContain('detail=unknown session');
+    expect(logs.join('\n')).toContain('detail="unknown session"');
   });
 
   it('drops malformed JSON without calling the transport', async () => {
     const post = vi.fn();
     await harness(post)('{"to_session":');
     expect(post).not.toHaveBeenCalled();
-    expect(logs.join('\n')).toContain('detail=malformed json');
+    expect(logs.join('\n')).toContain('detail="malformed json"');
   });
 
   it('drops a bad message id without calling the transport', async () => {
     const post = vi.fn();
     await harness(post)(line({ message_id: 'nope' }));
     expect(post).not.toHaveBeenCalled();
-    expect(logs.join('\n')).toContain('detail=bad message_id');
+    expect(logs.join('\n')).toContain('detail="bad message_id"');
   });
 
   it('logs the second send of one id as a replay', async () => {

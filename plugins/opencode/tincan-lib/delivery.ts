@@ -1,4 +1,4 @@
-import type { DeliveryOutcome, InboundMessage, Transport, TransportResponse } from './types.js';
+import type { Delivery, DeliveryOutcome, InboundMessage, Transport, TransportResponse } from './types.js';
 
 /**
  * The v2 API is prefixed /api/. Without the prefix opencode returns 200 and
@@ -10,7 +10,9 @@ export function promptUrl(sessionID: string): string {
 
 export interface PromptBody {
   prompt: { text: string };
-  delivery: 'queue' | 'steer';
+  /** The wire's own union, imported rather than re-declared, so the
+   *  typechecker catches a drift between the two instead of a test. */
+  delivery: Delivery;
   id: string;
 }
 

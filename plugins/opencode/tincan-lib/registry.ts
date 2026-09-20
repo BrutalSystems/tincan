@@ -123,6 +123,11 @@ export async function sweepOrphans(
 
   for (const name of names) {
     if (name.endsWith('.sock')) {
+      // Only OUR sockets. This directory is plugin-owned today, but the
+      // moment another Tin Can component drops a socket beside ours,
+      // treating every *.sock as an abandoned instance would delete it on
+      // the next opencode start.
+      if (!name.startsWith('inst-')) continue;
       const id = name.slice(0, -'.sock'.length);
       if (id !== selfInstance) entryFor(id);
       continue;

@@ -1,7 +1,7 @@
 import { composeCaller, isTincanTool, writeCaller } from './caller.js';
 import { deliver } from './delivery.js';
 import { effectOf } from './events.js';
-import { makeLogger, type Logger } from './log.js';
+import { makeLogger, swallow, type Logger } from './log.js';
 import { socketPath } from './paths.js';
 import {
   composeRecord, isoStamp, removeAllForInstance, removeRecord,
@@ -19,25 +19,20 @@ export interface LineHandlerDeps {
   log: Logger;
 }
 
-function safeLog(log: Logger, fields: Parameters<Logger>[0]): void {
-  try {
-    log(fields);
-  } catch {
-    // A logger's own failure must never reach the host. SPEC §8.1.
-  }
-}
-
 export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promise<void> {
+  // Wrapped once, here, because deps.log is caller-supplied; called bare
+  // everywhere below. SPEC §8.1.
+  const log = swallow(deps.log);
   return async (line: string): Promise<void> => {
     try {
       const parsed = parseLine(line);
       if (!parsed.ok) {
-        safeLog(deps.log, { event: 'dropped', detail: parsed.reason });
+        log({ event: 'dropped', detail: parsed.reason });
         return;
       }
       const msg = parsed.message;
       if (!deps.known.has(msg.to_session)) {
-        safeLog(deps.log, {
+        log({
           event: 'dropped',
           session: msg.to_session,
           from: msg.message_from,
@@ -47,7 +42,7 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
         return;
       }
       const outcome = await deliver(deps.transport, msg, deps.sent);
-      safeLog(deps.log, {
+      log({
         event: outcome.kind === 'delivered' ? (outcome.replay ? 'replay' : 'delivered') : outcome.kind,
         session: msg.to_session,
         from: msg.message_from,
@@ -61,7 +56,7 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
       });
     } catch (e) {
       // Nothing here may reach the host. SPEC §8.1.
-      safeLog(deps.log, { event: 'handler.failed', detail: String(e) });
+      log({ event: 'handler.failed', detail: String(e) });
     }
   };
 }

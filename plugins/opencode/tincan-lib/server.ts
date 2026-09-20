@@ -1,6 +1,7 @@
 import { chmod, mkdir, unlink } from 'node:fs/promises';
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
+import { swallow } from './log.js';
 import { socketPathTooLong } from './paths.js';
 import { MAX_LINE_BYTES } from './wire.js';
 
@@ -28,19 +29,17 @@ export interface ServerHandle {
   close(): Promise<void>;
 }
 
-// A caller's onError can itself throw (a broken logging sink, say). That must
-// never propagate out of a synchronous EventEmitter callback either — SPEC
-// §8.1 is absolute, and this module is its strictest instance.
-function safeOnError(opts: ListenOptions, err: unknown): void {
-  try {
-    opts.onError(err);
-  } catch {
-    // Swallowed deliberately: an error handler's own failure must never
-    // reach the host.
-  }
+/**
+ * `onError` is already wrapped with `swallow`, so it is safe to call bare.
+ * `onLine` is not: its failure has somewhere useful to go, so it is called
+ * inside a try that reports to `onError` rather than being swallowed.
+ */
+interface Handlers {
+  onLine: (line: string) => void;
+  onError: (err: unknown) => void;
 }
 
-function frame(socket: Socket, opts: ListenOptions): void {
+function frame(socket: Socket, handlers: Handlers): void {
   socket.setEncoding('utf8');
   let buf = '';
   let overflowed = false;
@@ -48,10 +47,10 @@ function frame(socket: Socket, opts: ListenOptions): void {
   const emit = (line: string) => {
     if (line.length === 0) return;
     try {
-      opts.onLine(line);
+      handlers.onLine(line);
     } catch (e) {
       // A handler failure must never reach the host. SPEC §8.1.
-      safeOnError(opts, e);
+      handlers.onError(e);
     }
   };
 
@@ -63,13 +62,13 @@ function frame(socket: Socket, opts: ListenOptions): void {
       buf = buf.slice(i + 1);
       if (overflowed) { overflowed = false; continue; }
       if (Buffer.byteLength(line, 'utf8') >= MAX_LINE_BYTES) {
-        safeOnError(opts, new Error('oversize line dropped'));
+        handlers.onError(new Error('oversize line dropped'));
         continue;
       }
       emit(line);
     }
     if (Buffer.byteLength(buf, 'utf8') >= MAX_LINE_BYTES) {
-      safeOnError(opts, new Error('oversize line dropped'));
+      handlers.onError(new Error('oversize line dropped'));
       buf = '';
       overflowed = true;
     }
@@ -79,7 +78,7 @@ function frame(socket: Socket, opts: ListenOptions): void {
     if (!overflowed && buf.length > 0) emit(buf);
     buf = '';
   });
-  socket.on('error', (e) => safeOnError(opts, e));
+  socket.on('error', (e) => handlers.onError(e));
 }
 
 export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
@@ -102,16 +101,21 @@ export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
 
   const sockets = new Set<Socket>();
   const idleMs = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+  // Wrapped exactly once, here, and called bare from then on. A caller's
+  // onError can itself throw (a broken logging sink, say) and that must
+  // never propagate out of a synchronous EventEmitter callback — SPEC §8.1
+  // is absolute, and this module is its strictest instance.
+  const handlers: Handlers = { onLine: opts.onLine, onError: swallow(opts.onError) };
   const server: Server = createServer((socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     // A sender writes one line and closes. Anything still idle after this
     // is a leak, not a peer.
     socket.setTimeout(idleMs, () => socket.destroy());
-    frame(socket, opts);
+    frame(socket, handlers);
   });
   server.maxConnections = MAX_CONNECTIONS;
-  server.on('error', (e) => safeOnError(opts, e));
+  server.on('error', (e) => handlers.onError(e));
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

@@ -152,6 +152,15 @@ describe('sweepOrphans', () => {
     expect(existsSync(join(dir, 'inst-silent.sock'))).toBe(false);
   });
 
+  it('leaves a socket that is not an instance socket alone', async () => {
+    // The directory is plugin-owned today. It must not become a trap for
+    // the next Tin Can component that puts a socket beside ours.
+    writeFileSync(join(dir, 'tincan-daemon.sock'), '');
+    const swept = await sweepOrphans(dir, 'inst-self', async () => false);
+    expect(swept).toEqual([]);
+    expect(existsSync(join(dir, 'tincan-daemon.sock'))).toBe(true);
+  });
+
   it('leaves a live sibling instance completely alone', async () => {
     await writeRecord(dir, recFor('ses_live', 'inst-live'));
     writeFileSync(join(dir, 'inst-live.sock'), '');
