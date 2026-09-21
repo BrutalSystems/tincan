@@ -63,9 +63,6 @@ is built on a runtime the package does not claim to support.
 ## Pipeline order
 
 Cheapest checks first, so a bad release fails in seconds rather than after a
-full install and test run.
-
-Cheapest checks first, so a bad release fails in seconds rather than after a
 full install and test run. A **fork guard** — `if: github.repository ==
 'BrutalSystems/<repo>'` — sits on the job itself, before any of this.
 
