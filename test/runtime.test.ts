@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   detectRuntime,
   selfNameFor,
+  claudeRegistryDirs,
   buildSide,
   codexSelfNameOf,
   makeSelfNameResolver,
@@ -16,6 +17,7 @@ import { slugify } from '../src/naming.js';
 import { createTools, runtimeSupportsUrgent } from '../src/tools.js';
 import { MessageLog } from '../src/log.js';
 import { fakeInbox, fakeOpencodeInstance } from './fakes.js';
+import { pointerDir, writePointer } from '../src/claude/registry.js';
 
 let dir: string;
 beforeEach(() => {
@@ -40,11 +42,34 @@ describe('selfNameFor', () => {
   test('uses the hosting Claude session name from the registry', () => {
     writeFileSync(
       join(dir, 'sessions', '4242.json'),
-      JSON.stringify({ pid: 4242, name: 'billing-api', cwd: '/src/billing' }),
+      JSON.stringify({ pid: 4242, sessionId: 'sid-4242', name: 'billing-api', cwd: '/src/billing' }),
     );
-    expect(selfNameFor('claude-code', { registryDir: join(dir, 'sessions'), pid: 4242, cwd: '/src/billing' })).toBe(
-      'billing-api',
+    expect(
+      selfNameFor('claude-code', {
+        registryDirs: () => [join(dir, 'sessions')],
+        pid: 4242,
+        cwd: '/src/billing',
+        env: { CLAUDE_CODE_SESSION_ID: 'sid-4242' },
+      }),
+    ).toBe('billing-api');
+  });
+
+  test('a matching pid alone is NOT enough, because ctx.pid is the MCP child, never the session', () => {
+    // This case used to pass by accident: the test set ctx.pid to the
+    // session's pid, which production can never do. Keeping it inverted so
+    // the dead `rec.pid === pid` arm cannot come back.
+    writeFileSync(
+      join(dir, 'sessions', '4243.json'),
+      JSON.stringify({ pid: 4243, sessionId: 'sid-4243', name: 'billing-api', cwd: '/src/billing' }),
     );
+    expect(
+      selfNameFor('claude-code', {
+        registryDirs: () => [join(dir, 'sessions')],
+        pid: 4243,
+        cwd: '/src/billing',
+        env: {},
+      }),
+    ).toBe('billing');
   });
 
   test('finds the hosting session by CLAUDE_CODE_SESSION_ID, since the MCP server is a child process', () => {
@@ -58,7 +83,7 @@ describe('selfNameFor', () => {
       }),
     );
     const name = selfNameFor('claude-code', {
-      registryDir: join(dir, 'sessions'),
+      registryDirs: () => [join(dir, 'sessions')],
       pid: 99999,
       cwd: '/src/billing',
       env: { CLAUDE_CODE_SESSION_ID: '5af69d42-2214-41d9-b13f-9c3177eb60ce' },
@@ -67,7 +92,7 @@ describe('selfNameFor', () => {
   });
 
   test('falls back to the working directory name when no registry entry exists', () => {
-    expect(selfNameFor('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/auth-service' })).toBe(
+    expect(selfNameFor('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/auth-service' })).toBe(
       'auth-service',
     );
   });
@@ -137,7 +162,7 @@ describe('buildSide', () => {
   test('hosted in Claude Code, it exposes Codex and opencode peers', () => {
     // Claude Code reaches its own sessions natively via SendMessage, so its
     // own kind is the only runtime excluded.
-    const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
+    const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
     expect(side.selfRuntime).toBe('claude-code');
     expect(side.peerRuntimes).toEqual(['codex', 'opencode']);
   });
@@ -162,7 +187,7 @@ describe('buildSide', () => {
           }),
         );
         const side = buildSide('claude-code', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
@@ -202,7 +227,7 @@ describe('buildSide', () => {
             }),
           );
           const side = buildSide('claude-code', {
-            registryDir: join(dir, 'sessions'),
+            registryDirs: () => [join(dir, 'sessions')],
             pid: 1,
             cwd: '/src/x',
             env: { TINCAN_HOME: home },
@@ -238,7 +263,7 @@ describe('buildSide', () => {
         // Deliberately no peers/opencode directory: plain ENOENT, the normal
         // state for a machine that does not run opencode.
         const side = buildSide('codex', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
@@ -259,7 +284,7 @@ describe('buildSide', () => {
     // Codex's collaboration tools only reach its own spawn tree, so it has no
     // native path to an independent Codex session, a Claude one, or an
     // opencode one — matching change notice §4's table.
-    const side = buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
+    const side = buildSide('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
     expect(side.peerRuntimes).toEqual(['codex', 'claude-code', 'opencode']);
   });
 
@@ -283,7 +308,7 @@ describe('buildSide', () => {
           }),
         );
         const side = buildSide('codex', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
@@ -301,13 +326,13 @@ describe('buildSide', () => {
   });
 
   test('budgets are per peer runtime, so Codex stays tighter in a mixed listing', () => {
-    const side = buildSide('codex', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
+    const side = buildSide('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
     expect(side.limitsFor('codex')).toBe(CODEX_LIMITS);
     expect(side.limitsFor('claude-code')).toBe(CLAUDE_LIMITS);
   });
 
   test('resolves its own name lazily, since the Codex side must derive it at runtime', async () => {
-    const side = buildSide('claude-code', { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/auth-service' });
+    const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/auth-service' });
     expect(typeof side.selfName).toBe('function');
     expect(await side.selfName(await side.resolveSelf())).toBe('auth-service');
   });
@@ -319,7 +344,7 @@ describe('buildSide', () => {
     // structure — `runtimeSupportsUrgent` is the single source of truth and
     // `Side` carries no `supportsUrgent` boolean alongside it.
     for (const host of ['claude-code', 'codex'] as const) {
-      const side = buildSide(host, { registryDir: join(dir, 'sessions'), pid: 1, cwd: '/src/x' });
+      const side = buildSide(host, { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
       expect(side.peerRuntimes.some(runtimeSupportsUrgent)).toBe(false);
       expect(side).not.toHaveProperty('supportsUrgent');
     }
@@ -369,7 +394,7 @@ describe('buildSide, hosted in opencode', () => {
 
   test('exposes all three runtimes, unlike the Claude Code host', () => {
     const side = buildSide('opencode', {
-      registryDir: join(dir, 'sessions'),
+      registryDirs: () => [join(dir, 'sessions')],
       pid: 1,
       cwd: '/src/x',
       env: { OPENCODE_PID: '41233' },
@@ -396,7 +421,7 @@ describe('buildSide, hosted in opencode', () => {
           }),
         );
         const side = buildSide('opencode', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
@@ -420,7 +445,7 @@ describe('buildSide, hosted in opencode', () => {
         await writeInstance(instance);
         // Deliberately no inst-a91f.caller.json.
         const side = buildSide('opencode', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
@@ -444,7 +469,7 @@ describe('buildSide, hosted in opencode', () => {
         await writeInstance(instance);
         // No caller file, and no usable OPENCODE_PID either.
         const side = buildSide('opencode', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE: '1' },
@@ -471,7 +496,7 @@ describe('buildSide, hosted in opencode', () => {
         // Number.isInteger(0) === true guard let a real session's pid
         // (41233) compare unequal to a bogus "self" pid of 0 and stay listed.
         const side = buildSide('opencode', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '' },
@@ -510,7 +535,7 @@ describe('buildSide, hosted in opencode', () => {
         }),
       );
       const side = buildSide('opencode', {
-        registryDir: join(dir, 'sessions'),
+        registryDirs: () => [join(dir, 'sessions')],
         pid: 1,
         cwd: '/src/some-other-directory-name',
         env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
@@ -556,7 +581,7 @@ describe('buildSide, hosted in opencode', () => {
         );
 
         const side = buildSide('opencode', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: {
@@ -610,7 +635,7 @@ describe('buildSide, hosted in opencode', () => {
         const side = buildSide(
           'opencode',
           {
-            registryDir: join(dir, 'sessions'),
+            registryDirs: () => [join(dir, 'sessions')],
             pid: 1,
             cwd: '/src/x',
             env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
@@ -682,7 +707,7 @@ describe('buildSide, hosted in opencode', () => {
           }),
         );
         const side = buildSide('opencode', {
-          registryDir: join(dir, 'sessions'),
+          registryDirs: () => [join(dir, 'sessions')],
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
@@ -725,7 +750,7 @@ describe('buildSide, hosted in opencode', () => {
         }),
       );
       const side = buildSide('opencode', {
-        registryDir: join(dir, 'sessions'),
+        registryDirs: () => [join(dir, 'sessions')],
         pid: 1,
         cwd: '/src/x',
         env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
@@ -739,5 +764,102 @@ describe('buildSide, hosted in opencode', () => {
       await instance.close();
       rmSync(logDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('claudeRegistryDirs', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tincan-dirs-'));
+    mkdirSync(join(home, '.claude', 'sessions'), { recursive: true });
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  function pointer(env: NodeJS.ProcessEnv, sessionId: string, configDir: string) {
+    writePointer(pointerDir(env, home), {
+      sessionId,
+      pid: process.pid,
+      configDir,
+      registryDir: join(configDir, 'sessions'),
+      tincanVersion: '0.6.5',
+      writtenAt: Date.now(),
+    });
+  }
+
+  test('our own dir is first, always', () => {
+    const dirs = claudeRegistryDirs({ TINCAN_HOME: join(home, '.tincan') }, home);
+    expect(dirs[0]).toBe(join(home, '.claude', 'sessions'));
+  });
+
+  test('CLAUDE_CONFIG_DIR wins for our own dir', () => {
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+    const dirs = claudeRegistryDirs(
+      { CLAUDE_CONFIG_DIR: join(home, '.claude-arm'), TINCAN_HOME: join(home, '.tincan') },
+      home,
+    );
+    expect(dirs[0]).toBe(join(home, '.claude-arm', 'sessions'));
+  });
+
+  test('adds a dir a live pointer names', () => {
+    const env = { TINCAN_HOME: join(home, '.tincan') };
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+    pointer(env, 's1', join(home, '.claude-arm'));
+    expect(claudeRegistryDirs(env, home)).toEqual([
+      join(home, '.claude', 'sessions'),
+      join(home, '.claude-arm', 'sessions'),
+    ]);
+  });
+
+  test('a pointer naming our own dir does not duplicate it', () => {
+    const env = { TINCAN_HOME: join(home, '.tincan') };
+    pointer(env, 's2', join(home, '.claude'));
+    expect(claudeRegistryDirs(env, home)).toEqual([join(home, '.claude', 'sessions')]);
+  });
+
+  test('a pointer naming a dir that no longer exists is dropped', () => {
+    const env = { TINCAN_HOME: join(home, '.tincan') };
+    pointer(env, 's3', join(home, 'gone'));
+    expect(claudeRegistryDirs(env, home)).toEqual([join(home, '.claude', 'sessions')]);
+  });
+
+  test('two pointers naming one dir yield one entry', () => {
+    const env = { TINCAN_HOME: join(home, '.tincan') };
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+    pointer(env, 's4', join(home, '.claude-arm'));
+    pointer(env, 's5', join(home, '.claude-arm'));
+    expect(claudeRegistryDirs(env, home)).toHaveLength(2);
+  });
+});
+
+describe('selfNameFor, alternate config dir', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tincan-name-'));
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude-arm', 'sessions', '62821.json'),
+      JSON.stringify({ pid: 62821, sessionId: 'sid-1', cwd: '/src/cxx-be', name: 'cxx-be-6e' }),
+    );
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  test('finds its name in the alternate dir rather than falling back to the cwd', () => {
+    const name = selfNameFor('claude-code', {
+      registryDirs: () => [join(home, '.claude-arm', 'sessions')],
+      pid: 62850,
+      cwd: '/src/cxx-be',
+      env: { CLAUDE_CODE_SESSION_ID: 'sid-1' },
+    });
+    expect(name).toBe('cxx-be-6e');
+  });
+
+  test('falls back to the cwd basename when no record names our session', () => {
+    const name = selfNameFor('claude-code', {
+      registryDirs: () => [join(home, '.claude-arm', 'sessions')],
+      pid: 62850,
+      cwd: '/src/cxx-be',
+      env: { CLAUDE_CODE_SESSION_ID: 'not-here' },
+    });
+    expect(name).toBe('cxx-be');
   });
 });

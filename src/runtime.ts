@@ -3,12 +3,13 @@
  * Not a config flag (§4): the environment already answers it.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { assertNever, slugify, type RuntimeName } from './naming.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS, OPENCODE_LIMITS } from './guard.js';
 import type { Side, SidePeer, SelfRef, DeliveryOutcome } from './tools.js';
 import { listClaudeSessions } from './claude/discover.js';
+import { readPointers, pointerDir } from './claude/registry.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
 import { createCodexEnv, parentPidLookup } from './codex/cli.js';
@@ -18,14 +19,48 @@ import { sendToInstance } from './opencode/client.js';
 import { selfSessionId, parseOpencodePid } from './opencode/self.js';
 
 export interface HostContext {
-  registryDir: string;
+  /**
+   * Our own dir first, then every dir a pointer record names — resolved on
+   * every call, never once at boot. A Claude Code session runs for days and
+   * the second-account session it wants to reach is usually started later,
+   * so a list captured at startup is the one list guaranteed to be wrong.
+   * The opencode arm's resolveSelfSession carries the same warning.
+   */
+  registryDirs: () => string[];
   pid: number;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }
 
-export function claudeRegistryDir(home: string = homedir()): string {
-  return join(home, '.claude', 'sessions');
+/**
+ * Where Claude Code session registries live. Our own config dir is always
+ * first and always present; the rest are what other Tin Cans announced.
+ *
+ * There is no glob here on purpose. Nothing constrains CLAUDE_CONFIG_DIR to
+ * $HOME, to a dotfile, or to the string "claude" — a glob would be a guess
+ * about a convention that does not exist. What a config dir cannot hide from
+ * is the socket dir, which is the sweep's job, not this function's.
+ */
+export function claudeRegistryDirs(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string[] {
+  const own = join(
+    env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.length > 0
+      ? env.CLAUDE_CONFIG_DIR
+      : join(home, '.claude'),
+    'sessions',
+  );
+  const dirs = [own];
+  const seen = new Set([resolve(own)]);
+  for (const rec of readPointers(pointerDir(env, home))) {
+    const key = resolve(rec.registryDir);
+    if (seen.has(key)) continue;
+    if (!existsSync(rec.registryDir)) continue;
+    seen.add(key);
+    dirs.push(rec.registryDir);
+  }
+  return dirs;
 }
 
 /** Mirrors the plugin's peersDir. Keep these two in step. */
@@ -49,31 +84,41 @@ export function detectRuntime(env: NodeJS.ProcessEnv): RuntimeName {
 
 export function selfNameFor(runtime: RuntimeName, ctx: HostContext): string {
   if (runtime === 'claude-code') {
-    // tincan runs as a child of the session, so our pid is not the session's.
-    // CLAUDE_CODE_SESSION_ID identifies the host exactly; pid is the fallback.
+    // Tin Can runs as a child of the session, so ctx.pid is never the
+    // session's — which is why the old `rec.pid === pid` arm could not match,
+    // and why a session under an alternate config dir fell through to its
+    // cwd. CLAUDE_CODE_SESSION_ID is the only identifier that works.
     const sessionId = (ctx.env ?? process.env).CLAUDE_CODE_SESSION_ID;
-    const name = findSessionName(ctx.registryDir, sessionId, ctx.pid);
+    const name = findSessionName(ctx.registryDirs(), sessionId);
     if (name !== undefined) return name;
   }
   return basename(ctx.cwd) || runtime;
 }
 
 function findSessionName(
-  registryDir: string,
+  registryDirs: string[],
   sessionId: string | undefined,
-  pid: number,
 ): string | undefined {
-  if (!existsSync(registryDir)) return undefined;
-  for (const file of readdirSync(registryDir).filter((f) => /^\d+\.json$/.test(f))) {
-    let rec: Record<string, unknown>;
+  if (sessionId === undefined || sessionId === '') return undefined;
+  for (const registryDir of registryDirs) {
+    if (!existsSync(registryDir)) continue;
+    let entries: string[];
     try {
-      rec = JSON.parse(readFileSync(join(registryDir, file), 'utf8'));
+      entries = readdirSync(registryDir).filter((f) => /^\d+\.json$/.test(f));
     } catch {
       continue;
     }
-    const matches =
-      (sessionId !== undefined && rec.sessionId === sessionId) || rec.pid === pid;
-    if (matches && typeof rec.name === 'string' && rec.name !== '') return rec.name;
+    for (const file of entries) {
+      let rec: Record<string, unknown>;
+      try {
+        rec = JSON.parse(readFileSync(join(registryDir, file), 'utf8')) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (rec.sessionId === sessionId && typeof rec.name === 'string' && rec.name !== '') {
+        return rec.name;
+      }
+    }
   }
   return undefined;
 }
@@ -88,13 +133,6 @@ export interface SideDeps {
   resolveSelfSession?: () => Promise<string | undefined>;
 }
 
-/**
- * What `peers` says when nothing at all is reachable. It names the runtimes
- * worth starting AND keeps the "first turn" hint: a Codex thread reaches
- * `thread/list` only after its first turn, which is the single most common
- * reason a user sees an empty list while a session is plainly running.
- * README's troubleshooting section points at this field.
- */
 export const NO_PEERS_DIAGNOSTIC =
   'No other agent sessions are running. Start a Codex, Claude Code, or opencode ' +
   'session, or check that it has taken its first turn.';
@@ -198,7 +236,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           const selfSession = self.sessionId;
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodexPeers(codexForOpencode),
-            listClaudeSessions({ registryDirs: [ctx.registryDir], selfPid: ctx.pid, env }),
+            listClaudeSessions({ registryDirs: ctx.registryDirs(), selfPid: ctx.pid, env }),
             listOpencodeSessions({ registryDir }),
           ]);
 
@@ -310,7 +348,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodexPeers(codexForSelf),
-            listClaudeSessions({ registryDirs: [ctx.registryDir], selfPid: ctx.pid, env }),
+            listClaudeSessions({ registryDirs: ctx.registryDirs(), selfPid: ctx.pid, env }),
             listOpencodeSessions({ registryDir }),
           ]);
 

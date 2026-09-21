@@ -11,7 +11,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { detectRuntime, buildSide, claudeRegistryDir } from './runtime.js';
+import { detectRuntime, buildSide, claudeRegistryDirs } from './runtime.js';
 import { registerSelf } from './claude/self.js';
 import { toolDefinitions } from './tool-definitions.js';
 import { createTools, type SendPeerArgs, type MessageLogArgs } from './tools.js';
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
     if (unregister !== undefined) process.on('exit', unregister);
   }
   const side = buildSide(runtime, {
-    registryDir: claudeRegistryDir(),
+    registryDirs: () => claudeRegistryDirs(process.env),
     pid: process.pid,
     cwd: process.cwd(),
   });
