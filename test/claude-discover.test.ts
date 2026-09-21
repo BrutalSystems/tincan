@@ -59,7 +59,7 @@ describe('listClaudeSessions', () => {
     open.push(inbox);
     writeSession(111, { name: 'billing-api', cwd: '/src/billing', messagingSocketPath: inbox.path });
 
-    const peers = await listClaudeSessions({ registryDir: join(dir, 'sessions'), selfPid: 999 });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
     expect(peers).toHaveLength(1);
     expect(peers[0]).toMatchObject({
       rawName: 'billing-api',
@@ -73,7 +73,7 @@ describe('listClaudeSessions', () => {
     const inbox = await fakeInbox();
     open.push(inbox);
     writeSession(111, { messagingSocketPath: inbox.path });
-    const peers = await listClaudeSessions({ registryDir: join(dir, 'sessions'), selfPid: 111 });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 111 });
     expect(peers).toEqual([]);
   });
 
@@ -81,7 +81,7 @@ describe('listClaudeSessions', () => {
     const dead = await fakeInbox({ accept: false });
     open.push(dead);
     writeSession(111, { messagingSocketPath: dead.path });
-    const peers = await listClaudeSessions({ registryDir: join(dir, 'sessions'), selfPid: 999 });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
     expect(peers[0]!.state).toBe('unreachable');
   });
 
@@ -89,7 +89,7 @@ describe('listClaudeSessions', () => {
     const inbox = await fakeInbox();
     open.push(inbox);
     writeSession(111, { messagingSocketPath: inbox.path }, 'b'.repeat(32));
-    const peers = await listClaudeSessions({ registryDir: join(dir, 'sessions'), selfPid: 999 });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
     expect(peers[0]!.auth?.peerToken).toBe('b'.repeat(32));
   });
 
@@ -97,7 +97,7 @@ describe('listClaudeSessions', () => {
     const inbox = await fakeInbox();
     open.push(inbox);
     writeSession(111, { messagingSocketPath: inbox.path });
-    const peers = await listClaudeSessions({ registryDir: join(dir, 'sessions'), selfPid: 999 });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
     expect(peers[0]!.auth).toBeUndefined();
   });
 
@@ -105,7 +105,121 @@ describe('listClaudeSessions', () => {
     const inbox = await fakeInbox();
     open.push(inbox);
     writeSession(111, { status: 'busy', messagingSocketPath: inbox.path });
-    const peers = await listClaudeSessions({ registryDir: join(dir, 'sessions'), selfPid: 999 });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
     expect(peers[0]!.state).toBe('busy');
+  });
+});
+
+describe('several registry dirs', () => {
+  let a: string;
+  let b: string;
+
+  beforeEach(() => {
+    a = mkdtempSync(join(tmpdir(), 'tincan-a-'));
+    b = mkdtempSync(join(tmpdir(), 'tincan-b-'));
+    mkdirSync(join(a, 'sessions'), { recursive: true });
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(a, { recursive: true, force: true });
+    rmSync(b, { recursive: true, force: true });
+  });
+
+  function write(root: string, pid: number, fields: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(root, 'sessions', `${pid}.json`),
+      JSON.stringify({
+        pid,
+        sessionId: `0000${pid}-0000-0000-0000-000000000000`,
+        cwd: '/src/thing',
+        name: `session-${pid}`,
+        status: 'idle',
+        ...fields,
+      }),
+    );
+  }
+
+  test('lists sessions from every dir, and tags each with where it came from', async () => {
+    const one = await fakeInbox();
+    const two = await fakeInbox();
+    open.push(one, two);
+    write(a, 111, { messagingSocketPath: one.path });
+    write(b, 222, { messagingSocketPath: two.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+    });
+
+    expect(listing.sessions.map((s) => s.pid).sort()).toEqual([111, 222]);
+    expect(listing.sessions.find((s) => s.pid === 222)?.registryDir).toBe(join(b, 'sessions'));
+    expect(listing.sessions.find((s) => s.pid === 222)?.configDir).toBe(b);
+  });
+
+  test('reports every pid it accounted for, including unreachable ones', async () => {
+    write(a, 111, { messagingSocketPath: join(a, 'gone.sock') });
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions')],
+      selfPid: 1,
+      probeMs: 50,
+    });
+    expect(listing.accountedPids.has(111)).toBe(true);
+  });
+
+  test('a dir that does not exist is skipped, not thrown on', async () => {
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), '/definitely/not/here'],
+      selfPid: 1,
+    });
+    expect(listing.sessions).toEqual([]);
+  });
+
+  test('the same pid in two dirs: procStart picks the live one', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 333, { messagingSocketPath: sock.path, procStart: 'STALE', name: 'stale-one' });
+    write(b, 333, { messagingSocketPath: sock.path, procStart: 'LIVE', name: 'live-one' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => 'LIVE',
+    });
+
+    expect(listing.sessions).toHaveLength(1);
+    expect(listing.sessions[0]?.rawName).toBe('live-one');
+  });
+
+  test('the same pid in two dirs, neither matching: both dropped, with a diagnostic', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 444, { messagingSocketPath: sock.path, procStart: 'ONE' });
+    write(b, 444, { messagingSocketPath: sock.path, procStart: 'TWO' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => 'NEITHER',
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('444');
+    expect(listing.accountedPids.has(444)).toBe(true);
+  });
+
+  test('the same pid in two dirs with no procStart anywhere: both dropped', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 555, { messagingSocketPath: sock.path });
+    write(b, 555, { messagingSocketPath: sock.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('555');
   });
 });

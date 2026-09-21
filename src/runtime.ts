@@ -196,9 +196,9 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
         async listPeers(self) {
           const selfSession = self.sessionId;
-          const [codexListing, claudeSessions, opencodeListing] = await Promise.all([
+          const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodexPeers(codexForOpencode),
-            listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
+            listClaudeSessions({ registryDirs: [ctx.registryDir], selfPid: ctx.pid, env }),
             listOpencodeSessions({ registryDir }),
           ]);
 
@@ -219,7 +219,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
               ? env.CLAUDE_CODE_SESSION_ID
               : undefined;
-          const claudePeers: SidePeer[] = claudeSessions
+          const claudePeers: SidePeer[] = claudeListing.sessions
             .filter((session) => session.uuid !== selfClaudeSession)
             .map((session) => ({
               runtime: 'claude-code',
@@ -308,9 +308,9 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         async listPeers() {
           selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
 
-          const [codexListing, claudeSessions, opencodeListing] = await Promise.all([
+          const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodexPeers(codexForSelf),
-            listClaudeSessions({ registryDir: ctx.registryDir, selfPid: ctx.pid, env }),
+            listClaudeSessions({ registryDirs: [ctx.registryDir], selfPid: ctx.pid, env }),
             listOpencodeSessions({ registryDir }),
           ]);
 
@@ -318,7 +318,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             .filter((p) => p.threadId !== selfThread) // never list ourselves
             .map(toCodexSidePeer);
 
-          const claudePeers: SidePeer[] = claudeSessions.map((session) => ({
+          const claudePeers: SidePeer[] = claudeListing.sessions.map((session) => ({
             runtime: 'claude-code',
             rawName: session.rawName,
             uuid: session.uuid,
