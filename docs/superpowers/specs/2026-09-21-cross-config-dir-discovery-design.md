@@ -117,6 +117,18 @@ environment for `CLAUDE_CONFIG_DIR` — `ps -E -p <pid>` on darwin,
 `/proc/<pid>/environ` on linux, both same-uid. It runs only for pids in the
 remainder, which is normally empty, so the common case costs nothing.
 
+**The answer is a tri-state, and flattening it is a bug that shipped in 0.7.0.**
+A session in the *default* config dir names it by the **absence** of
+`CLAUDE_CONFIG_DIR`, not by a value — on the machine this was written against,
+exactly one live session of eleven set the variable at all. So "read the
+environment, found no override" means `~/.claude`; only "could not read the
+environment" means unidentified. 0.7.0 returned `undefined` for both, which
+looked harmless from a default-dir session — where layer 1 accounts for those
+pids and the sweep never reaches them — and turned every default-dir session
+into `unknown-<pid>` when seen from a session under a different config dir.
+That is the only vantage point this sweep exists to serve, so the harmless-
+looking case was the one that never mattered.
+
 Extract `CLAUDE_CONFIG_DIR` and discard the rest. A process environment is full
 of secrets that are none of Tin Can's business: never log it, never retain it,
 never put it in a diagnostic.

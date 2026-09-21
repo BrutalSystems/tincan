@@ -12,7 +12,26 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-export type ConfigDirResolver = (pid: number) => string | undefined;
+/**
+ * The result of looking a pid up, as a tri-state — and the distinction is the
+ * whole point.
+ *
+ * A session running in the DEFAULT config dir names it by the *absence* of
+ * CLAUDE_CONFIG_DIR, not by its value. So "I read the environment and there
+ * was no override" and "I could not read the environment" are different
+ * answers: the first means ~/.claude, the second means we do not know.
+ * Collapsing them into `undefined` made every default-dir session look
+ * unidentifiable to a Tin Can running under a different config dir — which is
+ * the only vantage point this sweep exists to serve.
+ */
+export interface ConfigDirLookup {
+  /** Whether the process environment could be read at all. */
+  read: boolean;
+  /** The override, when one is set. Absent means the default config dir. */
+  configDir?: string;
+}
+
+export type ConfigDirResolver = (pid: number) => ConfigDirLookup;
 
 const NAME = 'CLAUDE_CONFIG_DIR';
 
@@ -38,11 +57,14 @@ export function parseConfigDirFromProcEnviron(buf: string): string | undefined {
 
 export const resolveConfigDirFromProcess: ConfigDirResolver = (pid) => {
   if (process.platform === 'linux') {
+    let raw: string;
     try {
-      return parseConfigDirFromProcEnviron(readFileSync(`/proc/${pid}/environ`, 'utf8'));
+      raw = readFileSync(`/proc/${pid}/environ`, 'utf8');
     } catch {
-      return undefined;
+      return { read: false };
     }
+    const configDir = parseConfigDirFromProcEnviron(raw);
+    return { read: true, ...(configDir !== undefined && { configDir }) };
   }
   try {
     // -ww: insurance, not a fix for anything observed. Plain and -ww output
@@ -53,8 +75,12 @@ export const resolveConfigDirFromProcess: ConfigDirResolver = (pid) => {
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 4 * 1024 * 1024,
     });
-    return parseConfigDirFromPsLine(out);
+    // ps exits non-zero for a pid that is gone, but an empty line would also
+    // mean we learned nothing — do not read that as "no override".
+    if (out.trim() === '') return { read: false };
+    const configDir = parseConfigDirFromPsLine(out);
+    return { read: true, ...(configDir !== undefined && { configDir }) };
   } catch {
-    return undefined;
+    return { read: false };
   }
 };

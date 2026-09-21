@@ -886,7 +886,9 @@ describe('claude peers include swept strangers', () => {
   });
 
   const ctx = (dirs: string[]) => ({ registryDirs: () => dirs, pid: 1, cwd: '/x' });
-  const deps = (resolveConfigDir: () => string | undefined = () => undefined) => ({
+  const deps = (
+    resolveConfigDir: () => { read: boolean; configDir?: string } = () => ({ read: false }),
+  ) => ({
     resolveConfigDir,
     isLive: () => true,
     socketDirs: [sockDir],
@@ -971,7 +973,7 @@ describe('claude peers include swept strangers', () => {
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
       new Set<string>(),
-      deps(() => join(home, '.claude-arm')),
+      deps(() => ({ read: true, configDir: join(home, '.claude-arm') })),
     );
 
     expect(peers).toHaveLength(1);

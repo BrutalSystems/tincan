@@ -14,6 +14,7 @@
  */
 import { readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { socketDirCandidates } from './discover.js';
 import type { ConfigDirResolver } from './env.js';
 
@@ -34,6 +35,8 @@ export interface SweepParams {
   accountedPids: Set<number>;
   resolveConfigDir: ConfigDirResolver;
   isLive?: (pid: number) => boolean;
+  /** Where the default config dir lives, for a process with no override. */
+  home?: string;
   /**
    * Test seam. Production always takes socketDirCandidates, which always
    * includes the real /tmp/cc-socks — so without this a test on a machine
@@ -59,6 +62,7 @@ export function sweepUnaccounted(params: SweepParams): SweepResult {
     resolveConfigDir,
     isLive = defaultIsLive,
     socketDirs = socketDirCandidates(env, uid),
+    home = homedir(),
   } = params;
 
   const resolvedDirs: string[] = [];
@@ -85,11 +89,17 @@ export function sweepUnaccounted(params: SweepParams): SweepResult {
       // before resolving also keeps the resolver off dead pids entirely.
       if (!isLive(pid)) continue;
 
-      const configDir = resolveConfigDir(pid);
-      if (configDir === undefined || configDir === '') {
+      const lookup = resolveConfigDir(pid);
+      if (!lookup.read) {
         unresolved.push({ pid, socketPath: join(dir, name) });
         continue;
       }
+      // No override means the default dir — that is what its absence encodes.
+      // Only a failed *read* leaves a session unidentified.
+      const configDir =
+        lookup.configDir !== undefined && lookup.configDir !== ''
+          ? lookup.configDir
+          : join(home, '.claude');
       const registryDir = join(configDir, 'sessions');
       if (seenDirs.has(registryDir)) continue;
       seenDirs.add(registryDir);

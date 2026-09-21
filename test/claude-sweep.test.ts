@@ -30,7 +30,7 @@ describe('sweepUnaccounted', () => {
       uid: 501,
       socketDirs: [sockDir],
       accountedPids: new Set([111]),
-      resolveConfigDir: () => '/Users/x/.claude-arm',
+      resolveConfigDir: () => ({ read: true, configDir: '/Users/x/.claude-arm' }),
       isLive: () => true,
     });
     expect(result.resolvedDirs).toEqual(['/Users/x/.claude-arm/sessions']);
@@ -47,7 +47,7 @@ describe('sweepUnaccounted', () => {
       accountedPids: new Set([111]),
       resolveConfigDir: () => {
         calls += 1;
-        return undefined;
+        return { read: false };
       },
       isLive: () => true,
     });
@@ -62,7 +62,7 @@ describe('sweepUnaccounted', () => {
       uid: 501,
       socketDirs: [sockDir],
       accountedPids: new Set(),
-      resolveConfigDir: () => undefined,
+      resolveConfigDir: () => ({ read: false }),
       isLive: () => true,
     });
     expect(result.resolvedDirs).toEqual([]);
@@ -79,7 +79,7 @@ describe('sweepUnaccounted', () => {
       accountedPids: new Set(),
       resolveConfigDir: () => {
         calls += 1;
-        return '/x';
+        return { read: true, configDir: '/x' };
       },
       isLive: () => false,
     });
@@ -95,7 +95,7 @@ describe('sweepUnaccounted', () => {
       uid: 501,
       socketDirs: [sockDir],
       accountedPids: new Set(),
-      resolveConfigDir: () => '/Users/x/.claude-arm',
+      resolveConfigDir: () => ({ read: true, configDir: '/Users/x/.claude-arm' }),
       isLive: () => true,
     });
     expect(result.resolvedDirs).toEqual(['/Users/x/.claude-arm/sessions']);
@@ -109,7 +109,7 @@ describe('sweepUnaccounted', () => {
       uid: 501,
       socketDirs: [sockDir],
       accountedPids: new Set(),
-      resolveConfigDir: () => '/x',
+      resolveConfigDir: () => ({ read: true, configDir: '/x' }),
       isLive: () => true,
     });
     expect(result).toEqual({ resolvedDirs: [], unresolved: [] });
@@ -121,9 +121,41 @@ describe('sweepUnaccounted', () => {
       uid: 501,
       socketDirs: [join(runtimeDir, 'nope', 'cc-socks')],
       accountedPids: new Set(),
-      resolveConfigDir: () => '/x',
+      resolveConfigDir: () => ({ read: true, configDir: '/x' }),
       isLive: () => true,
     });
     expect(result).toEqual({ resolvedDirs: [], unresolved: [] });
+  });
+});
+
+describe('a session with no CLAUDE_CONFIG_DIR is in the default dir, not unidentifiable', () => {
+  test('read:true with no configDir resolves to the default config dir', () => {
+    writeFileSync(join(sockDir, '10532.sock'), '');
+    const result = sweepUnaccounted({
+      env: env(),
+      uid: 501,
+      socketDirs: [sockDir],
+      accountedPids: new Set(),
+      resolveConfigDir: () => ({ read: true }),
+      isLive: () => true,
+      home: '/Users/x',
+    });
+    expect(result.resolvedDirs).toEqual(['/Users/x/.claude/sessions']);
+    expect(result.unresolved).toEqual([]);
+  });
+
+  test('read:false is still unresolved — we genuinely could not look', () => {
+    writeFileSync(join(sockDir, '10532.sock'), '');
+    const result = sweepUnaccounted({
+      env: env(),
+      uid: 501,
+      socketDirs: [sockDir],
+      accountedPids: new Set(),
+      resolveConfigDir: () => ({ read: false }),
+      isLive: () => true,
+      home: '/Users/x',
+    });
+    expect(result.resolvedDirs).toEqual([]);
+    expect(result.unresolved).toHaveLength(1);
   });
 });
