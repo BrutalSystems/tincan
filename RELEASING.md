@@ -165,8 +165,9 @@ npm trust github @brutalsystems/tincan \
   --file publish.yml --repo BrutalSystems/tincan --env npm --allow-publish
 ```
 
-Done for tincan on 2026-09-20 — trust id `aca021a6-2a4d-4fd0-b24c-4cd9e4b588ac`,
-permissions publish + stage publish. Redo it only if the workflow filename or
+Done for tincan on 2026-09-20, permissions publish + stage publish. The trust
+id is deliberately not recorded here — `npm trust list @brutalsystems/tincan`
+prints it, and this file is public. Redo it only if the workflow filename or
 the environment name changes.
 
 #### The plugin package needs its own registration

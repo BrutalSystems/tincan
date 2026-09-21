@@ -37,7 +37,7 @@ perfectly. That is what made this take three sessions to characterise.
 **Established**, reproduced with neither Muster nor Tin Can in the path, by
 direct `curl`: the 200, the `admittedSeq`, the drain about 68ms later, the
 `ModelUnavailableError`, and that the TUI path resolves the same model string
-in the same process seconds either side. `opencode serve` runs the message.
+in the same process seconds either side — observed on both providers. `opencode serve` runs the message.
 v1 `prompt_async` runs the message.
 
 **Not established:** *why* the drain fails. "It cannot resolve the model" is a
@@ -59,7 +59,7 @@ Two loose ends, left loose deliberately:
 
 - **14** distinct TUI-hosted sessions produced a `ModelUnavailableError` drain
 - **20** such failures in total
-- **2** unrelated providers (`muster-local`, `fireworks-ai`)
+- **2** unrelated providers — one a local model server, one a hosted API
 - **0** TUI-hosted drains ever observed to succeed
 
 The sharpest piece is the control, not the count. A session hosted by
@@ -74,12 +74,15 @@ different failures at two different stages.
 
 A worked example, from our own logs:
 
+Provider and model names are redacted to `<provider>/<model>`; both lines
+named the same one, which is the point of the excerpt.
+
 ```
 20:00:13.564  exiting loop                                  <- session goes idle
 20:01:13.678  Tin Can delivers msg_26ba3415  (plugin log)
 20:01:13.746  ERROR "Failed to drain Session"
-              ModelUnavailableError: muster-local/qwen3-30b-a3b
-20:02:54.617  loop ... stream muster-local/qwen3-30b-a3b    <- same model, works
+              ModelUnavailableError: <provider>/<model>
+20:02:54.617  loop ... stream <provider>/<model>            <- same model, works
 ```
 
 ## Three explanations that are wrong
