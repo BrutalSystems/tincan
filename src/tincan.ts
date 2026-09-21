@@ -12,6 +12,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectRuntime, buildSide, claudeRegistryDir } from './runtime.js';
+import { registerSelf } from './claude/self.js';
 import { toolDefinitions } from './tool-definitions.js';
 import { createTools, type SendPeerArgs, type MessageLogArgs } from './tools.js';
 import { MessageLog, messagesPath } from './log.js';
@@ -50,6 +51,20 @@ async function main(): Promise<void> {
   if (handleArgv(process.argv.slice(2))) return;
 
   const runtime = detectRuntime(process.env);
+
+  // Announce which config dir we are in, so another Tin Can can find sessions
+  // its own CLAUDE_CONFIG_DIR hides. Claude Code only: no other runtime
+  // partitions its registry this way.
+  //
+  // 'exit' only, deliberately. Registering a SIGINT or SIGTERM listener
+  // suppresses Node's default disposition, and calling process.exit() from one
+  // would cut short an in-flight MessageLog write. There is nothing to gain by
+  // it either: readPointers already prunes any record whose pid is dead, so a
+  // record left behind by a kill costs a listing nothing.
+  if (runtime === 'claude-code') {
+    const unregister = registerSelf(process.env, process.ppid);
+    if (unregister !== undefined) process.on('exit', unregister);
+  }
   const side = buildSide(runtime, {
     registryDir: claudeRegistryDir(),
     pid: process.pid,
