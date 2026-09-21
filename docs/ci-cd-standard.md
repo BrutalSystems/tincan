@@ -1,10 +1,10 @@
 # CI/CD standard — BrutalSystems npm packages
 
-> Shared between [tincan](https://github.com/BrutalSystems/tincan) and
-> [muster](https://github.com/BrutalSystems/muster). This file exists at the
-> same path in both repositories and should say the same thing in both. If
-> they disagree, one of them was edited without the other and the
-> disagreement is the bug.
+This is the shared CI/CD standard for BrutalSystems' Node/npm packages
+(currently muster, Tin Can and birddog). Each repo implements it identically;
+changes here should be proposed to each at once. No secrets, tokens, session
+IDs, or private paths belong in this file or in the workflows it describes —
+each repo is public.
 
 Two workflows per repository, same filenames everywhere:
 
@@ -156,7 +156,20 @@ npm login   # interactive, prompts for an OTP
 
 # the environment must already exist on the GitHub side
 gh api -X PUT repos/BrutalSystems/<repo>/environments/npm
+```
 
+**The package must already exist.** `npm trust` on a name the registry has
+never seen answers `E404 ... Package not found`, so trust cannot be attached
+before the first publish — and that first publish, coming from a human rather
+than a workflow, has no provenance. Claim the name with a throwaway `0.0.0`
+and let CI publish every version anyone installs. Publishing the real version
+by hand also makes its release tag a green no-op, because the already-published
+guard skips it and the GitHub Release step is gated behind the same condition.
+Hit by tincan on 2026-09-20 and birddog on 2026-09-21; both times the failing
+command was also mid-`npm login`, so unfinished auth may be the real cause —
+publishing first works either way.
+
+```bash
 npm trust github @brutalsystems/<package> \
   --file publish.yml \
   --repo BrutalSystems/<repo> \
