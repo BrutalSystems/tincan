@@ -1,6 +1,6 @@
 {
   "$comment": "FROZEN. Describes @brutalsystems/tincan address behaviour as shipped. Adding cases is fine; changing an expected value means the address format changed - see CANONICAL_ID.md, 'Changing this format'.",
-  "tincan_version": "0.6.4",
+  "tincan_version": "0.6.5",
   "spec": "CANONICAL_ID.md",
 
   "slugify": [
