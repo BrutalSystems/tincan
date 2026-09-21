@@ -379,6 +379,10 @@ export function createTools(side: Side, log: MessageLog) {
       const envelope = buildEnvelope({
         id: newMessageId(),
         from: { runtime: side.selfRuntime, name: await side.selfName(self), cwd: side.selfCwd },
+        // `!== false`, not `=== true`: only the Claude arm sets the field, and
+        // a Codex or opencode peer leaving it undefined must keep today's
+        // wording.
+        reply_tool: target.side.canReply !== false,
         to: {
           runtime: target.side.runtime,
           name: target.display,

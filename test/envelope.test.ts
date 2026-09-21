@@ -8,6 +8,7 @@ const base = () =>
     to: { runtime: 'codex', name: 'auth-refactor', thread_id: '019b63ce-0000-0000-0000-000000000000' },
     method: 'thread/queue/add',
     expect_reply: true,
+    reply_tool: true,
     text: 'What does verifyToken do when the clock skews?',
   });
 
@@ -75,4 +76,35 @@ describe('buildEnvelope', () => {
   test('stamps an ISO timestamp', () => {
     expect(base().at).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
   });
+});
+
+test('tells a peer with Tin Can to answer with send_peer', () => {
+  const text = renderEnvelope(
+    buildEnvelope({
+      id: 'msg_1',
+      from: { runtime: 'claude-code', name: 'a' },
+      to: { runtime: 'claude-code', name: 'b' },
+      method: 'inbox',
+      expect_reply: true,
+      reply_tool: true,
+      text: 'hello',
+    }),
+  );
+  expect(text).toContain('call send_peer with in_reply_to="msg_1"');
+});
+
+test('tells a peer without Tin Can to answer in its own terminal', () => {
+  const text = renderEnvelope(
+    buildEnvelope({
+      id: 'msg_2',
+      from: { runtime: 'claude-code', name: 'a' },
+      to: { runtime: 'claude-code', name: 'b' },
+      method: 'inbox',
+      expect_reply: true,
+      reply_tool: false,
+      text: 'hello',
+    }),
+  );
+  expect(text).not.toContain('send_peer');
+  expect(text).toContain('no way to reply');
 });
