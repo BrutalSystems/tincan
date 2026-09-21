@@ -277,13 +277,23 @@ No change for a resolved peer. `sendToInbox` takes a socket path and an
 the resolved dir's key file under the same uid. Between two Tin Can-equipped
 sessions the reply path is symmetric — both register, both read the union.
 
-**One question to settle with a probe, not an argument.** `sendToInbox` already
-writes the auth frame conditionally (`if (auth)`, `src/claude/client.ts:58`), so
-the code admits the possibility that an unauthenticated send is accepted. If it
-is, an *unresolved* swept peer is deliverable too, with no token and no config
-dir — which would make layer 3 strictly better than described here. If it is
-not, the unresolved case stays informational. Connect to a known socket without
-an auth frame and read the response before writing either behaviour down.
+**Settled by probe, 2026-09-21. The inbox accepts an unauthenticated write.**
+Two frames were sent to one live session's socket — the first with no auth
+frame, the second with a valid one — and the receiving session reported both
+arriving, payload intact, in order. The socket itself answered nothing in either
+case, so the differential had to be read at the receiver.
+
+The `peerToken` is therefore not required for delivery on Claude Code 2.1.267,
+and **an unresolved swept peer is deliverable, not merely informational**: its
+socket is known, and the token it has no way to supply turns out not to be
+needed. Its `state` comes from the ordinary socket probe like anyone else's.
+
+Two things this does not mean. It is not a security finding: the socket is
+`0600` and the whole design is already scoped to one uid, so an unauthenticated
+write is inside a trust boundary Tin Can never claimed to defend. And it is an
+*observation of one version*, not a contract — if a later build enforces the
+token, an unresolved peer starts failing delivery. That is the right failure
+mode, being loud rather than wrong, but the code comment should say so.
 
 ### Two latent bugs in the code this touches
 
