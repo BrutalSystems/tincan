@@ -51,14 +51,51 @@ repository write access can publish."*
 ### npm version floor
 
 Trusted publishing needs npm >= 11.5.1, and Node 22 ships npm 10.x. Keep the
-runner on the repository's `engines` floor and upgrade npm instead:
+runner on the repository's `engines` floor and upgrade npm instead. Pinning a
+newer Node on the publish runner also works, but then the artifact is built on
+a runtime the package does not claim to support.
+
+**Pin the npm version; do not use `npm@latest`.** The npm version does not
+only clear the 11.5.1 floor — it also decides what `npm pack` puts in the
+tarball, and npm's forced-inclusion rules are exactly where majors differ. A
+file can ship under one npm and be omitted by another *on the same commit*,
+so a repository running `npm@latest` in the publish job and whatever the
+runner shipped in CI has two different packers and no way to predict which
+answer it gets.
+
+Declare it once per workflow and install exactly it, in **both** `ci.yml` and
+`publish.yml`:
 
 ```yaml
-- run: npm install -g npm@latest
+env:
+  NPM_VERSION: '12.0.2'
 ```
 
-Pinning a newer Node on the publish runner also works, but then the artifact
-is built on a runtime the package does not claim to support.
+```yaml
+- name: Pin npm
+  run: |
+    npm install -g npm@${{ env.NPM_VERSION }}
+    npm -v
+```
+
+Install it **before** `npm ci`, so the lockfile is resolved by the same npm
+that packs.
+
+Three things make the pin hold rather than rot:
+
+- **A test asserting the two workflows agree.** A half-bump is invisible
+  otherwise — both files still parse and both still run, and the disagreement
+  surfaces as a tarball that differs from the one CI verified. Assert too that
+  each workflow installs the pin it declares, and that the pin has not dropped
+  below 11.5.1.
+- **Naming the supported version in RELEASING.md**, so a contributor packing
+  locally knows which npm produces the tarball CI will accept.
+- **Leaving the `engines`-floor matrix unpinned.** A repository whose CI proves
+  a Node floor should keep exercising the npm that Node version actually ships;
+  forcing the pin onto that leg tests a combination no user has.
+
+The one-time `npm trust` setup below is a different question — that runs on a
+person's own machine and wants a current npm, not the runner's pin.
 
 ## Pipeline order
 

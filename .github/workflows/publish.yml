@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+# Must match ci.yml's NPM_VERSION. See RELEASING.md.
+env:
+  NPM_VERSION: '12.0.2'
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -49,9 +53,15 @@ jobs:
           package-manager-cache: false
 
       # Node 22 ships npm 10.x; trusted publishing needs >= 11.5.1.
-      - name: Upgrade npm for trusted publishing
+      # Pinned, not `npm@latest`. Trusted publishing needs >= 11.5.1, but the
+      # version also decides what `npm pack` puts in the tarball — #15 had the
+      # same commit pack differently under npm 10 and npm 12. `latest` moves
+      # on its own schedule and would reintroduce that the day it changes a
+      # forced-inclusion rule. ci.yml pins the SAME version; bump both
+      # together, and see RELEASING.md.
+      - name: Pin npm (trusted publishing needs >= 11.5.1)
         run: |
-          npm install -g npm@latest
+          npm install -g npm@${{ env.NPM_VERSION }}
           npm -v
 
       # Cheapest checks first — fail before installing anything.

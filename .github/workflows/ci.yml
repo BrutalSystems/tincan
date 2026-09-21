@@ -13,6 +13,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The npm that packs the tarball, pinned so the same commit packs the same way
+# here, in the publish job and on a laptop. npm's forced-inclusion rules are
+# exactly where versions drift: #15 shipped a file under npm 10 that npm 12
+# left out, and the two disagreed on the same commit. publish.yml pins the
+# SAME version — bump both together, and see RELEASING.md.
+#
+# Deliberately not applied to the `check` matrix below: that job exists to
+# prove the engines floor, and forcing npm 12 onto the Node 22 leg would stop
+# exercising the npm a Node 22 user actually has.
+env:
+  NPM_VERSION: '12.0.2'
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -57,6 +69,14 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+
+      # Before `npm ci`, so the lockfile is resolved by the same npm that
+      # packs below. Node 22 ships npm 10.x; the pin is what makes this job
+      # and the publish job agree about what ships.
+      - name: Pin npm
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm -v
 
       - run: npm ci
 

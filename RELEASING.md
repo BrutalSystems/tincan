@@ -1,8 +1,8 @@
 # Releasing Tin Can
 
-> The pipeline itself — why it is shaped this way, and what muster shares with
-> it — is [docs/ci-cd-standard.md](./docs/ci-cd-standard.md). This file is the
-> tincan-specific procedure.
+> The pipeline itself — why it is shaped this way, and what muster and birddog
+> share with it — is [docs/ci-cd-standard.md](./docs/ci-cd-standard.md). This
+> file is the tincan-specific procedure.
 
 ## Before you start
 
@@ -132,7 +132,7 @@ long-lived is stored in GitHub, so there is nothing to rotate, nothing to
 expire unnoticed, and nothing to leak from a public repository's secret store.
 Provenance is generated automatically as a consequence.
 
-Three things break it:
+Four things break it:
 
 - **Renaming `.github/workflows/publish.yml`.** The trust is pinned to the
   filename. Rename it and publishing fails until the trusted publisher is
@@ -141,8 +141,39 @@ Three things break it:
   It is part of the trust, not decoration.
 - **Publishing on a runner with npm < 11.5.1.** Node 22 ships npm 10.x, so the
   publish job stays on Node 22 — the `engines` floor — and upgrades npm itself
-  with `npm install -g npm@latest` before publishing. Raising the runtime
-  instead would mean releasing on a Node the floor does not cover.
+  before publishing. Raising the runtime instead would mean releasing on a Node
+  the floor does not cover.
+- **Changing the npm pin in one workflow and not the other.** See below.
+
+### The npm pin
+
+`ci.yml` and `publish.yml` both declare a workflow-level `NPM_VERSION`, and
+both install exactly it:
+
+```yaml
+env:
+  NPM_VERSION: '12.0.2'
+```
+
+**Supported npm for building and packing this repository: 12.0.2.** A laptop
+that packs with a different one may see a different tarball.
+
+It is pinned rather than `npm@latest` because the npm version does not only
+satisfy trusted publishing's >= 11.5.1 floor — it also decides what `npm pack`
+puts in the tarball. #15: the same commit packed `plugins/opencode/LICENSE`
+under npm 10 and omitted it under npm 12, so CI failed `verify-tarball.mjs` on
+a commit whose local checks had passed. `latest` moves on npm's schedule and
+would reintroduce that the day it next changes a forced-inclusion rule.
+
+The `check` matrix in `ci.yml` deliberately does **not** get the pin. That job
+exists to prove the `engines` floor, and forcing npm 12 onto its Node 22 leg
+would stop exercising the npm a Node 22 user actually has.
+
+To bump it: change the value in **both** workflows in the same commit.
+`test/workflow-npm-pin.test.ts` fails the build if they disagree, if either
+declares a pin it does not install, or if the pin drops below 11.5.1 — a
+half-bump is otherwise invisible, since both files still parse and both still
+run.
 
 **Who can publish, now that CI can:** anyone able to push a tag to this
 repository. npm says so out loud when trust is established — *"anyone with
@@ -159,6 +190,8 @@ package's Settings → Trusted Publisher, or:
 
 ```bash
 npm install -g npm@latest     # npm >= 12 required; npm 11 fails obscurely
+                              # (your machine, for this one-time step — not
+                              #  the runner pin above, which is exact)
 npm login                     # interactive, prompts for the OTP
 gh api -X PUT repos/BrutalSystems/tincan/environments/npm
 npm trust github @brutalsystems/tincan \
