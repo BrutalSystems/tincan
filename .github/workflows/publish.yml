@@ -189,22 +189,49 @@ jobs:
         if: steps.plugin_published.outputs.skip == 'false'
         run: npm publish "./${{ steps.plugin_pack.outputs.tarball }}" --provenance
 
+      # BOTH packages, not just the main one. The split exists so the two can
+      # never drift apart in version — see the 0.6.3 note below — and a
+      # confirmation that looks at only one of them is blind to exactly that
+      # drift: a plugin publish that reports success and never lands leaves
+      # this run green while telling you both shipped.
       - name: Confirm the registry is serving it
         id: served
-        if: steps.published.outputs.skip == 'false'
+        if: steps.published.outputs.skip == 'false' || steps.plugin_published.outputs.skip == 'false'
         run: |
+          # attempts is per package because they demonstrably lag by different
+          # amounts: on 0.7.0 the main package was served in under a second
+          # and the plugin took roughly ten minutes, both from one publish
+          # step. Polling is free when the registry is quick — it costs time
+          # only in the case that would otherwise warn.
+          poll() {
+            name=$1; ver=$2; attempts=$3
+            for i in $(seq 1 "$attempts"); do
+              if npm view "$name@$ver" version >/dev/null 2>&1; then
+                echo "registry serving $name@$ver"
+                npm view "$name@$ver" dist.integrity
+                return 0
+              fi
+              echo "$name not yet (attempt $i/$attempts), waiting 20s"; sleep 20
+            done
+            echo "::warning::registry still not serving $name@$ver — publish reported success, so this is lag or a silent drop"
+            return 1
+          }
+
           pkg=$(node -p "require('./package.json').version")
-          for i in $(seq 1 10); do
-            if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
-              echo "registry serving $pkg"
-              npm view "@brutalsystems/tincan@$pkg" dist.integrity
-              echo "served=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "not yet (attempt $i), waiting 20s"; sleep 20
-          done
-          echo "served=false" >> "$GITHUB_OUTPUT"
-          echo "::warning::registry still not serving $pkg — publishes lag by 1-2 minutes"
+          plugin=$(node -p "require('./plugins/opencode/package.json').version")
+
+          # `served` is the MAIN package's answer alone, and must stay that
+          # way: the only consumer is "Verify the PUBLISHED artifact", which
+          # downloads the main tarball. A plugin that has not appeared yet
+          # must not suppress that check.
+          served=true
+          if [ "${{ steps.published.outputs.skip }}" = "false" ]; then
+            poll "@brutalsystems/tincan" "$pkg" 10 || served=false
+          fi
+          if [ "${{ steps.plugin_published.outputs.skip }}" = "false" ]; then
+            poll "@brutalsystems/tincan-opencode" "$plugin" 20 || true
+          fi
+          echo "served=$served" >> "$GITHUB_OUTPUT"
 
       # Everything above inspects a local build. This is the only check that
       # sees what a consumer actually downloads. Skipped, not failed, when the
