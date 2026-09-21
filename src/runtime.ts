@@ -8,7 +8,9 @@ import { homedir } from 'node:os';
 import { assertNever, slugify, type RuntimeName } from './naming.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS, OPENCODE_LIMITS } from './guard.js';
 import type { Side, SidePeer, SelfRef, DeliveryOutcome } from './tools.js';
-import { listClaudeSessions } from './claude/discover.js';
+import { listClaudeSessions, probeSocket } from './claude/discover.js';
+import { sweepUnaccounted } from './claude/sweep.js';
+import { resolveConfigDirFromProcess, type ConfigDirResolver } from './claude/env.js';
 import { readPointers, pointerDir } from './claude/registry.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
@@ -125,12 +127,120 @@ function findSessionName(
 
 export interface SideDeps {
   /**
+   * Test seam. Production sweeps socketDirCandidates, which always includes
+   * the real /tmp/cc-socks — so without this a test sweeps whatever sessions
+   * happen to be running on the machine it is executed on.
+   */
+  sweep?: SweepDeps;
+  /**
    * Test seam only. Production always reads the caller file
    * (`selfSessionId`); this exists so a test can make successive reads
    * disagree, which is the change notice §4 race the per-call `SelfRef`
    * exists to survive.
    */
   resolveSelfSession?: () => Promise<string | undefined>;
+}
+
+export interface SweepDeps {
+  resolveConfigDir?: ConfigDirResolver;
+  isLive?: (pid: number) => boolean;
+  socketDirs?: string[];
+}
+
+/** The session ids that wrote a pointer — i.e. the peers that can answer. */
+export function replyCapableSessionIds(
+  env: NodeJS.ProcessEnv,
+  home: string = homedir(),
+): Set<string> {
+  return new Set(readPointers(pointerDir(env, home)).map((r) => r.sessionId));
+}
+
+/**
+ * The one place Claude peers are built, so all three arms agree on what a
+ * Claude peer is. Registries first; then the sweep, which can only be run
+ * once the registries have said which pids they accounted for.
+ */
+export async function claudePeersWithSweep(
+  ctx: HostContext,
+  env: NodeJS.ProcessEnv,
+  uid: number,
+  replyCapable: Set<string>,
+  deps: SweepDeps = {},
+): Promise<{ peers: SidePeer[]; diagnostic?: string }> {
+  const known = ctx.registryDirs();
+  const first = await listClaudeSessions({ registryDirs: known, selfPid: ctx.pid, env });
+
+  const swept = sweepUnaccounted({
+    env,
+    uid,
+    accountedPids: first.accountedPids,
+    resolveConfigDir: deps.resolveConfigDir ?? resolveConfigDirFromProcess,
+    ...(deps.isLive !== undefined && { isLive: deps.isLive }),
+    ...(deps.socketDirs !== undefined && { socketDirs: deps.socketDirs }),
+  });
+
+  // Re-run over the UNION, never concatenate two listings. A swept dir can
+  // hold a stale record for a pid a known dir also claims; two separate runs
+  // are each internally collision-free and would still emit that pid twice,
+  // with two tokens, one of them dead — exactly what the procStart tiebreak
+  // exists to prevent. One run sees both candidates and judges them.
+  const listing =
+    swept.resolvedDirs.length === 0
+      ? first
+      : await listClaudeSessions({
+          registryDirs: [...known, ...swept.resolvedDirs],
+          selfPid: ctx.pid,
+          env,
+        });
+
+  const peers: SidePeer[] = listing.sessions.map((session) => ({
+    runtime: 'claude-code',
+    rawName: session.rawName,
+    uuid: session.uuid,
+    cwd: session.cwd,
+    state: session.state,
+    socketPath: session.socketPath,
+    configDir: session.configDir,
+    canReply: replyCapable.has(session.uuid),
+    ...(session.auth !== undefined && { auth: session.auth }),
+  }));
+
+  // The pid is all we honestly know — but it must still be a *distinct* name.
+  // rawName null and uuid '' would slug to the literal 'thread' with an empty
+  // suffix (see assignNames), which is both what unnamed Codex threads are
+  // already called and identical between any two unresolved peers:
+  // resolvePeer could then only ever call them ambiguous.
+  //
+  // It is addressable despite having no token: the inbox was measured
+  // accepting an unauthenticated write (see the spec's Delivery section).
+  // That is an observation of 2.1.267, not a contract — if a later build
+  // enforces the token, these peers start failing delivery loudly, which is
+  // the right way for that assumption to break.
+  for (const u of swept.unresolved) {
+    peers.push({
+      runtime: 'claude-code',
+      rawName: `unknown-${u.pid}`,
+      uuid: `pid-${u.pid}`,
+      cwd: '',
+      state: (await probeSocket(u.socketPath)) ? 'idle' : 'unreachable',
+      socketPath: u.socketPath,
+      canReply: false,
+    });
+  }
+
+  const notes: string[] = [];
+  if (listing.diagnostic !== undefined) notes.push(listing.diagnostic);
+  if (swept.unresolved.length > 0) {
+    const pids = swept.unresolved.map((u) => u.pid).join(', ');
+    const many = swept.unresolved.length > 1;
+    notes.push(
+      `Claude Code pid${many ? 's' : ''} ${pids} ${many ? 'are' : 'is'} live but in a config ` +
+        `dir Tin Can could not identify, so ${many ? 'they' : 'it'} cannot answer you. Run Tin ` +
+        `Can in that session once and it becomes an ordinary peer.`,
+    );
+  }
+
+  return { peers, ...(notes.length > 0 && { diagnostic: notes.join(' ') }) };
 }
 
 export const NO_PEERS_DIAGNOSTIC =
@@ -236,7 +346,13 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           const selfSession = self.sessionId;
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodexPeers(codexForOpencode),
-            listClaudeSessions({ registryDirs: ctx.registryDirs(), selfPid: ctx.pid, env }),
+            claudePeersWithSweep(
+              ctx,
+              env,
+              process.getuid?.() ?? 0,
+              replyCapableSessionIds(env),
+              deps.sweep ?? {},
+            ),
             listOpencodeSessions({ registryDir }),
           ]);
 
@@ -257,17 +373,9 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
               ? env.CLAUDE_CODE_SESSION_ID
               : undefined;
-          const claudePeers: SidePeer[] = claudeListing.sessions
-            .filter((session) => session.uuid !== selfClaudeSession)
-            .map((session) => ({
-              runtime: 'claude-code',
-              rawName: session.rawName,
-              uuid: session.uuid,
-              cwd: session.cwd,
-              state: session.state,
-              socketPath: session.socketPath,
-              auth: session.auth,
-            }));
+          const claudePeers: SidePeer[] = claudeListing.peers.filter(
+            (p) => p.uuid !== selfClaudeSession,
+          );
 
           // Self-exclusion (change notice §4, corrected by the probe). When
           // the caller file names our exact session, exclude only it — a
@@ -348,7 +456,13 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodexPeers(codexForSelf),
-            listClaudeSessions({ registryDirs: ctx.registryDirs(), selfPid: ctx.pid, env }),
+            claudePeersWithSweep(
+              ctx,
+              env,
+              process.getuid?.() ?? 0,
+              replyCapableSessionIds(env),
+              deps.sweep ?? {},
+            ),
             listOpencodeSessions({ registryDir }),
           ]);
 
@@ -356,15 +470,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             .filter((p) => p.threadId !== selfThread) // never list ourselves
             .map(toCodexSidePeer);
 
-          const claudePeers: SidePeer[] = claudeListing.sessions.map((session) => ({
-            runtime: 'claude-code',
-            rawName: session.rawName,
-            uuid: session.uuid,
-            cwd: session.cwd,
-            state: session.state,
-            socketPath: session.socketPath,
-            auth: session.auth,
-          }));
+          const claudePeers: SidePeer[] = claudeListing.peers;
 
           const opencodePeers = opencodeListing.peers.map(toOpencodeSidePeer);
 

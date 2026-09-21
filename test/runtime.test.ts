@@ -6,6 +6,7 @@ import {
   detectRuntime,
   selfNameFor,
   claudeRegistryDirs,
+  claudePeersWithSweep,
   buildSide,
   codexSelfNameOf,
   makeSelfNameResolver,
@@ -162,7 +163,7 @@ describe('buildSide', () => {
   test('hosted in Claude Code, it exposes Codex and opencode peers', () => {
     // Claude Code reaches its own sessions natively via SendMessage, so its
     // own kind is the only runtime excluded.
-    const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
+    const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' }, { sweep: { socketDirs: [] } });
     expect(side.selfRuntime).toBe('claude-code');
     expect(side.peerRuntimes).toEqual(['codex', 'opencode']);
   });
@@ -191,7 +192,7 @@ describe('buildSide', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers } = await side.listPeers(await side.resolveSelf());
         expect(peers).toContainEqual(
           expect.objectContaining({ runtime: 'opencode', uuid: 'ses_a', rawName: 'nimble-wizard' }),
@@ -231,7 +232,7 @@ describe('buildSide', () => {
             pid: 1,
             cwd: '/src/x',
             env: { TINCAN_HOME: home },
-          });
+          }, { sweep: { socketDirs: [] } });
           // One SelfRef for the whole "call", exactly as createTools does.
           const self = await side.resolveSelf();
           const { peers } = await side.listPeers(self);
@@ -267,7 +268,7 @@ describe('buildSide', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers, diagnostic } = await side.listPeers(await side.resolveSelf());
         expect(peers).toEqual([]);
         expect(diagnostic).toMatch(/codex/i);
@@ -284,7 +285,7 @@ describe('buildSide', () => {
     // Codex's collaboration tools only reach its own spawn tree, so it has no
     // native path to an independent Codex session, a Claude one, or an
     // opencode one — matching change notice §4's table.
-    const side = buildSide('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
+    const side = buildSide('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' }, { sweep: { socketDirs: [] } });
     expect(side.peerRuntimes).toEqual(['codex', 'claude-code', 'opencode']);
   });
 
@@ -312,7 +313,7 @@ describe('buildSide', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers } = await side.listPeers(await side.resolveSelf());
         expect(peers).toContainEqual(
           expect.objectContaining({ runtime: 'opencode', uuid: 'ses_a', rawName: 'nimble-wizard' }),
@@ -326,13 +327,13 @@ describe('buildSide', () => {
   });
 
   test('budgets are per peer runtime, so Codex stays tighter in a mixed listing', () => {
-    const side = buildSide('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
+    const side = buildSide('codex', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' }, { sweep: { socketDirs: [] } });
     expect(side.limitsFor('codex')).toBe(CODEX_LIMITS);
     expect(side.limitsFor('claude-code')).toBe(CLAUDE_LIMITS);
   });
 
   test('resolves its own name lazily, since the Codex side must derive it at runtime', async () => {
-    const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/auth-service' });
+    const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/auth-service' }, { sweep: { socketDirs: [] } });
     expect(typeof side.selfName).toBe('function');
     expect(await side.selfName(await side.resolveSelf())).toBe('auth-service');
   });
@@ -344,7 +345,7 @@ describe('buildSide', () => {
     // structure — `runtimeSupportsUrgent` is the single source of truth and
     // `Side` carries no `supportsUrgent` boolean alongside it.
     for (const host of ['claude-code', 'codex'] as const) {
-      const side = buildSide(host, { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' });
+      const side = buildSide(host, { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' }, { sweep: { socketDirs: [] } });
       expect(side.peerRuntimes.some(runtimeSupportsUrgent)).toBe(false);
       expect(side).not.toHaveProperty('supportsUrgent');
     }
@@ -398,7 +399,7 @@ describe('buildSide, hosted in opencode', () => {
       pid: 1,
       cwd: '/src/x',
       env: { OPENCODE_PID: '41233' },
-    });
+    }, { sweep: { socketDirs: [] } });
     expect(side.peerRuntimes).toEqual(['codex', 'claude-code', 'opencode']);
   });
 
@@ -425,7 +426,7 @@ describe('buildSide, hosted in opencode', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers } = await side.listPeers(await side.resolveSelf());
         const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
         expect(uuids).not.toContain('ses_self');
@@ -449,7 +450,7 @@ describe('buildSide, hosted in opencode', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers } = await side.listPeers(await side.resolveSelf());
         const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
         expect(uuids).not.toContain('ses_self');
@@ -473,7 +474,7 @@ describe('buildSide, hosted in opencode', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE: '1' },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers } = await side.listPeers(await side.resolveSelf());
         expect(peers.filter((p) => p.runtime === 'opencode')).toEqual([]);
       } finally {
@@ -500,7 +501,7 @@ describe('buildSide, hosted in opencode', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '' },
-        });
+        }, { sweep: { socketDirs: [] } });
 
         const { peers } = await side.listPeers(await side.resolveSelf());
         const uuids = peers.filter((p) => p.runtime === 'opencode').map((p) => p.uuid);
@@ -539,7 +540,7 @@ describe('buildSide, hosted in opencode', () => {
         pid: 1,
         cwd: '/src/some-other-directory-name',
         env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
-      });
+      }, { sweep: { socketDirs: [] } });
       expect(await side.selfName(await side.resolveSelf())).toBe('nimble-wizard');
     } finally {
       await instance.close();
@@ -589,7 +590,7 @@ describe('buildSide, hosted in opencode', () => {
             OPENCODE_PID: '41233',
             CLAUDE_CODE_SESSION_ID: selfUuid,
           },
-        });
+        }, { sweep: { socketDirs: [] } });
         const { peers } = await side.listPeers(await side.resolveSelf());
         const claude = peers.filter((p) => p.runtime === 'claude-code').map((p) => p.uuid);
         // listClaudeSessions can only drop `pid === selfPid`, and selfPid is
@@ -640,8 +641,7 @@ describe('buildSide, hosted in opencode', () => {
             cwd: '/src/x',
             env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
           },
-          { resolveSelfSession: async () => answers[i++ % answers.length]! },
-        );
+          { resolveSelfSession: async () => answers[i++ % answers.length]! }, { sweep: { socketDirs: [] } });
 
         const log = new MessageLog(join(logDir, 'messages.jsonl'));
         const r = await createTools(side, log).send_peer({
@@ -711,7 +711,7 @@ describe('buildSide, hosted in opencode', () => {
           pid: 1,
           cwd: '/src/x',
           env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
-        });
+        }, { sweep: { socketDirs: [] } });
 
         // The Codex path already slugifies (codexSelfNameOf); this one did not.
         expect(await side.selfName(await side.resolveSelf())).toBe(slugify(hostile));
@@ -754,7 +754,7 @@ describe('buildSide, hosted in opencode', () => {
         pid: 1,
         cwd: '/src/x',
         env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
-      });
+      }, { sweep: { socketDirs: [] } });
       const log = new MessageLog(join(logDir, 'messages.jsonl'));
       const r = await createTools(side, log).send_peer({ peer: 'nimble-wizard', message: 'hi' });
       expect(r.delivered).toBe(false);
@@ -861,5 +861,138 @@ describe('selfNameFor, alternate config dir', () => {
       env: { CLAUDE_CODE_SESSION_ID: 'not-here' },
     });
     expect(name).toBe('cxx-be');
+  });
+});
+
+describe('claude peers include swept strangers', () => {
+  let home: string;
+  let runtimeDir: string;
+  let sockDir: string;
+  const open: Awaited<ReturnType<typeof fakeInbox>>[] = [];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tincan-sw-'));
+    runtimeDir = mkdtempSync(join(tmpdir(), 'tincan-rtd-'));
+    sockDir = join(runtimeDir, 'cc-socks');
+    mkdirSync(sockDir, { recursive: true });
+    mkdirSync(join(home, '.claude', 'sessions'), { recursive: true });
+  });
+  afterEach(async () => {
+    for (const o of open.splice(0)) await o.close();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(runtimeDir, { recursive: true, force: true });
+  });
+
+  const ctx = (dirs: string[]) => ({ registryDirs: () => dirs, pid: 1, cwd: '/x' });
+  const deps = (resolveConfigDir: () => string | undefined = () => undefined) => ({
+    resolveConfigDir,
+    isLive: () => true,
+    socketDirs: [sockDir],
+  });
+
+  function session(configDir: string, pid: number, name: string, sessionId: string, sock: string) {
+    writeFileSync(
+      join(configDir, 'sessions', `${pid}.json`),
+      JSON.stringify({ pid, sessionId, cwd: '/src/a', name, status: 'idle',
+        messagingSocketPath: sock }),
+    );
+  }
+
+  test('a session whose config dir cannot be resolved is listed, with no name of its own, and cannot reply', async () => {
+    writeFileSync(join(sockDir, '777.sock'), '');
+    const { peers, diagnostic } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set<string>(),
+      deps(),
+    );
+    expect(peers).toHaveLength(1);
+    expect(peers[0]?.state).toBe('unreachable');
+    expect(peers[0]?.canReply).toBe(false);
+    expect(peers[0]?.rawName).toBe('unknown-777');
+    expect(diagnostic).toContain('777');
+  });
+
+  test('two unresolved sessions get distinct names rather than colliding on "thread."', async () => {
+    writeFileSync(join(sockDir, '777.sock'), '');
+    writeFileSync(join(sockDir, '888.sock'), '');
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set<string>(),
+      deps(),
+    );
+    expect(peers.map((p) => p.rawName).sort()).toEqual(['unknown-777', 'unknown-888']);
+    expect(new Set(peers.map((p) => p.uuid)).size).toBe(2);
+  });
+
+  test('canReply is true exactly when the session wrote a pointer', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    session(join(home, '.claude'), 888, 'a-1', 'sid-888', sock.path);
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set(['sid-888']),
+      deps(),
+    );
+    expect(peers[0]?.canReply).toBe(true);
+  });
+
+  test('a session with no pointer is listed, but cannot reply', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    session(join(home, '.claude'), 999, 'b-1', 'sid-999', sock.path);
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set<string>(),
+      deps(),
+    );
+    expect(peers[0]?.canReply).toBe(false);
+    expect(peers[0]?.configDir).toBe(join(home, '.claude'));
+  });
+
+  test('a resolved stranger comes back fully formed, through the ordinary registry path', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+    session(join(home, '.claude-arm'), 222, 'other-account', 'sid-222', sock.path);
+    writeFileSync(join(sockDir, '222.sock'), '');
+
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set<string>(),
+      deps(() => join(home, '.claude-arm')),
+    );
+
+    expect(peers).toHaveLength(1);
+    expect(peers[0]?.rawName).toBe('other-account');
+    expect(peers[0]?.state).toBe('idle');
+    expect(peers[0]?.configDir).toBe(join(home, '.claude-arm'));
+  });
+
+  test('applies no config-dir filter of its own — that belongs to the Claude arm alone', async () => {
+    const own = await fakeInbox();
+    const other = await fakeInbox();
+    open.push(own, other);
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+    session(join(home, '.claude'), 100, 'same-dir', 'sid-100', own.path);
+    session(join(home, '.claude-arm'), 200, 'other-dir', 'sid-200', other.path);
+
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set<string>(),
+      deps(),
+    );
+    expect(peers.map((p) => p.rawName).sort()).toEqual(['other-dir', 'same-dir']);
   });
 });

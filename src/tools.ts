@@ -25,6 +25,13 @@ export interface SidePeer {
   threadId?: string;
   socketPath?: string;
   auth?: unknown;
+  /** Claude Code only: which config dir this session lives in. */
+  configDir?: string;
+  /**
+   * Claude Code only: whether the peer can answer with send_peer. True iff it
+   * wrote a pointer record, which it does only when it is running Tin Can.
+   */
+  canReply?: boolean;
 }
 
 export interface DeliveryOutcome {
