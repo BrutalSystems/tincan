@@ -315,7 +315,15 @@ function recordPath(dir: string, sessionId: string): string {
   return join(dir, `${basename(sessionId)}.json`);
 }
 
-/** Temp-then-rename: a reader must never see half a record. */
+/**
+ * Temp-then-rename: a reader must never see half a record.
+ *
+ * The mode on mkdirSync applies only when the directory is created — an
+ * existing ~/.tincan/peers is left exactly as it is, deliberately. Issue #12
+ * is what chasing directory permissions on every write looks like when the
+ * chmod throws, and the records themselves are 0600, so nothing is exposed by
+ * leaving a parent alone.
+ */
 export function writePointer(dir: string, rec: PointerRecord): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const target = recordPath(dir, rec.sessionId);
@@ -695,15 +703,12 @@ and inside `main()`, immediately after `const runtime = detectRuntime(process.en
   // partitions its registry this way.
   if (runtime === 'claude-code') {
     const unregister = registerSelf(process.env, process.ppid);
-    if (unregister !== undefined) {
-      process.on('exit', unregister);
-      for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-        process.on(sig, () => {
-          unregister();
-          process.exit(0);
-        });
-      }
-    }
+    // 'exit' only, deliberately. Registering a SIGINT or SIGTERM listener
+    // suppresses Node's default disposition, and calling process.exit() from
+    // one would cut short an in-flight MessageLog write. There is nothing to
+    // gain by it either: readPointers already prunes any record whose pid is
+    // dead, so a record left behind by a kill costs a listing nothing.
+    if (unregister !== undefined) process.on('exit', unregister);
   }
 ```
 
@@ -1102,7 +1107,7 @@ because the loser's token would authenticate as a dead session."
 - Consumes: `readPointers`, `pointerDir` (Task 2); `listClaudeSessions` (Task 4).
 - Produces:
   - `claudeRegistryDirs(env: NodeJS.ProcessEnv, home?: string): string[]` — replaces `claudeRegistryDir`.
-  - `HostContext.registryDirs: string[]` — replaces `registryDir: string`.
+  - `HostContext.registryDirs: () => string[]` — replaces `registryDir: string`. **A thunk, not an array:** a session lives for days, and a config dir that appears after boot must still be found.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1212,7 +1217,7 @@ describe('selfNameFor, alternate config dir', () => {
 
   test('finds its name in the alternate dir rather than falling back to the cwd', () => {
     const name = selfNameFor('claude-code', {
-      registryDirs: [join(home, '.claude-arm', 'sessions')],
+      registryDirs: () => [join(home, '.claude-arm', 'sessions')],
       pid: 62850,
       cwd: '/src/cxx-be',
       env: { CLAUDE_CODE_SESSION_ID: 'sid-1' },
@@ -1222,7 +1227,7 @@ describe('selfNameFor, alternate config dir', () => {
 
   test('falls back to the cwd basename when no record names our session', () => {
     const name = selfNameFor('claude-code', {
-      registryDirs: [join(home, '.claude-arm', 'sessions')],
+      registryDirs: () => [join(home, '.claude-arm', 'sessions')],
       pid: 62850,
       cwd: '/src/cxx-be',
       env: { CLAUDE_CODE_SESSION_ID: 'not-here' },
@@ -1243,8 +1248,14 @@ In `src/runtime.ts`, replace `claudeRegistryDir` and update `HostContext`:
 
 ```ts
 export interface HostContext {
-  /** Our own dir first, then every dir a pointer record names. */
-  registryDirs: string[];
+  /**
+   * Our own dir first, then every dir a pointer record names — resolved on
+   * every call, never once at boot. A Claude Code session runs for days and
+   * the second-account session it wants to reach is usually started later,
+   * so a list captured at startup is the one list guaranteed to be wrong.
+   * The opencode arm's resolveSelfSession carries the same warning.
+   */
+  registryDirs: () => string[];
   pid: number;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -1300,7 +1311,7 @@ export function selfNameFor(runtime: RuntimeName, ctx: HostContext): string {
     // match, and why a session under an alternate config dir fell through
     // to its cwd. CLAUDE_CODE_SESSION_ID is the only identifier that works.
     const sessionId = (ctx.env ?? process.env).CLAUDE_CODE_SESSION_ID;
-    const name = findSessionName(ctx.registryDirs, sessionId);
+    const name = findSessionName(ctx.registryDirs(), sessionId);
     if (name !== undefined) return name;
   }
   return basename(ctx.cwd) || runtime;
@@ -1335,13 +1346,13 @@ function findSessionName(
 }
 ```
 
-In both `buildSide` arms that call `listClaudeSessions`, replace `registryDirs: [ctx.registryDir]` with `registryDirs: ctx.registryDirs`.
+In both `buildSide` arms that call `listClaudeSessions`, replace `registryDirs: [ctx.registryDir]` with `registryDirs: ctx.registryDirs()` — the call, not the thunk.
 
 In `src/tincan.ts`, replace the `buildSide` call:
 
 ```ts
   const side = buildSide(runtime, {
-    registryDirs: claudeRegistryDirs(process.env),
+    registryDirs: () => claudeRegistryDirs(process.env),
     pid: process.pid,
     cwd: process.cwd(),
   });
@@ -1352,7 +1363,7 @@ and change the import from `claudeRegistryDir` to `claudeRegistryDirs`.
 - [ ] **Step 4: Run the full suite and the build**
 
 Run: `npm test && npm run build`
-Expected: PASS. Existing `runtime.test.ts` cases that construct a `HostContext` need `registryDirs: [dir]` instead of `registryDir: dir` — update them.
+Expected: PASS. Existing `runtime.test.ts` cases that construct a `HostContext` need `registryDirs: () => [dir]` instead of `registryDir: dir` — update them.
 
 - [ ] **Step 5: Commit**
 
@@ -1500,7 +1511,10 @@ export const resolveConfigDirFromProcess: ConfigDirResolver = (pid) => {
     }
   }
   try {
-    const out = execFileSync('ps', ['-E', '-p', String(pid), '-o', 'command='], {
+    // -ww: insurance, not a fix for anything observed. Plain and -ww output
+    // were byte-identical when measured, but macOS ps has historically
+    // truncated wide output and the flag costs nothing.
+    const out = execFileSync('ps', ['-E', '-ww', '-p', String(pid), '-o', 'command='], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 4 * 1024 * 1024,
@@ -1822,12 +1836,13 @@ keeps getting bitten by."
 **Files:**
 - Modify: `src/runtime.ts` (all three arms' `listPeers`)
 - Modify: `src/tools.ts:18-28` (`SidePeer`)
+- Modify: `src/runtime.ts:428` (`deliverTo`, the `claude-code` branch)
 - Test: `test/runtime.test.ts`
 
 **Interfaces:**
 - Consumes: `sweepUnaccounted` (Task 7), `resolveConfigDirFromProcess` (Task 6), `listClaudeSessions` (Task 4).
 - Produces:
-  - `SidePeer` gains `configDir?: string` and `canReply?: boolean`.
+  - `SidePeer` gains `configDir?: string`, `canReply?: boolean` and `unaddressable?: boolean`.
   - `claudePeersWithSweep(ctx, env, uid, replyCapable: Set<string>, deps?): Promise<{ peers: SidePeer[]; diagnostic?: string }>` and `replyCapableSessionIds(env, home?): Set<string>` in `src/runtime.ts`.
 
 **Note:** Task 1's finding decides one line here. If unauthenticated sends are **accepted**, an unresolved peer is listed with `state` from a socket probe and is deliverable. If **rejected**, it is listed `state: 'unreachable'`. The code below assumes *rejected*; if Task 1 found otherwise, change `state` and say so in the commit message.
@@ -1855,7 +1870,7 @@ describe('claude peers include swept strangers', () => {
   test('a session whose config dir cannot be resolved is listed unreachable and cannot reply', async () => {
     writeFileSync(join(runtimeDir, 'cc-socks', '777.sock'), '');
     const { peers, diagnostic } = await claudePeersWithSweep(
-      { registryDirs: [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
+      { registryDirs: () => [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
       new Set<string>(),
@@ -1864,8 +1879,22 @@ describe('claude peers include swept strangers', () => {
     expect(peers).toHaveLength(1);
     expect(peers[0]?.state).toBe('unreachable');
     expect(peers[0]?.canReply).toBe(false);
-    expect(peers[0]?.rawName).toBeNull();
+    expect(peers[0]?.unaddressable).toBe(true);
     expect(diagnostic).toContain('777');
+  });
+
+  test('two unresolved sessions get distinct names rather than colliding on "thread."', async () => {
+    writeFileSync(join(runtimeDir, 'cc-socks', '777.sock'), '');
+    writeFileSync(join(runtimeDir, 'cc-socks', '888.sock'), '');
+    const { peers } = await claudePeersWithSweep(
+      { registryDirs: () => [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Set<string>(),
+      { resolveConfigDir: () => undefined, isLive: () => true },
+    );
+    expect(peers.map((p) => p.rawName).sort()).toEqual(['unknown-777', 'unknown-888']);
+    expect(new Set(peers.map((p) => p.uuid)).size).toBe(2);
   });
 
   test('canReply is true exactly when the session wrote a pointer', async () => {
@@ -1877,7 +1906,7 @@ describe('claude peers include swept strangers', () => {
         status: 'idle', messagingSocketPath: sock.path }),
     );
     const { peers } = await claudePeersWithSweep(
-      { registryDirs: [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
+      { registryDirs: () => [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
       new Set(['sid-888']),
@@ -1895,7 +1924,7 @@ describe('claude peers include swept strangers', () => {
         status: 'idle', messagingSocketPath: sock.path }),
     );
     const { peers } = await claudePeersWithSweep(
-      { registryDirs: [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
+      { registryDirs: () => [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
       new Set<string>(),
@@ -1921,7 +1950,7 @@ describe('claude peers include swept strangers', () => {
         status: 'idle', messagingSocketPath: other.path }),
     );
     const { peers } = await claudePeersWithSweep(
-      { registryDirs: [join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')],
+      { registryDirs: () => [join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')],
         pid: 1, cwd: '/x' },
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
@@ -1960,6 +1989,12 @@ export interface SidePeer {
    * wrote a pointer record, which it does only when it is running Tin Can.
    */
   canReply?: boolean;
+  /**
+   * Seen on a socket, but its config dir could not be identified — so there
+   * is no peer token and nothing to authenticate with. Listed so the user
+   * learns it exists; refused by send_peer rather than failed at the wire.
+   */
+  unaddressable?: boolean;
 }
 ```
 
@@ -1983,7 +2018,8 @@ export async function claudePeersWithSweep(
   replyCapable: Set<string>,
   deps: SweepDeps = {},
 ): Promise<{ peers: SidePeer[]; diagnostic?: string }> {
-  const first = await listClaudeSessions({ registryDirs: ctx.registryDirs, selfPid: ctx.pid, env });
+  const known = ctx.registryDirs();
+  const first = await listClaudeSessions({ registryDirs: known, selfPid: ctx.pid, env });
 
   const swept = sweepUnaccounted({
     env,
@@ -1993,17 +2029,20 @@ export async function claudePeersWithSweep(
     ...(deps.isLive !== undefined && { isLive: deps.isLive }),
   });
 
-  // A resolved dir goes back through the ordinary path, so a swept session's
-  // name, cwd, status and token come from the same code as everyone else's.
-  const sessions = [...first.sessions];
-  if (swept.resolvedDirs.length > 0) {
-    const second = await listClaudeSessions({
-      registryDirs: swept.resolvedDirs,
-      selfPid: ctx.pid,
-      env,
-    });
-    sessions.push(...second.sessions);
-  }
+  // Re-run over the UNION, never concatenate two listings. A swept dir can
+  // hold a stale record for a pid a known dir also claims; two separate runs
+  // are each internally collision-free and would still emit that pid twice,
+  // with two tokens, one of them dead — exactly what the procStart tiebreak
+  // exists to prevent. One run sees both candidates and judges them.
+  const listing =
+    swept.resolvedDirs.length === 0
+      ? first
+      : await listClaudeSessions({
+          registryDirs: [...known, ...swept.resolvedDirs],
+          selfPid: ctx.pid,
+          env,
+        });
+  const sessions = listing.sessions;
 
   const peers: SidePeer[] = sessions.map((session) => ({
     runtime: 'claude-code',
@@ -2017,21 +2056,26 @@ export async function claudePeersWithSweep(
     ...(session.auth !== undefined && { auth: session.auth }),
   }));
 
-  // Listed with no name and no id: pid is all we honestly know about it.
+  // The pid is all we honestly know — but it must still be a *distinct*
+  // name. rawName null and uuid '' would slug to the literal 'thread' with an
+  // empty suffix (see assignNames), which is both what unnamed Codex threads
+  // are already called and identical between any two unresolved peers:
+  // resolvePeer could then only ever call them ambiguous.
   for (const u of swept.unresolved) {
     peers.push({
       runtime: 'claude-code',
-      rawName: null,
-      uuid: '',
+      rawName: `unknown-${u.pid}`,
+      uuid: `pid-${u.pid}`,
       cwd: '',
       state: 'unreachable',
       socketPath: u.socketPath,
       canReply: false,
+      unaddressable: true,
     });
   }
 
   const notes: string[] = [];
-  if (first.diagnostic !== undefined) notes.push(first.diagnostic);
+  if (listing.diagnostic !== undefined) notes.push(listing.diagnostic);
   if (swept.unresolved.length > 0) {
     const pids = swept.unresolved.map((u) => u.pid).join(', ');
     notes.push(
@@ -2056,6 +2100,50 @@ Add the imports:
 ```ts
 import { sweepUnaccounted } from './claude/sweep.js';
 import { resolveConfigDirFromProcess, type ConfigDirResolver } from './claude/env.js';
+```
+
+Then guard the delivery path. In `deliverTo` (`src/runtime.ts:428`), at the top of
+`case 'claude-code':`, before the `sendToInbox` call:
+
+```ts
+      // Refused here, with a reason, rather than sent and failed generically.
+      // Issue #10 already notes an unreachable peer reports as
+      // delivery_failed, and "could not identify its config dir" is a
+      // different problem with a different fix — one the user can act on.
+      if (peer.unaddressable === true) {
+        return {
+          delivered: false,
+          method: 'inbox',
+          unreachable: true,
+          error:
+            `That session is live but Tin Can could not identify its config dir, so there ` +
+            `is no peer token to authenticate with. Run Tin Can in that session once and ` +
+            `it becomes an ordinary peer.`,
+        };
+      }
+```
+
+and add the matching case to `test/runtime.test.ts`:
+
+```ts
+test('send_peer to an unresolved session is refused with a reason, not attempted', async () => {
+  const side = buildSide('claude-code', {
+    registryDirs: () => [],
+    pid: 1,
+    cwd: '/x',
+    env: {},
+  });
+  const outcome = await side.deliver(
+    { sessionId: undefined },
+    { runtime: 'claude-code', rawName: 'unknown-777', uuid: 'pid-777', cwd: '', state: 'unreachable',
+      socketPath: '/tmp/cc-socks/777.sock', canReply: false, unaddressable: true },
+    'msg_1',
+    'hello',
+    false,
+  );
+  expect(outcome.delivered).toBe(false);
+  expect(outcome.error).toContain('config dir');
+});
 ```
 
 Then in the **codex** arm and the **opencode** arm, replace the `listClaudeSessions(...)` entry in the `Promise.all` with `claudePeersWithSweep(ctx, env, process.getuid?.() ?? 0, replyCapableSessionIds(env))`, and use the returned `peers` directly instead of mapping `claudeSessions`. In the opencode arm keep its existing self-exclusion filter, now keyed off `peer.uuid`:
@@ -2125,7 +2213,7 @@ describe('the claude-code arm', () => {
 
   test('lists claude-code among its peer runtimes', () => {
     const side = buildSide('claude-code', {
-      registryDirs: [join(home, '.claude', 'sessions')],
+      registryDirs: () => [join(home, '.claude', 'sessions')],
       pid: 1,
       cwd: '/x',
       env: {},
@@ -2136,7 +2224,7 @@ describe('the claude-code arm', () => {
   test('excludes a session in our own config dir', async () => {
     await sessionIn(join(home, '.claude'), 111, 'same-account', 'sid-111');
     const side = buildSide('claude-code', {
-      registryDirs: [join(home, '.claude', 'sessions')],
+      registryDirs: () => [join(home, '.claude', 'sessions')],
       pid: 1,
       cwd: '/x',
       env: { CLAUDE_CONFIG_DIR: join(home, '.claude') },
@@ -2148,7 +2236,7 @@ describe('the claude-code arm', () => {
   test('lists a session in a different config dir', async () => {
     await sessionIn(join(home, '.claude-arm'), 222, 'other-account', 'sid-222');
     const side = buildSide('claude-code', {
-      registryDirs: [join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')],
+      registryDirs: () => [join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')],
       pid: 1,
       cwd: '/x',
       env: { CLAUDE_CONFIG_DIR: join(home, '.claude') },
@@ -2162,7 +2250,7 @@ describe('the claude-code arm', () => {
   test('never lists our own session, even from a different dir listing', async () => {
     await sessionIn(join(home, '.claude-arm'), 333, 'is-us', 'sid-us');
     const side = buildSide('claude-code', {
-      registryDirs: [join(home, '.claude-arm', 'sessions')],
+      registryDirs: () => [join(home, '.claude-arm', 'sessions')],
       pid: 1,
       cwd: '/x',
       env: { CLAUDE_CODE_SESSION_ID: 'sid-us', CLAUDE_CONFIG_DIR: join(home, '.claude') },
@@ -2194,7 +2282,18 @@ Replace the `case 'claude-code':` arm of `buildSide` in `src/runtime.ts`:
       const name = selfNameFor(runtime, ctx);
       const registryDir = opencodeRegistryDir(env);
       const peerRuntimes: RuntimeName[] = ['codex', 'opencode', 'claude-code'];
-      const ownRegistryDir = resolve(ctx.registryDirs[0] ?? '');
+      // From the environment, never from registryDirs()[0]: `resolve('')`
+      // returns the *cwd*, so an empty list would silently compare every peer
+      // against the working directory, match nothing, and list the
+      // same-account sessions SendMessage already covers.
+      const ownRegistryDir = resolve(
+        join(
+          env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.length > 0
+            ? env.CLAUDE_CONFIG_DIR
+            : join(homedir(), '.claude'),
+          'sessions',
+        ),
+      );
       const selfSessionId =
         env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
           ? env.CLAUDE_CODE_SESSION_ID
