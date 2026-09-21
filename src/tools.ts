@@ -66,8 +66,19 @@ export interface SelfRef {
 }
 
 /** Everything that differs between being hosted in Claude Code and in Codex. */
+/**
+ * How much of its own runtime a side lists.
+ *
+ * `cross-config-dir` exists because the Claude arm's exclusion was never
+ * about the runtime: SendMessage reaches one CLAUDE_CONFIG_DIR, so the rule
+ * is "list a Claude peer only when SendMessage cannot reach it". peerRuntimes
+ * alone cannot express "lists its own kind, but only some of them".
+ */
+export type OwnKindScope = 'included' | 'cross-config-dir';
+
 export interface Side {
   selfRuntime: RuntimeName;
+  ownKindScope: OwnKindScope;
   /**
    * Answer "which session is calling?" exactly once per tool call. The result
    * is passed back into `selfName`, `listPeers` and `deliver` so all three

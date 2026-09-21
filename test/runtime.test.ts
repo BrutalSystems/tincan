@@ -160,12 +160,14 @@ describe('the empty-list diagnostic', () => {
 });
 
 describe('buildSide', () => {
-  test('hosted in Claude Code, it exposes Codex and opencode peers', () => {
-    // Claude Code reaches its own sessions natively via SendMessage, so its
-    // own kind is the only runtime excluded.
+  test('hosted in Claude Code, it exposes Codex, opencode, and Claude sessions SendMessage cannot reach', () => {
+    // SendMessage reaches its own kind natively, but only within one
+    // CLAUDE_CONFIG_DIR — so the arm lists claude-code, scoped to the
+    // sessions that native path cannot see.
     const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' }, { sweep: { socketDirs: [] } });
     expect(side.selfRuntime).toBe('claude-code');
-    expect(side.peerRuntimes).toEqual(['codex', 'opencode']);
+    expect(side.peerRuntimes).toEqual(['codex', 'opencode', 'claude-code']);
+    expect(side.ownKindScope).toBe('cross-config-dir');
   });
 
   test('honours TINCAN_HOME when discovering opencode peers, matching the plugin', async () => {
@@ -994,5 +996,80 @@ describe('claude peers include swept strangers', () => {
       deps(),
     );
     expect(peers.map((p) => p.rawName).sort()).toEqual(['other-dir', 'same-dir']);
+  });
+});
+
+describe('the claude-code arm', () => {
+  let home: string;
+  const open: Awaited<ReturnType<typeof fakeInbox>>[] = [];
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'tincan-arm-'));
+    mkdirSync(join(home, '.claude', 'sessions'), { recursive: true });
+    mkdirSync(join(home, '.claude-arm', 'sessions'), { recursive: true });
+  });
+  afterEach(async () => {
+    for (const o of open.splice(0)) await o.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  async function sessionIn(configDir: string, pid: number, name: string, sessionId: string) {
+    const sock = await fakeInbox();
+    open.push(sock);
+    writeFileSync(
+      join(configDir, 'sessions', `${pid}.json`),
+      JSON.stringify({ pid, sessionId, cwd: '/src/x', name, status: 'idle',
+        messagingSocketPath: sock.path }),
+    );
+  }
+
+  test('excludes a session in our own config dir', async () => {
+    await sessionIn(join(home, '.claude'), 111, 'same-account', 'sid-111');
+    const side = buildSide(
+      'claude-code',
+      {
+        registryDirs: () => [join(home, '.claude', 'sessions')],
+        pid: 1,
+        cwd: '/x',
+        env: { CLAUDE_CONFIG_DIR: join(home, '.claude') },
+      },
+      { sweep: { socketDirs: [] } },
+    );
+    const { peers } = await side.listPeers({ sessionId: undefined });
+    expect(peers.filter((p) => p.runtime === 'claude-code')).toEqual([]);
+  });
+
+  test('lists a session in a different config dir', async () => {
+    await sessionIn(join(home, '.claude-arm'), 222, 'other-account', 'sid-222');
+    const side = buildSide(
+      'claude-code',
+      {
+        registryDirs: () => [join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')],
+        pid: 1,
+        cwd: '/x',
+        env: { CLAUDE_CONFIG_DIR: join(home, '.claude') },
+      },
+      { sweep: { socketDirs: [] } },
+    );
+    const { peers } = await side.listPeers({ sessionId: undefined });
+    const claude = peers.filter((p) => p.runtime === 'claude-code');
+    expect(claude).toHaveLength(1);
+    expect(claude[0]?.rawName).toBe('other-account');
+  });
+
+  test('never lists our own session, even when it is found in another dir listing', async () => {
+    await sessionIn(join(home, '.claude-arm'), 333, 'is-us', 'sid-us');
+    const side = buildSide(
+      'claude-code',
+      {
+        registryDirs: () => [join(home, '.claude-arm', 'sessions')],
+        pid: 1,
+        cwd: '/x',
+        env: { CLAUDE_CODE_SESSION_ID: 'sid-us', CLAUDE_CONFIG_DIR: join(home, '.claude') },
+      },
+      { sweep: { socketDirs: [] } },
+    );
+    const { peers } = await side.listPeers({ sessionId: undefined });
+    expect(peers.filter((p) => p.runtime === 'claude-code')).toEqual([]);
   });
 });

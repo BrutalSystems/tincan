@@ -279,32 +279,78 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
   switch (runtime) {
     case 'claude-code': {
-      // Hosted in Claude Code, so the peers are Codex threads and opencode
-      // sessions. (Claude Code's own sessions are reached natively via
-      // SendMessage, so Tin Can deliberately does not duplicate that path.)
+      // Claude Code's own sessions are reached natively by SendMessage — but
+      // only within one config dir. A session under a different
+      // CLAUDE_CONFIG_DIR is invisible to it, which is precisely the gap Tin
+      // Can fills here. The exclusion was never about the runtime; it is
+      // about reachability, and two logged paths to one destination is still
+      // worse than one.
       const codex = createCodexEnv();
       const name = selfNameFor(runtime, ctx);
       const registryDir = opencodeRegistryDir(env);
-      const peerRuntimes: RuntimeName[] = ['codex', 'opencode'];
+      const peerRuntimes: RuntimeName[] = ['codex', 'opencode', 'claude-code'];
+
+      // From the environment, never from registryDirs()[0]: `resolve('')`
+      // returns the *cwd*, so an empty list would silently compare every peer
+      // against the working directory, match nothing, and list the
+      // same-account sessions SendMessage already covers.
+      const ownRegistryDir = resolve(
+        join(
+          env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.length > 0
+            ? env.CLAUDE_CONFIG_DIR
+            : join(homedir(), '.claude'),
+          'sessions',
+        ),
+      );
+      const selfSessionId =
+        env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
+          ? env.CLAUDE_CODE_SESSION_ID
+          : undefined;
+
       return {
         ...common,
+        ownKindScope: 'cross-config-dir',
         resolveSelf: async () => NO_SESSION,
         selfName: async () => name,
         peerRuntimes,
         limitsFor,
         async listPeers() {
-          const [codexListing, opencodeListing] = await Promise.all([
+          const [codexListing, opencodeListing, claudeListing] = await Promise.all([
             listCodexPeers(codex),
             listOpencodeSessions({ registryDir }),
+            claudePeersWithSweep(
+              ctx,
+              env,
+              process.getuid?.() ?? 0,
+              replyCapableSessionIds(env),
+              deps.sweep ?? {},
+            ),
           ]);
+
+          const claudePeers = claudeListing.peers.filter((p) => {
+            // Ours, by session id: the one exclusion that must never fail,
+            // since a self-send would deliver over our own inbox.
+            if (selfSessionId !== undefined && p.uuid === selfSessionId) return false;
+            // Same config dir: SendMessage's job, not ours. An unresolved
+            // swept peer has no configDir and is by definition not ours.
+            if (
+              p.configDir !== undefined &&
+              resolve(join(p.configDir, 'sessions')) === ownRegistryDir
+            ) {
+              return false;
+            }
+            return true;
+          });
+
           const peers = [
             ...codexListing.peers.map(toCodexSidePeer),
             ...opencodeListing.peers.map(toOpencodeSidePeer),
+            ...claudePeers,
           ];
           const diagnostic =
             peers.length === 0
               ? composeEmptyDiagnostic(codexListing.diagnostic, opencodeListing.diagnostic)
-              : codexListing.diagnostic;
+              : (codexListing.diagnostic ?? claudeListing.diagnostic);
           return {
             peers,
             ...(diagnostic !== undefined && { diagnostic }),
@@ -335,6 +381,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
       return {
         ...common,
+        ownKindScope: 'included',
         // Called once per tool call by createTools, never from inside the
         // three consumers below — that is the whole point.
         resolveSelf: async () => ({ sessionId: await resolveSelfSession() }),
@@ -446,6 +493,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
       return {
         ...common,
+        ownKindScope: 'included',
         resolveSelf: async () => NO_SESSION,
         selfName,
         peerRuntimes,
