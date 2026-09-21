@@ -20,6 +20,37 @@ the message, not when the peer answers.
 
 Same machine only. No network listener, no remote transport.
 
+### What Tin Can actually is
+
+An agent-to-agent messaging tool that adapts to each runtime's **native
+inbox**, exposed to senders over MCP because that is the one interface every
+runtime already has.
+
+Two surfaces, and it is worth keeping them apart:
+
+- **The call surface — MCP.** How a *sending* session invokes Tin Can. Uniform
+  across all three runtimes, and the least interesting part: it could be a CLI
+  or a slash command without changing anything that matters. MCP is there
+  because it is the universal doorway, not because the design wanted it.
+- **The delivery surface — one adapter per runtime.** How Tin Can reaches the
+  *receiver*: `thread/queue/add` for Codex, `inbox` for Claude Code,
+  `opencode/prompt_async` for opencode. Three native mechanisms, none of them
+  MCP. All the hard parts live here.
+
+So MCP is not what bridges the runtimes — the adapters are. The clearest proof
+is that **messages cross with no MCP at all on the receiving side**: an
+opencode session with only the plugin installed is fully reachable and has no
+Tin Can tools of its own (see the table under [Install](#install)). On that
+runtime the adapter does not even run in this process — it is a plugin inside
+the peer, reached over a unix socket, which then makes a local HTTP call.
+
+By the [A2A protocol's](https://a2a-protocol.org) own split — MCP for
+agent-to-tool, A2A for agent-to-agent — Tin Can does an agent-to-agent job
+through the agent-to-tool channel. The two are complementary rather than
+competing: A2A standardises how agents *expose* themselves to a network, while
+Tin Can reaches sessions that never exposed anything and were not built to be
+reachable.
+
 ## What it looks like
 
 From a Claude Code session, find who is running:
@@ -527,9 +558,11 @@ logged paths to one destination is worse than one — see
 [Which peers you see](#which-peers-you-see).
 
 **Nothing blocks.** `send_peer` returns when the peer's harness accepts the
-message, never when the peer answers. There is no `await_reply`; the peer may
-have a human who has walked away. `expect_reply` records intent and changes
-nothing.
+message, never when the peer answers. There is no `await_reply`. The peer may
+be mid-turn, may have exited, may have a human who has walked away — or may
+have no human at all: [Muster](https://github.com/BrutalSystems/muster)
+launches unattended agent-only sessions, and those are ordinary Tin Can peers.
+`expect_reply` records intent and changes nothing.
 
 **No interrupting a running turn, on any runtime.** `urgent` is accepted and
 has no effect anywhere. Claude Code has no external interrupt, and Codex's
@@ -649,8 +682,9 @@ next activity. See [Known limits](#known-limits).
 
 **A message was delivered but the peer never answered.**
 Delivery is fire-and-forget by design — `delivered: true` means the peer's
-harness accepted it, not that anyone read it. There may be a human who has
-walked away. `expect_reply` records that you are waiting; nothing blocks.
+harness accepted it, not that anyone read it. The peer may be busy, gone,
+attended by a human who has walked away, or unattended by design.
+`expect_reply` records that you are waiting; nothing blocks.
 
 **A peer name stopped resolving.**
 Names belong to processes and die with them. Re-run `peers` rather than caching
