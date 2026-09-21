@@ -28,6 +28,7 @@ function makeSide(over: Partial<Side> = {}) {
   const delivered: Delivered[] = [];
   const side: Side = {
     selfRuntime: 'claude-code',
+    ownKindScope: 'cross-config-dir',
     resolveSelf: async () => ({ sessionId: undefined }),
     selfName: async () => 'billing-api',
     selfCwd: '/src/billing',
@@ -182,6 +183,7 @@ describe('peers', () => {
     // mode. The note must now name opencode too rather than exempting it.
     const { side } = makeSide({
       selfRuntime: 'opencode',
+      ownKindScope: 'included',
       peerRuntimes: ['opencode'],
       listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
     });
@@ -476,4 +478,39 @@ describe('message_log', () => {
     expect(r.records).toHaveLength(1);
     expect(r.records[0]).toMatchObject({ text: 'hi there', direction: 'out', delivered: true });
   });
+});
+
+test('a claude peer reports its config dir and whether it can reply', async () => {
+  const { side } = makeSide({
+    peerRuntimes: ['codex', 'opencode', 'claude-code'],
+    listPeers: async () => ({
+      peers: [
+        peer({
+          runtime: 'claude-code',
+          rawName: 'other-account',
+          uuid: 'sid-1',
+          threadId: undefined,
+          configDir: '/Users/x/.claude-arm',
+          canReply: true,
+        }),
+      ],
+    }),
+  });
+  const result = await tools(side).peers();
+  expect(result.peers[0]?.config_dir).toBe('/Users/x/.claude-arm');
+  expect(result.peers[0]?.can_reply).toBe(true);
+});
+
+test('a codex peer reports neither field', async () => {
+  const { side } = makeSide();
+  const result = await tools(side).peers();
+  expect(result.peers[0]).not.toHaveProperty('config_dir');
+  expect(result.peers[0]).not.toHaveProperty('can_reply');
+});
+
+test('the peers note names SendMessage as the path to same-account sessions', async () => {
+  const { side } = makeSide({ listPeers: async () => ({ peers: [] }) });
+  const result = await tools(side).peers();
+  expect(result.notes?.join(' ')).toContain('SendMessage');
+  expect(result.notes?.join(' ')).toContain('CLAUDE_CONFIG_DIR');
 });

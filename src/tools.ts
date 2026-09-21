@@ -153,6 +153,10 @@ export interface PeersResult {
     cwd: string;
     thread_id?: string;
     session_id?: string;
+    /** Claude Code peers only: which account's config dir this session is in. */
+    config_dir?: string;
+    /** Claude Code peers only: false when the peer has no Tin Can to answer with. */
+    can_reply?: boolean;
   }>;
   diagnostic?: string;
   notes?: string[];
@@ -212,13 +216,6 @@ export const NATIVE_PEER_PATH: Partial<Record<RuntimeName, string>> = {
 };
 
 /** Whether this side hides the host's own kind from its peer list. */
-export function excludesOwnKind(
-  peerRuntimes: RuntimeName[],
-  selfRuntime: RuntimeName,
-): boolean {
-  return !peerRuntimes.includes(selfRuntime);
-}
-
 /**
  * The human labels for a set of runtimes, as English: "Codex", "Codex and
  * opencode", "Codex, Claude Code, and opencode". Duplicates collapse.
@@ -280,13 +277,13 @@ export function createTools(side: Side, log: MessageLog) {
       // note it is emitted for an *empty* list too. An empty peer list with
       // no explanation is exactly what reads as "nothing else is running" on
       // a machine with a dozen live Claude Code sessions.
-      if (excludesOwnKind(side.peerRuntimes, side.selfRuntime)) {
+      if (side.ownKindScope === 'cross-config-dir') {
         const native = NATIVE_PEER_PATH[side.selfRuntime];
         notes.push(
-          `${LABEL[side.selfRuntime]} sessions are not listed here: Tin Can reaches ` +
-            `${labelList(side.peerRuntimes)} only. Your host already reaches its own ` +
-            `sessions natively${native !== undefined ? ` (${native})` : ''}, so Tin Can ` +
-            `does not duplicate that path.`,
+          `${LABEL[side.selfRuntime]} sessions are listed here only when they run under a ` +
+            `different CLAUDE_CONFIG_DIR. Your host reaches same-account sessions ` +
+            `natively${native !== undefined ? ` (${native})` : ''}, so Tin Can does not ` +
+            `duplicate that path.`,
         );
       }
 
@@ -314,6 +311,8 @@ export function createTools(side: Side, log: MessageLog) {
           state: p.side.state,
           cwd: p.side.cwd,
           ...durableIdOf(p.side),
+          ...(p.side.configDir !== undefined && { config_dir: p.side.configDir }),
+          ...(p.side.canReply !== undefined && { can_reply: p.side.canReply }),
         })),
         ...(diagnostic !== undefined && { diagnostic }),
         ...(notes.length > 0 && { notes }),

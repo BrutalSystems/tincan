@@ -1,6 +1,6 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
 import { LABEL, type RuntimeName } from './naming.js';
-import { excludesOwnKind, labelList, NATIVE_PEER_PATH, runtimeSupportsUrgent } from './tools.js';
+import { labelList, NATIVE_PEER_PATH, runtimeSupportsUrgent, type OwnKindScope } from './tools.js';
 
 export interface ToolDefinition {
   name: string;
@@ -15,6 +15,7 @@ export interface ToolDefinition {
 export function toolDefinitions(
   peerRuntimes: RuntimeName[],
   selfRuntime: RuntimeName,
+  ownKindScope: OwnKindScope,
 ): ToolDefinition[] {
   const peer = labelList(peerRuntimes);
   // Told before the call, not only after it: a model that knows the list is
@@ -22,10 +23,12 @@ export function toolDefinitions(
   // the whole machine. The `peers` result repeats it as a note (tools.ts),
   // because a description read at connect time is a long way from a result
   // read mid-turn.
-  const ownKindNote = excludesOwnKind(peerRuntimes, selfRuntime)
-    ? ` Does not list ${LABEL[selfRuntime]} sessions; your host reaches those natively` +
-      `${NATIVE_PEER_PATH[selfRuntime] !== undefined ? ` (${NATIVE_PEER_PATH[selfRuntime]})` : ''}.`
-    : '';
+  const ownKindNote =
+    ownKindScope === 'cross-config-dir'
+      ? ` Lists ${LABEL[selfRuntime]} sessions only when they run under a different ` +
+        `CLAUDE_CONFIG_DIR; your host reaches same-account sessions natively` +
+        `${NATIVE_PEER_PATH[selfRuntime] !== undefined ? ` (${NATIVE_PEER_PATH[selfRuntime]})` : ''}.`
+      : '';
   const steerable = peerRuntimes.filter(runtimeSupportsUrgent);
   const notSteerable = peerRuntimes.filter((r) => !runtimeSupportsUrgent(r));
   const urgentDescription =

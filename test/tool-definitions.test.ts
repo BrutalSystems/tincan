@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { toolDefinitions } from '../src/tool-definitions.js';
 
-const defs = toolDefinitions(['codex'], 'codex');
+const defs = toolDefinitions(['codex'], 'codex', 'included');
 const byName = (n: string) => defs.find((d) => d.name === n)!;
 
 describe('toolDefinitions', () => {
@@ -29,7 +29,7 @@ describe('toolDefinitions', () => {
   });
 
   test('names both runtimes when a side exposes both', () => {
-    const both = toolDefinitions(['codex', 'claude-code'], 'codex');
+    const both = toolDefinitions(['codex', 'claude-code'], 'codex', 'included');
     const d = both.find((x) => x.name === 'peers')!.description;
     expect(d).toContain('Codex');
     expect(d).toContain('Claude Code');
@@ -37,7 +37,7 @@ describe('toolDefinitions', () => {
 
   test('lists three runtimes as a list, not "A and B and C"', () => {
     // The Codex and opencode hosts expose all three.
-    const three = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex');
+    const three = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included');
     for (const name of ['peers', 'send_peer']) {
       const d = three.find((x) => x.name === name)!.description;
       expect(d).toContain('Codex, Claude Code, and opencode');
@@ -45,15 +45,15 @@ describe('toolDefinitions', () => {
     }
   });
 
-  test('says the host’s own kind is absent when this side excludes it', () => {
+  test('says the host’s own kind is scoped when this side lists only part of it', () => {
     // The Claude Code host. Without this the model reads a short peer list as
     // the whole machine and reports "three peers" when there are fifteen
     // reachable sessions.
-    const d = toolDefinitions(['codex', 'opencode'], 'claude-code').find(
+    const d = toolDefinitions(['codex', 'opencode', 'claude-code'], 'claude-code', 'cross-config-dir').find(
       (x) => x.name === 'peers',
     )!.description;
     expect(d).toContain('Claude Code');
-    expect(d).toMatch(/does not list|not listed/i);
+    expect(d).toMatch(/only when they run under a different CLAUDE_CONFIG_DIR/i);
     expect(d).toContain('SendMessage');
   });
 
@@ -61,7 +61,7 @@ describe('toolDefinitions', () => {
     // Codex and opencode list their own kind, so there is nothing missing to
     // warn about — an unconditional warning would be a lie on two of three
     // hosts.
-    const d = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex').find(
+    const d = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included').find(
       (x) => x.name === 'peers',
     )!.description;
     expect(d).not.toMatch(/does not list|not listed/i);
@@ -76,4 +76,15 @@ describe('toolDefinitions', () => {
     const props = byName('message_log').inputSchema.properties as Record<string, { default?: unknown }>;
     expect(props.last_n?.default).toBe(20);
   });
+});
+
+test('the claude arm says its own-kind listing is scoped to other config dirs', () => {
+  const [peers] = toolDefinitions(['codex', 'opencode', 'claude-code'], 'claude-code', 'cross-config-dir');
+  expect(peers?.description).toContain('different CLAUDE_CONFIG_DIR');
+  expect(peers?.description).toContain('SendMessage');
+});
+
+test('an arm that lists its own kind in full says nothing about scoping', () => {
+  const [peers] = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included');
+  expect(peers?.description).not.toContain('CLAUDE_CONFIG_DIR');
 });
