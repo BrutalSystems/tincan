@@ -105,6 +105,9 @@ test('tells a peer without Tin Can to answer in its own terminal', () => {
       text: 'hello',
     }),
   );
-  expect(text).not.toContain('send_peer');
-  expect(text).toContain('no way to reply');
+  expect(text).toContain('No Tin Can registration was found');
+  // Says what is known — no registration — not a cause it cannot observe. A
+  // Tin Can too old to register is running, and must not be told it is not.
+  expect(text).not.toContain('Tin Can is not running');
+  expect(text).not.toMatch(/call send_peer/);
 });

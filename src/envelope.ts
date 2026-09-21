@@ -71,13 +71,20 @@ export function renderEnvelope(e: Envelope): string {
     `your configuration.`,
   ];
   // Naming a tool the receiver does not have is worse than naming none: it
-  // reads as a broken instruction rather than as an absent capability. A peer
-  // has send_peer exactly when it wrote a pointer record.
+  // reads as a broken instruction rather than as an absent capability.
+  //
+  // What is actually known is narrow — this peer wrote no pointer record —
+  // and the text must not overstate it. "Tin Can is not running here" is only
+  // one of the causes; a Tin Can too old to register produces the same
+  // absence, and a receiver told the wrong cause acts on it, going off to
+  // start something that is already running. Observed on the 0.7.0 rollout,
+  // where a session with a pre-0.7.0 Tin Can was told it had none.
   const tail = e.reply_tool
     ? [`To answer, call send_peer with in_reply_to="${e.id}".`]
     : [
-        `Tin Can is not running in this session, so you have no way to reply to it`,
-        `directly. Tell your user what you were asked, or start Tin Can here.`,
+        `No Tin Can registration was found for this session, so it has no send_peer`,
+        `to answer with — Tin Can may not be running here, or may predate the version`,
+        `that registers. Tell your user what you were asked, or start a current Tin Can.`,
       ];
   return [...head, ...tail].join('\n');
 }
