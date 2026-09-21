@@ -1836,16 +1836,17 @@ keeps getting bitten by."
 **Files:**
 - Modify: `src/runtime.ts` (all three arms' `listPeers`)
 - Modify: `src/tools.ts:18-28` (`SidePeer`)
-- Modify: `src/runtime.ts:428` (`deliverTo`, the `claude-code` branch)
+- Modify: `src/claude/discover.ts` (export `probeSocket`)
 - Test: `test/runtime.test.ts`
 
 **Interfaces:**
 - Consumes: `sweepUnaccounted` (Task 7), `resolveConfigDirFromProcess` (Task 6), `listClaudeSessions` (Task 4).
 - Produces:
-  - `SidePeer` gains `configDir?: string`, `canReply?: boolean` and `unaddressable?: boolean`.
+  - `SidePeer` gains `configDir?: string` and `canReply?: boolean`.
+  - `probeSocket(socketPath: string, timeoutMs?: number): Promise<boolean>` is exported from `src/claude/discover.ts` (it is the existing private `probe`, renamed and exported).
   - `claudePeersWithSweep(ctx, env, uid, replyCapable: Set<string>, deps?): Promise<{ peers: SidePeer[]; diagnostic?: string }>` and `replyCapableSessionIds(env, home?): Set<string>` in `src/runtime.ts`.
 
-**Note:** Task 1's finding decides one line here. If unauthenticated sends are **accepted**, an unresolved peer is listed with `state` from a socket probe and is deliverable. If **rejected**, it is listed `state: 'unreachable'`. The code below assumes *rejected*; if Task 1 found otherwise, change `state` and say so in the commit message.
+**Task 1 settled this: unauthenticated sends are ACCEPTED.** So an unresolved swept peer is *deliverable* — its socket is known, and the token it cannot supply is not required. It gets `state` from the ordinary socket probe, is sent to with `auth: undefined`, and needs no refusal path. The `unaddressable` flag the review added under the opposite assumption is therefore not built.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1867,7 +1868,7 @@ describe('claude peers include swept strangers', () => {
     rmSync(runtimeDir, { recursive: true, force: true });
   });
 
-  test('a session whose config dir cannot be resolved is listed unreachable and cannot reply', async () => {
+  test('a session whose config dir cannot be resolved is listed, with no name of its own, and cannot reply', async () => {
     writeFileSync(join(runtimeDir, 'cc-socks', '777.sock'), '');
     const { peers, diagnostic } = await claudePeersWithSweep(
       { registryDirs: () => [join(home, '.claude', 'sessions')], pid: 1, cwd: '/x' },
@@ -1879,7 +1880,7 @@ describe('claude peers include swept strangers', () => {
     expect(peers).toHaveLength(1);
     expect(peers[0]?.state).toBe('unreachable');
     expect(peers[0]?.canReply).toBe(false);
-    expect(peers[0]?.unaddressable).toBe(true);
+    expect(peers[0]?.rawName).toBe('unknown-777');
     expect(diagnostic).toContain('777');
   });
 
@@ -1989,12 +1990,6 @@ export interface SidePeer {
    * wrote a pointer record, which it does only when it is running Tin Can.
    */
   canReply?: boolean;
-  /**
-   * Seen on a socket, but its config dir could not be identified — so there
-   * is no peer token and nothing to authenticate with. Listed so the user
-   * learns it exists; refused by send_peer rather than failed at the wire.
-   */
-  unaddressable?: boolean;
 }
 ```
 
@@ -2061,16 +2056,21 @@ export async function claudePeersWithSweep(
   // empty suffix (see assignNames), which is both what unnamed Codex threads
   // are already called and identical between any two unresolved peers:
   // resolvePeer could then only ever call them ambiguous.
+  //
+  // It is addressable despite having no token: the inbox was measured
+  // accepting an unauthenticated write (see the spec's Delivery section).
+  // That is an observation of 2.1.267, not a contract — if a later build
+  // enforces the token, these peers start failing delivery loudly, which is
+  // the right way for that assumption to break.
   for (const u of swept.unresolved) {
     peers.push({
       runtime: 'claude-code',
       rawName: `unknown-${u.pid}`,
       uuid: `pid-${u.pid}`,
       cwd: '',
-      state: 'unreachable',
+      state: (await probeSocket(u.socketPath)) ? 'idle' : 'unreachable',
       socketPath: u.socketPath,
       canReply: false,
-      unaddressable: true,
     });
   }
 
@@ -2100,51 +2100,15 @@ Add the imports:
 ```ts
 import { sweepUnaccounted } from './claude/sweep.js';
 import { resolveConfigDirFromProcess, type ConfigDirResolver } from './claude/env.js';
+import { probeSocket } from './claude/discover.js';
 ```
 
-Then guard the delivery path. In `deliverTo` (`src/runtime.ts:428`), at the top of
-`case 'claude-code':`, before the `sendToInbox` call:
+`deliverTo` needs no change: it already passes `auth: peer.auth as InboxAuth | undefined`,
+and an unresolved peer simply has none. That is exactly the conditional
+`sendToInbox` was already written to handle (`if (auth)`, `src/claude/client.ts:58`).
 
-```ts
-      // Refused here, with a reason, rather than sent and failed generically.
-      // Issue #10 already notes an unreachable peer reports as
-      // delivery_failed, and "could not identify its config dir" is a
-      // different problem with a different fix — one the user can act on.
-      if (peer.unaddressable === true) {
-        return {
-          delivered: false,
-          method: 'inbox',
-          unreachable: true,
-          error:
-            `That session is live but Tin Can could not identify its config dir, so there ` +
-            `is no peer token to authenticate with. Run Tin Can in that session once and ` +
-            `it becomes an ordinary peer.`,
-        };
-      }
-```
-
-and add the matching case to `test/runtime.test.ts`:
-
-```ts
-test('send_peer to an unresolved session is refused with a reason, not attempted', async () => {
-  const side = buildSide('claude-code', {
-    registryDirs: () => [],
-    pid: 1,
-    cwd: '/x',
-    env: {},
-  });
-  const outcome = await side.deliver(
-    { sessionId: undefined },
-    { runtime: 'claude-code', rawName: 'unknown-777', uuid: 'pid-777', cwd: '', state: 'unreachable',
-      socketPath: '/tmp/cc-socks/777.sock', canReply: false, unaddressable: true },
-    'msg_1',
-    'hello',
-    false,
-  );
-  expect(outcome.delivered).toBe(false);
-  expect(outcome.error).toContain('config dir');
-});
-```
+In `src/claude/discover.ts`, rename the private `probe` to `probeSocket` and export
+it, updating its one existing call site in `listClaudeSessions`.
 
 Then in the **codex** arm and the **opencode** arm, replace the `listClaudeSessions(...)` entry in the `Promise.all` with `claudePeersWithSweep(ctx, env, process.getuid?.() ?? 0, replyCapableSessionIds(env))`, and use the returned `peers` directly instead of mapping `claudeSessions`. In the opencode arm keep its existing self-exclusion filter, now keyed off `peer.uuid`:
 
