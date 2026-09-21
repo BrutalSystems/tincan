@@ -54,7 +54,8 @@ Four facts shaped the design. Each was checked rather than reasoned about.
    dir, so a self-registering Tin Can cannot publish its own reachability from
    the environment alone — it would have to copy a secret.
 3. **A session may run no Tin Can at all.** pid `62821` has no Tin Can child
-   process. Anything keyed on self-registration cannot see it.
+   process. Anything keyed on self-registration cannot see it, which is why
+   self-registration cannot be the only source.
 4. **Status is live in the harness registry and nowhere else.** Records carry
    `status` and `statusUpdatedAt`. An MCP server is not told when its session
    goes idle or busy, so a self-written record could only ever offer
@@ -71,9 +72,10 @@ two other call sites.
 
 ### Tin Can self-registers, and the record is a pointer
 
-Each Tin Can hosted in Claude Code writes a record naming its config dir.
-Discovery is then "our own dir, plus every dir some record names" — no globbing
-of `~/.claude*`, no per-platform environment reading, no heuristic to defend.
+Each Tin Can hosted in Claude Code writes a record naming its config dir, so the
+common case is "our own dir, plus every dir some record names" — exact, portable,
+and with no heuristic to defend. It does not cover a session running no Tin Can,
+which is what the third source below exists for.
 
 The record carries **no name, cwd, status or token**. Those are read live from
 the harness registry it points at. Consequences:
@@ -85,24 +87,65 @@ the harness registry it points at. Consequences:
   are probed as they always were. A stale copy would have conjured a phantom
   peer — the shape of issue #12.
 
-### Pointers and our own dir are the only sources
+### Three sources, degrading honestly
 
-Rejected: globbing `~/.claude*`, and an explicit `TINCAN_CLAUDE_CONFIG_DIRS`.
+Rejected outright: globbing `~/.claude*`. Nothing constrains `CLAUDE_CONFIG_DIR`
+to `$HOME`, to a dotfile, or to the string `claude` — `/opt/work/cc` is legal. A
+glob is a guess about a convention that does not exist.
 
-The cost is real and worth stating plainly: **a Claude session running no Tin Can
-is invisible across a config-dir boundary.** pid `62821` stays unlisted until
-some session under `~/.claude-arm` has run Tin Can once. This narrows the
-README's "reaches sessions that never exposed anything and were not built to be
-reachable" — which remains true *within* a config dir, and is why that claim in
-the README needs qualifying rather than deleting.
+Config dirs are found from three sources, in order:
 
-What it buys is an invariant that holds without any further machinery:
+1. **Our own dir** — `CLAUDE_CONFIG_DIR` or `~/.claude`. Always.
+2. **Pointer records** — cheap, exact, no platform dependency.
+3. **A socket sweep** — the fallback, for sessions that run no Tin Can.
 
-> A discoverable cross-dir peer always has a live Tin Can — because being
-> discoverable *means* it wrote a pointer, and the pointer dies with it.
+Layer 3 splits into two halves with very different risk.
 
-So the envelope's instruction to reply with `send_peer` can never be advice a
-cross-dir receiver is unable to follow. Under the glob, it could have been.
+**Detection needs no heuristic at all.** Every live session binds `<pid>.sock` in
+the shared socket dir, and `socketDirCandidates()` (`src/claude/discover.ts:27`)
+already encodes where that is. Sweep it, take the pids, subtract every pid layers
+1 and 2 account for. The remainder is the set of live sessions in config dirs we
+do not know. On the machine this was written against, that remainder is exactly
+`{62821}`.
+
+This adds no assumption Tin Can does not already ship. It depends on knowing
+where sockets live — which the code already asserts — and on nothing whatsoever
+about where config dirs live.
+
+**Resolution is the only platform-specific part**: read that process's own
+environment for `CLAUDE_CONFIG_DIR` — `ps -E -p <pid>` on darwin,
+`/proc/<pid>/environ` on linux, both same-uid. It runs only for pids in the
+remainder, which is normally empty, so the common case costs nothing.
+
+Extract `CLAUDE_CONFIG_DIR` and discard the rest. A process environment is full
+of secrets that are none of Tin Can's business: never log it, never retain it,
+never put it in a diagnostic.
+
+**When resolution fails, the peer is still listed** — `state: unreachable`, with
+a diagnostic naming the pid and saying a live session was seen outside every
+known config dir. Tin Can already has that state. The failure mode is then "there
+is a session here I can see but cannot address", not silence. Issue #17 names
+the opposite — *not a crash, just a quiet wrong answer* — as the month's bug
+pattern; this is the antidote to it.
+
+### A peer's pointer says whether it can reply
+
+Layer 3 costs an invariant that layers 1 and 2 had on their own: a peer found by
+sweep provably has **no** live Tin Can, because it wrote no pointer. It can
+receive a message and cannot answer it — the envelope's "reply with `send_peer`"
+is advice it cannot follow.
+
+That is worth keeping rather than hiding, because the same fact is also the fix:
+**pointer present means the peer can reply; pointer absent means it cannot.** Tin
+Can knows this per peer, for free, and should say so — `can_reply` on the peer,
+and an envelope that tells an unequipped receiver to answer in its own terminal
+instead of naming a tool it does not have.
+
+**This is a pre-existing defect that the pointer set merely makes visible.** The
+Codex and opencode arms already list every Claude session in the default config
+dir, whether or not it runs Tin Can, and already send all of them an envelope
+instructing a `send_peer` reply. Until now nothing could tell the difference.
+Fixing it there is adjacent work, not this spec's, but it should be filed.
 
 ## Design
 
@@ -158,7 +201,27 @@ claudeRegistryDirs(env, home): string[]
 ```
 
 `listClaudeSessions` takes `registryDirs: string[]` and applies today's logic per
-dir.
+dir. It returns the sessions it found **and the pids it accounted for**, which is
+what the sweep subtracts.
+
+```
+sweepUnaccounted(env, uid, accountedPids): Unaccounted[]
+  for each dir in socketDirCandidates(env, uid):
+    for each <pid>.sock:
+      pid not in accountedPids and pid is live
+        -> resolveConfigDir(pid)                 -- ps -E | /proc/<pid>/environ
+             resolved   -> add dir, re-run listClaudeSessions for it
+             unresolved -> emit an unreachable peer + a diagnostic
+```
+
+Resolution feeds back into layer 1/2's own machinery rather than parallelling it:
+a resolved dir is appended to `claudeRegistryDirs` and read exactly like any
+other, so name, cwd, status and token all come from one code path. Only the
+unresolved case has a peer shape of its own, and it carries no name — `pid
+62821` is all it honestly knows.
+
+The sweep runs once per `peers` call, after the registries are read. It cannot
+run before: "unaccounted" is defined by what the registries returned.
 
 **New hazard: the same pid in two registries**, one of them stale. Resolution
 order — `procStart` against `ps -p <pid> -o lstart=`; failing that, the socket
@@ -191,7 +254,16 @@ description and every result note must now say that *same-account* sessions are
 excluded and name `SendMessage` as their path. A list that still claims to
 exclude all Claude sessions lies, just differently.
 
-Peers gain `config_dir`, so `cxx-be-6e` is visibly not `cxx-be-16`.
+Peers gain two fields:
+
+- `config_dir`, so `cxx-be-6e` is visibly not `cxx-be-16`.
+- `can_reply`, true exactly when the peer wrote a pointer. A peer found only by
+  the sweep gets `false`, and its envelope tells it to answer in its own terminal
+  rather than naming a `send_peer` it does not have.
+
+A swept peer that could not be resolved is listed with no name, `state:
+unreachable`, and the diagnostic. It is addressable by nothing and exists in the
+list purely so the user learns it is there.
 
 **Canonical ids do not change.** The suffix already derives from the session id,
 so two same-named sessions in different config dirs already differ.
@@ -200,10 +272,18 @@ is a thing to assert rather than assume.
 
 ### Delivery
 
-No change. `sendToInbox` takes a socket path and an `InboxAuth`; the socket is in
-the shared `/tmp/cc-socks` and the token reads out of the foreign dir's key file
-under the same uid. The reply path is symmetric by construction — both sides
-register, both read the union.
+No change for a resolved peer. `sendToInbox` takes a socket path and an
+`InboxAuth`; the socket is in the shared socket dir and the token reads out of
+the resolved dir's key file under the same uid. Between two Tin Can-equipped
+sessions the reply path is symmetric — both register, both read the union.
+
+**One question to settle with a probe, not an argument.** `sendToInbox` already
+writes the auth frame conditionally (`if (auth)`, `src/claude/client.ts:58`), so
+the code admits the possibility that an unauthenticated send is accepted. If it
+is, an *unresolved* swept peer is deliverable too, with no token and no config
+dir — which would make layer 3 strictly better than described here. If it is
+not, the unresolved case stays informational. Connect to a known socket without
+an auth frame and read the response before writing either behaviour down.
 
 ### Two latent bugs in the code this touches
 
@@ -248,6 +328,25 @@ Unit, against fixture registries under a temp home:
   on read.
 - `test/fixtures/canonical-id.json` unchanged.
 
-End-to-end, by hand: a message from a `~/.claude` session to `cxx-be-6e` under
-`~/.claude-arm`, and a reply. Requires that session to run Tin Can once first —
-by design, per the decision above.
+The sweep, with the socket dir and the resolver both injected:
+
+- a socket whose pid no registry accounts for -> detected as unaccounted.
+- every socket accounted for -> **the resolver is never called**. Assert the
+  call count, not just the result: the whole cost argument rests on this.
+- resolution succeeds -> the dir is appended and the peer comes back fully
+  formed, with name and status, through the ordinary registry path.
+- resolution fails -> one unreachable peer, no name, a diagnostic naming the pid,
+  and no throw.
+- `can_reply` is false for a swept peer and true for a pointer peer.
+- a stale socket file whose pid is dead -> not reported as an unaccounted live
+  session.
+- the resolver returns an environment containing other variables -> only
+  `CLAUDE_CONFIG_DIR` is retained, and nothing else reaches the log or the
+  diagnostic.
+
+End-to-end, by hand, in two passes:
+
+1. With no Tin Can in `cxx-be-6e` — it should appear via the sweep, resolved to
+   `~/.claude-arm`, `can_reply: false`, and take delivery.
+2. With Tin Can running there — it should appear via its pointer,
+   `can_reply: true`, and a reply should come back.
