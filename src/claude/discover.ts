@@ -12,8 +12,8 @@
  * cannot see — which is why this takes a list, and why each session it returns
  * is tagged with the directory it was found in.
  */
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readdirSync, readFileSync, existsSync, realpathSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import net from 'node:net';
 import type { InboxAuth } from './client.js';
@@ -77,6 +77,33 @@ function procStartOf(pid: number): string | undefined {
   }
 }
 
+/**
+ * Canonical form for dedupe. realpath, not resolve: resolve only normalises
+ * text, so one directory reachable by two paths — a symlinked home, /tmp
+ * versus /private/tmp — would dedupe as two. Falls back to the textual form
+ * for a path that does not exist, which the caller drops anyway.
+ */
+export function canonicalDir(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/** First occurrence wins, so "our own dir first" survives. */
+export function dedupeDirs(dirs: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const dir of dirs) {
+    const key = canonicalDir(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(dir);
+  }
+  return out;
+}
+
 interface Candidate {
   registryDir: string;
   rec: Record<string, unknown>;
@@ -94,8 +121,13 @@ export async function listClaudeSessions(params: ListParams): Promise<ClaudeList
 
   // Collect first, resolve collisions second. A pid in two registries cannot
   // be judged until both have been seen.
+  // Deduped here as well as by the caller: the sweep can resolve a stranger
+  // into a directory the caller already knew — after "no override means the
+  // default dir", that is the common case, not the rare one — and scanning
+  // one directory twice makes every session in it look like it appears in two
+  // config dirs.
   const byPid = new Map<number, Candidate[]>();
-  for (const registryDir of registryDirs) {
+  for (const registryDir of dedupeDirs(registryDirs)) {
     if (!existsSync(registryDir)) continue;
     let entries: string[];
     try {
@@ -128,6 +160,16 @@ export async function listClaudeSessions(params: ListParams): Promise<ClaudeList
       if (only !== undefined) chosen.push(only);
       continue;
     }
+    // Two records for one pid that name the SAME session are one session seen
+    // twice, not a conflict. Only a genuinely different sessionId is a
+    // collision. An empty sessionId proves nothing, so it never collapses.
+    const ids = new Set(candidates.map((c) => String(c.rec.sessionId ?? '')));
+    if (ids.size === 1 && !ids.has('')) {
+      const only = candidates[0];
+      if (only !== undefined) chosen.push(only);
+      continue;
+    }
+
     // Two registries claim one pid; at most one can be the running process.
     // Sending with the loser's token would authenticate as a dead session.
     const live = liveProcStart(pid);

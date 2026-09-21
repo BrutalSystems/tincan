@@ -177,8 +177,10 @@ describe('several registry dirs', () => {
   test('the same pid in two dirs: procStart picks the live one', async () => {
     const sock = await fakeInbox();
     open.push(sock);
-    write(a, 333, { messagingSocketPath: sock.path, procStart: 'STALE', name: 'stale-one' });
-    write(b, 333, { messagingSocketPath: sock.path, procStart: 'LIVE', name: 'live-one' });
+    // A real collision is a recycled pid, so the two records name different
+    // sessions; two records naming one session are covered separately below.
+    write(a, 333, { messagingSocketPath: sock.path, procStart: 'STALE', name: 'stale-one', sessionId: 'dead-session' });
+    write(b, 333, { messagingSocketPath: sock.path, procStart: 'LIVE', name: 'live-one', sessionId: 'live-session' });
 
     const listing = await listClaudeSessions({
       registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
@@ -193,8 +195,8 @@ describe('several registry dirs', () => {
   test('the same pid in two dirs, neither matching: both dropped, with a diagnostic', async () => {
     const sock = await fakeInbox();
     open.push(sock);
-    write(a, 444, { messagingSocketPath: sock.path, procStart: 'ONE' });
-    write(b, 444, { messagingSocketPath: sock.path, procStart: 'TWO' });
+    write(a, 444, { messagingSocketPath: sock.path, procStart: 'ONE', sessionId: 'session-one' });
+    write(b, 444, { messagingSocketPath: sock.path, procStart: 'TWO', sessionId: 'session-two' });
 
     const listing = await listClaudeSessions({
       registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
@@ -210,8 +212,8 @@ describe('several registry dirs', () => {
   test('the same pid in two dirs with no procStart anywhere: both dropped', async () => {
     const sock = await fakeInbox();
     open.push(sock);
-    write(a, 555, { messagingSocketPath: sock.path });
-    write(b, 555, { messagingSocketPath: sock.path });
+    write(a, 555, { messagingSocketPath: sock.path, sessionId: 'session-one' });
+    write(b, 555, { messagingSocketPath: sock.path, sessionId: 'session-two' });
 
     const listing = await listClaudeSessions({
       registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
@@ -221,5 +223,100 @@ describe('several registry dirs', () => {
 
     expect(listing.sessions).toEqual([]);
     expect(listing.diagnostic).toContain('555');
+  });
+});
+
+describe('the same directory twice is not a collision', () => {
+  let a: string;
+
+  beforeEach(() => {
+    a = mkdtempSync(join(tmpdir(), 'tincan-dup-'));
+    mkdirSync(join(a, 'sessions'), { recursive: true });
+  });
+  afterEach(() => rmSync(a, { recursive: true, force: true }));
+
+  function write(root: string, pid: number, fields: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(root, 'sessions', `${pid}.json`),
+      JSON.stringify({
+        pid,
+        sessionId: `0000${pid}-0000-0000-0000-000000000000`,
+        cwd: '/src/thing',
+        name: `session-${pid}`,
+        status: 'idle',
+        ...fields,
+      }),
+    );
+  }
+
+  test('one dir listed twice yields one session and no diagnostic', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 777, { messagingSocketPath: sock.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(a, 'sessions')],
+      selfPid: 1,
+    });
+
+    expect(listing.sessions).toHaveLength(1);
+    expect(listing.diagnostic).toBeUndefined();
+  });
+
+  test('two dirs whose records name the SAME session are one session, not a conflict', async () => {
+    const b = mkdtempSync(join(tmpdir(), 'tincan-dup2-'));
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 888, { messagingSocketPath: sock.path });
+    write(b, 888, { messagingSocketPath: sock.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toHaveLength(1);
+    expect(listing.diagnostic).toBeUndefined();
+    rmSync(b, { recursive: true, force: true });
+  });
+
+  test('two dirs naming DIFFERENT sessions on one pid is still a real collision', async () => {
+    const b = mkdtempSync(join(tmpdir(), 'tincan-dup3-'));
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 999, { messagingSocketPath: sock.path, sessionId: 'session-one' });
+    write(b, 999, { messagingSocketPath: sock.path, sessionId: 'session-two' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('999');
+    rmSync(b, { recursive: true, force: true });
+  });
+
+  test('two records with no sessionId at all stay a collision — nothing proves they match', async () => {
+    const b = mkdtempSync(join(tmpdir(), 'tincan-dup4-'));
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 1111, { messagingSocketPath: sock.path, sessionId: '' });
+    write(b, 1111, { messagingSocketPath: sock.path, sessionId: '' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('1111');
+    rmSync(b, { recursive: true, force: true });
   });
 });

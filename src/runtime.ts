@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { assertNever, slugify, type RuntimeName } from './naming.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS, OPENCODE_LIMITS } from './guard.js';
 import type { Side, SidePeer, SelfRef, DeliveryOutcome } from './tools.js';
-import { listClaudeSessions, probeSocket } from './claude/discover.js';
+import { listClaudeSessions, probeSocket, canonicalDir, dedupeDirs } from './claude/discover.js';
 import { sweepUnaccounted } from './claude/sweep.js';
 import { resolveConfigDirFromProcess, type ConfigDirResolver } from './claude/env.js';
 import { readPointers, pointerDir } from './claude/registry.js';
@@ -54,9 +54,9 @@ export function claudeRegistryDirs(
     'sessions',
   );
   const dirs = [own];
-  const seen = new Set([resolve(own)]);
+  const seen = new Set([canonicalDir(own)]);
   for (const rec of readPointers(pointerDir(env, home))) {
-    const key = resolve(rec.registryDir);
+    const key = canonicalDir(rec.registryDir);
     if (seen.has(key)) continue;
     if (!existsSync(rec.registryDir)) continue;
     seen.add(key);
@@ -188,7 +188,7 @@ export async function claudePeersWithSweep(
     swept.resolvedDirs.length === 0
       ? first
       : await listClaudeSessions({
-          registryDirs: [...known, ...swept.resolvedDirs],
+          registryDirs: dedupeDirs([...known, ...swept.resolvedDirs]),
           selfPid: ctx.pid,
           env,
         });

@@ -240,6 +240,21 @@ order — `procStart` against `ps -p <pid> -o lstart=`; failing that, the socket
 probe; failing that, **drop both and emit a diagnostic**. Guessing means sending
 with a token belonging to a dead session.
 
+**But first establish that it is a collision at all**, which 0.7.1 did not and
+which cost every default-dir session. Two conditions make one directory appear
+twice: dedupe by `resolve()` is textual, so one directory reached by two paths —
+a symlinked home, `/tmp` against `/private/tmp` — counts as two; and the sweep
+can resolve a stranger into a directory the caller already knew, which after
+"no override means the default dir" is the *common* case rather than a rare one.
+Either way every session in that directory looks like it appears in two config
+dirs, matches the live `procStart` twice, and is dropped as ambiguous.
+
+So: dedupe canonically (`realpath`, not `resolve`) at every point a directory
+list is built, and treat two records that name the **same `sessionId`** as one
+session seen twice rather than a conflict. A genuine collision is a recycled
+pid, and those records name different sessions. An empty `sessionId` proves
+nothing and never collapses.
+
 **Self-exclusion becomes load-bearing on the Claude arm.** Today that arm lists
 no Claude peers at all, so `pid === selfPid` in `listClaudeSessions` — which
 compares against Tin Can's own pid and can never match a session — costs
