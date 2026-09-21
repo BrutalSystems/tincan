@@ -268,6 +268,49 @@ Session records are always `ses_*.json`, so a reader can tell the two apart by
 name. The caller file carries `instance_id`, so it is removed by the same
 `dispose` and orphan-sweep paths as everything else.
 
+### opencode loads a plugin several times per process — read the NEWEST caller file
+
+opencode instantiates a plugin **more than once per process**, and nothing in
+the plugin docs says so. On opencode 1.18.31 a single pid held four bound Tin
+Can sockets at once: [verified]
+
+```
+$ lsof -U | grep tincan/peers
+opencode 16183 .../inst-2240bb.sock
+opencode 16183 .../inst-7a6c91.sock
+opencode 16183 .../inst-f3fe65.sock
+opencode 16183 .../inst-f60539.sock
+```
+
+One install, one exported function, four live instances. Treat the count as
+"N ≥ 2, not knowable in advance", never as one or two.
+
+**Delivery is unaffected, by construction.** A session record is only ever
+written by an instance that heard that session announced, and `composeRecord`
+stamps *that* instance's socket — so the advertised socket always belongs to an
+instance holding the session in `known`. The unadvertised siblings are idle
+listeners nobody resolves. Prompt injection then goes out over the shared HTTP
+transport, which every instance has, not over an in-process route. This is an
+invariant worth preserving: any future change that lets one instance advertise
+another's socket, or that populates a record from anything but that instance's
+own `known`, breaks it.
+
+**Per-instance files are affected.** Every instance stamps its caller file with
+the same `process.pid`, so several `inst-*.caller.json` can match `OPENCODE_PID`
+at once, each naming whichever session last called a Tin Can tool *on that
+instance*. A reader that takes the first match pins "self" to an arbitrary
+sibling: the calling session is then not excluded from its own peer list, and a
+self-send delivers. **Select the newest** — `at` first, then the file's mtime,
+because `at` is only whole seconds and two sessions can call inside one second.
+`src/opencode/self.ts` does this; `test/opencode-self.test.ts` holds the
+regression, run over both directory orderings since `readdir` order is
+unspecified.
+
+The same caution applies to anything else derived per instance rather than per
+process. A sibling plugin built against this API had opencode's tool hooks reach
+only one of its instances, leaving the others with a tool marker that never
+cleared — and because both published to one path, the stale view kept winning.
+
 ---
 
 ## 5. Event handling
