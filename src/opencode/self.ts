@@ -10,7 +10,7 @@
  *
  * See docs/change-notice-opencode.md §4 and plugins/opencode/SPEC.md §4.
  */
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface SelfSessionParams {
@@ -56,6 +56,19 @@ export function parseOpencodePid(env: NodeJS.ProcessEnv): number | undefined {
 }
 
 /**
+ * `at` as epoch milliseconds, or `undefined` when it is missing or unusable.
+ *
+ * Deliberately not `Date.parse` alone: that returns NaN for junk, and NaN
+ * silently loses every comparison it takes part in — including the one that
+ * would otherwise rank a well-dated record above an undated one.
+ */
+function callerStamp(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
  * The opencode session hosting us, or `undefined` when it cannot be
  * determined — `OPENCODE_PID` absent, empty, or non-numeric, no caller file
  * has been written yet, or it is unreadable/unparseable.
@@ -64,6 +77,21 @@ export function parseOpencodePid(env: NodeJS.ProcessEnv): number | undefined {
  * instance," never as "exclude nothing" — see runtime.ts's opencode-hosted
  * `Side`. Under-excluding here risks a self-send; over-excluding a sibling
  * session is merely inconvenient.
+ *
+ * SEVERAL caller files can match one pid, so the newest wins rather than the
+ * first. opencode instantiates a plugin more than once per process — four
+ * bound instance sockets under a single pid on opencode 1.18.31, issue #19 —
+ * and each instance writes its own `inst-<id>.caller.json` stamped with the
+ * same `process.pid`, naming whichever session last called a Tin Can tool on
+ * *that* instance. Taking the first readdir match therefore pins "self" to an
+ * arbitrary sibling: the current session is then not excluded from its own
+ * peer list and a self-send delivers, which is the exact failure runtime.ts's
+ * "deliberately NOT cached across calls" note exists to prevent. That note
+ * assumed one caller file per process; the stale files on disk reintroduce it.
+ *
+ * `at` is only whole seconds (SPEC §4), so two sessions calling inside the
+ * same second tie — broken by the file's own mtime, which `writeJsonAtomic`
+ * sets on the temp file and `rename` carries over unchanged.
  */
 export async function selfSessionId(params: SelfSessionParams): Promise<string | undefined> {
   const { registryDir, env } = params;
@@ -78,12 +106,15 @@ export async function selfSessionId(params: SelfSessionParams): Promise<string |
     return undefined; // Registry directory absent: plugin not installed, or not yet.
   }
 
+  let best: { sessionId: string; at: number; mtimeMs: number } | undefined;
+
   for (const name of names) {
     if (!name.startsWith('inst-') || !name.endsWith('.caller.json')) continue;
+    const path = join(registryDir, name);
 
     let raw: string;
     try {
-      raw = await readFile(join(registryDir, name), 'utf8');
+      raw = await readFile(path, 'utf8');
     } catch {
       // The plugin can unlink/rewrite this file between our readdir and our
       // readFile (dispose, orphan sweep, a concurrent tool call). Not an
@@ -99,11 +130,27 @@ export async function selfSessionId(params: SelfSessionParams): Promise<string |
     }
 
     // The id is turned into a registry path by runtime.ts's slug lookup, so
-    // it is validated here rather than trusted as written.
-    if (rec.pid === selfPid && isOpencodeSessionId(rec.session_id)) {
-      return rec.session_id;
+    // it is validated here rather than trusted as written. An invalid id is
+    // dropped from the running rather than allowed to win and then be
+    // rejected, so an older well-formed record still identifies us.
+    if (rec.pid !== selfPid || !isOpencodeSessionId(rec.session_id)) continue;
+
+    // `-1` sorts an undated or unparseably-dated record below every dated
+    // one while still beating nothing at all, so a plugin that stopped
+    // writing `at` degrades to "some sibling" rather than to "no self".
+    const at = callerStamp(rec.at) ?? -1;
+    let mtimeMs = 0;
+    try {
+      mtimeMs = (await stat(path)).mtimeMs;
+    } catch {
+      // Vanished under us between readFile and stat. The record is still
+      // usable; it just cannot win a tie.
+    }
+
+    if (best === undefined || at > best.at || (at === best.at && mtimeMs > best.mtimeMs)) {
+      best = { sessionId: rec.session_id, at, mtimeMs };
     }
   }
 
-  return undefined;
+  return best?.sessionId;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selfSessionId, parseOpencodePid } from '../src/opencode/self.js';
@@ -92,6 +92,51 @@ describe('selfSessionId', () => {
     const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '41233' } });
     expect(id).toBeUndefined();
   });
+
+  /**
+   * opencode instantiates a plugin more than once per process (four bound
+   * instance sockets under a single pid on opencode 1.18.31 — issue #19), and
+   * every instance stamps its caller file with the SAME process.pid. So
+   * several `inst-*.caller.json` can match OPENCODE_PID at once, each naming
+   * whichever session last called a Tin Can tool *on that instance*. Only the
+   * most recent one is us.
+   *
+   * readdir order is unspecified, so each of these runs both arrangements:
+   * selection by directory position gets exactly one of the two wrong, whichever
+   * name the filesystem happens to yield first.
+   */
+  const arrangements = [
+    { newest: 'inst-aaaa', older: 'inst-zzzz' },
+    { newest: 'inst-zzzz', older: 'inst-aaaa' },
+  ];
+
+  for (const { newest, older } of arrangements) {
+    it(`prefers the newest caller file when several share our pid (${newest} newest)`, async () => {
+      writeCaller(older, { session_id: 'ses_earlier', at: '2026-09-19T14:02:11Z' });
+      writeCaller(newest, { session_id: 'ses_latest', at: '2026-09-19T14:09:44Z' });
+      const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '41233' } });
+      expect(id).toBe('ses_latest');
+    });
+
+    it(`breaks an identical whole-second \`at\` by mtime (${newest} newest)`, async () => {
+      // isoStamp is whole seconds (SPEC §4), so two sessions calling a Tin Can
+      // tool inside the same second carry byte-identical `at` values and the
+      // file's own mtime is the only remaining signal.
+      writeCaller(older, { session_id: 'ses_earlier' });
+      writeCaller(newest, { session_id: 'ses_latest' });
+      utimesSync(join(dir, `${older}.caller.json`), new Date(1_000), new Date(1_000));
+      utimesSync(join(dir, `${newest}.caller.json`), new Date(2_000), new Date(2_000));
+      const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '41233' } });
+      expect(id).toBe('ses_latest');
+    });
+
+    it(`ranks a caller file with an unusable \`at\` below any dated one (${newest} dated)`, async () => {
+      writeCaller(older, { session_id: 'ses_undated', at: 'not-a-timestamp' });
+      writeCaller(newest, { session_id: 'ses_latest', at: '2026-09-19T14:02:11Z' });
+      const id = await selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '41233' } });
+      expect(id).toBe('ses_latest');
+    });
+  }
 
   it('skips an unparseable caller file rather than throwing', async () => {
     writeFileSync(join(dir, 'inst-bad.caller.json'), '{ not json');
