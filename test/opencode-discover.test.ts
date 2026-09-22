@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, symlinkSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { listOpencodeSessions } from '../src/opencode/discover.js';
@@ -30,6 +30,35 @@ describe('listOpencodeSessions', () => {
   it('returns nothing when the registry directory does not exist', async () => {
     const r = await listOpencodeSessions({ registryDir: join(dir, 'nope') });
     expect(r.peers).toEqual([]);
+  });
+
+  it(
+    'tolerates a record that disappears between the directory read and the file read — ' +
+      'the plugin deletes records on exit, so this is normal, not a fault (issue #11)',
+    async () => {
+      write('ses_real.json', record({ session_id: 'ses_real', slug: 'still-here' }));
+      // A dangling symlink reproduces the race exactly rather than
+      // approximately: readdir lists the name, and readFile then fails with
+      // ENOENT — the same errno a file deleted in the gap produces. No mock,
+      // no sleep, and nothing that a slower runner can change.
+      symlinkSync(join(dir, 'ses_gone_target_that_does_not_exist'), join(dir, 'ses_gone.json'));
+
+      const r = await listOpencodeSessions({ registryDir: dir, probe: async () => true });
+
+      expect(r.peers.map((p) => p.rawName)).toEqual(['still-here']);
+    },
+  );
+
+  it('tolerates an unreadable entry that is not a file at all', async () => {
+    // Same `catch`, different errno (EISDIR). A refactor that narrowed the
+    // tolerance to ENOENT alone would still be wrong: anything unreadable
+    // here belongs to the plugin, not to us.
+    write('ses_real.json', record({ session_id: 'ses_real', slug: 'still-here' }));
+    mkdirSync(join(dir, 'ses_dir.json'));
+
+    const r = await listOpencodeSessions({ registryDir: dir, probe: async () => true });
+
+    expect(r.peers.map((p) => p.rawName)).toEqual(['still-here']);
   });
 
   it('drops unreachable marks for a registry directory that has since vanished', async () => {

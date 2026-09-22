@@ -148,11 +148,26 @@ export async function deadOpencodeSocket(): Promise<{ path: string; cleanup(): v
       `require('node:net').createServer(()=>{}).listen(${JSON.stringify(path)}, () => { console.log('up'); }); setInterval(()=>{}, 1000);`,
     ]);
     const onData = (d: Buffer) => {
-      if (d.toString().includes('up')) {
-        child.stdout.off('data', onData);
-        child.kill('SIGKILL');
-        setTimeout(resolve, 200);
-      }
+      if (!d.toString().includes('up')) return;
+      child.stdout.off('data', onData);
+      // The child's own exit is the signal, not a fixed sleep. The kernel
+      // releases the listening socket as part of tearing the process down,
+      // so by the time 'exit' fires a connect is refused — deterministically,
+      // on any runner. The old 200ms was a guess that a slower CI box could
+      // invalidate, and the failure would have looked like a real bug in
+      // the stale-socket path rather than a flaky fixture.
+      child.once('exit', () => {
+        // Confirmed rather than assumed: if something did answer, this
+        // fixture is not doing its job and should say so here rather than
+        // mislead whichever test consumes it.
+        const probe = net.createConnection(path);
+        probe.on('error', () => { probe.destroy(); resolve(); });
+        probe.on('connect', () => {
+          probe.destroy();
+          reject(new Error(`deadOpencodeSocket: ${path} still accepts connections after SIGKILL`));
+        });
+      });
+      child.kill('SIGKILL');
     };
     child.stdout.on('data', onData);
     child.on('error', reject);
