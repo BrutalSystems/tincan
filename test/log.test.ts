@@ -321,7 +321,7 @@ describe('outstanding questions', () => {
 // the install. Rotation cannot simply truncate, because #17's chain would then
 // report the deliberate cut as damage.
 describe('rotation', () => {
-  const small = () => new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000, keepRecords: 10 });
+  const small = () => new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000 });
   const archivePath = () => join(dir, 'messages.archive.jsonl');
 
   const fill = (log: MessageLog, n: number) => {
@@ -335,22 +335,75 @@ describe('rotation', () => {
     expect(l.read({ last_n: 99 })).toHaveLength(3);
   });
 
-  test('archives the old records and keeps the recent ones readable', () => {
+  // Rotation moves the WHOLE file and starts a new one. It used to keep the
+  // most recent records in the live file, which required reading it and
+  // writing it back — and ~/.tincan/messages.jsonl is machine-global, with one
+  // writer per live session. An append landing between that read and the
+  // rename was destroyed. Losing recent history from `message_log` is a real
+  // cost; losing another session's messages is not a cost worth paying to
+  // avoid it.
+  const idsIn = (path: string) =>
+    readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map((x) => JSON.parse(x).id as string);
+
+  test('every record ends up in exactly one of the two files — none lost, none duplicated', () => {
     const l = small();
     fill(l, 60);
-
     expect(existsSync(archivePath())).toBe(true);
-    const live = l.read({ last_n: 999 });
-    // The most recent message must still be there — a rotation that loses the
-    // tail is worse than an unbounded file.
-    expect(live.at(-1)?.id).toBe('msg_0059');
-    expect(live.length).toBeLessThan(60);
 
-    const archived = readFileSync(archivePath(), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(archived[0].id).toBe('msg_0000');
-    // Nothing may be lost in the middle: every record is in one file or the other.
-    const ids = new Set([...archived.map((r: any) => r.id), ...live.map((r) => r.id)]);
-    for (let i = 0; i < 60; i += 1) expect(ids.has(`msg_${String(i).padStart(4, '0')}`)).toBe(true);
+    const archived = idsIn(archivePath());
+    const live = idsIn(join(dir, 'messages.jsonl'));
+    const all = new Set([...archived, ...live]);
+    for (let i = 0; i < 60; i += 1) expect(all.has(`msg_${String(i).padStart(4, '0')}`)).toBe(true);
+
+    // Duplication would mean the live file had been rewritten from content
+    // that was also archived — the read-modify-write this rotation avoids.
+    const overlap = archived.filter((id) => live.includes(id));
+    expect(overlap).toEqual([]);
+  });
+
+  test('starts the new live file with a checkpoint rather than rewriting the old one', () => {
+    const l = small();
+    fill(l, 60);
+    const first = JSON.parse(readFileSync(join(dir, 'messages.jsonl'), 'utf8').trim().split('\n')[0]!);
+    expect(first.kind).toBe('checkpoint');
+  });
+
+  test('a record written by another session survives a rotation', () => {
+    const a = small();
+    fill(a, 40);
+    // A second MessageLog on the same path is exactly what a second live
+    // session is.
+    const b = new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000 });
+    b.appendMessage(env('msg_other_session'), true);
+
+    fill(a, 40); // pushes past the threshold again
+
+    const everywhere = [
+      ...readFileSync(archivePath(), 'utf8').trim().split('\n').map((x) => JSON.parse(x)),
+      ...a.read({ last_n: 999 }),
+    ].map((r: any) => r.id);
+    expect(everywhere).toContain('msg_other_session');
+  });
+
+  // Two live sessions append to one machine-global log. The chain head was
+  // cached per process on the claim that "we are its only writer", which is
+  // false — six tincan processes were writing to it on the machine where this
+  // was found, and the integrity check reported a break that was really just
+  // interleaving.
+  test('two writers on one log chain onto each other, not onto stale heads', () => {
+    const a = new MessageLog(join(dir, 'messages.jsonl'));
+    const b = new MessageLog(join(dir, 'messages.jsonl'));
+    a.appendMessage(env('msg_a1'), true);
+    b.appendMessage(env('msg_b1'), true);
+    a.appendMessage(env('msg_a2'), true);
+    b.appendMessage(env('msg_b2'), true);
+
+    const { integrity } = a.readWithIntegrity({ last_n: 99 });
+    expect(integrity.broken).toBe(0);
+    expect(integrity.ok).toBe(true);
   });
 
   test('a rotated log still verifies: the cut is not reported as damage', () => {

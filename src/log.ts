@@ -3,8 +3,11 @@ import {
   appendFileSync,
   mkdirSync,
   readFileSync,
-  writeFileSync,
   renameSync,
+  unlinkSync,
+  openSync,
+  readSync,
+  closeSync,
   existsSync,
   statSync,
 } from 'node:fs';
@@ -195,25 +198,20 @@ export function messagesPath(env: NodeJS.ProcessEnv, home: string = homedir()): 
 
 /** Defaults chosen to bound the read cost without discarding useful history. */
 export const ROTATE_MAX_BYTES = 5 * 1024 * 1024;
-export const ROTATE_KEEP_RECORDS = 500;
 
 export interface LogOptions {
   /** Rotate once the live file exceeds this. 0 disables rotation entirely. */
   maxBytes?: number;
-  /** How many of the most recent records stay in the live file. */
-  keepRecords?: number;
 }
 
 export class MessageLog {
   private readonly maxBytes: number;
-  private readonly keepRecords: number;
 
   constructor(
     private readonly path: string,
     opts: LogOptions = {},
   ) {
     this.maxBytes = opts.maxBytes ?? ROTATE_MAX_BYTES;
-    this.keepRecords = opts.keepRecords ?? ROTATE_KEEP_RECORDS;
   }
 
   /** Where rotated records go: messages.jsonl -> messages.archive.jsonl. */
@@ -397,25 +395,68 @@ export class MessageLog {
   }
 
   /**
-   * The head this process will chain onto. Cached after the first read: the
-   * log is append-only and we are its only writer, so re-reading the file on
-   * every append would be pure cost.
+   * The last line of the live file, or undefined.
+   *
+   * Reads a bounded tail rather than the whole file, and widens to a full read
+   * when the last record is larger than the window — a message may be up to
+   * 100k characters, and chaining onto a truncated fragment would corrupt the
+   * chain rather than merely slow it down.
    */
-  private head: string | undefined;
+  private lastLine(): string | undefined {
+    let fd: number | undefined;
+    try {
+      const size = statSync(this.path).size;
+      if (size === 0) return undefined;
+      const want = Math.min(size, 65_536);
+      const buf = Buffer.alloc(want);
+      fd = openSync(this.path, 'r');
+      readSync(fd, buf, 0, want, size - want);
+      const chunk = buf.toString('utf8');
+      // No newline in the window means the final record starts before it.
+      if (want < size && !chunk.includes('\n')) {
+        const all = readFileSync(this.path, 'utf8').split('\n').filter((l) => l.trim() !== '');
+        return all[all.length - 1];
+      }
+      const lines = chunk.split('\n').filter((l) => l.trim() !== '');
+      return lines[lines.length - 1];
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          // closing a read handle cannot fail in a way we can act on
+        }
+      }
+    }
+  }
 
+  /**
+   * The head to chain onto, read fresh every time.
+   *
+   * This used to be cached for the life of the process, on the stated grounds
+   * that "we are its only writer". That is false: `~/.tincan/messages.jsonl`
+   * is machine-global and every live session's Tin Can appends to it — six
+   * were writing to it on the machine where this was found. A cached head
+   * meant a process that had not written for a while chained onto a record
+   * that was no longer last, and the integrity check reported a break that was
+   * only interleaving. A chain that cries wolf gets ignored.
+   *
+   * Two appends that genuinely race can still pick the same head. That is a
+   * real limit of an unlocked multi-writer log, and it is far rarer than the
+   * stale-cache case this removes.
+   */
   private headHash(): string {
-    if (this.head !== undefined) return this.head;
-    if (!existsSync(this.path)) return (this.head = GENESIS);
-    const lines = readFileSync(this.path, 'utf8').split('\n').filter((l) => l.trim() !== '');
-    const last = lines[lines.length - 1];
-    if (last === undefined) return (this.head = GENESIS);
+    const last = this.lastLine();
+    if (last === undefined) return GENESIS;
     try {
       const rec = JSON.parse(last) as LogRecord;
       // A legacy tail has no hash to chain onto, so a new chain starts here
       // rather than the records before it being retrofitted.
-      return (this.head = typeof rec.hash === 'string' ? rec.hash : GENESIS);
+      return typeof rec.hash === 'string' ? rec.hash : GENESIS;
     } catch {
-      return (this.head = GENESIS);
+      return GENESIS;
     }
   }
 
@@ -424,21 +465,22 @@ export class MessageLog {
     const chained: LogRecord = { ...rec, prev: this.headHash() };
     chained.hash = recordHash(chained as unknown as Record<string, unknown>);
     appendFileSync(this.path, JSON.stringify(chained) + '\n', 'utf8');
-    this.head = chained.hash;
     this.rotateIfNeeded();
   }
 
   /**
-   * Move all but the most recent records into the archive, leaving a chained
-   * checkpoint at the head of the live file.
+   * Move the whole live file into the archive and start a new one.
    *
-   * Note what the checkpoint does and does not buy, because the obvious
-   * rationale is wrong. Plain truncation would NOT be reported as damage: the
-   * first record in a file is never link-judged, so a headless live file
-   * verifies clean. What truncation loses is the evidence — a caller sees a
-   * short log with nothing to say why, and the archive is no longer provably
-   * the same chain. The checkpoint buys that evidence, and costs the resync
-   * handling in `allWithIntegrity`.
+   * WHOLESALE, and that is the point. The first version kept the most recent
+   * records in the live file, which meant reading it and writing part of it
+   * back — and this file is machine-global with one writer per live session.
+   * An append landing between that read and the rename was destroyed. Losing
+   * recent history from `message_log` is a real cost; silently losing another
+   * session's messages is not a cost worth paying to avoid it.
+   *
+   * `renameSync` is what makes this safe: `appendFileSync` opens the path on
+   * every call, so a concurrent append either completed into the file being
+   * moved or will create the new one. Neither loses a record.
    */
   private rotateIfNeeded(): void {
     if (this.maxBytes <= 0) return;
@@ -450,43 +492,56 @@ export class MessageLog {
     }
     if (size <= this.maxBytes) return;
 
-    const lines = readFileSync(this.path, 'utf8')
-      .split('\n')
-      .filter((l) => l.trim() !== '');
-    if (lines.length <= this.keepRecords) return;
-
-    const archived = lines.slice(0, lines.length - this.keepRecords);
-    const kept = lines.slice(lines.length - this.keepRecords);
-
-    // Chain the checkpoint onto the last record leaving the file. A damaged
-    // tail chains from genesis rather than aborting the rotation: the file is
-    // already over budget, and refusing to rotate would make that permanent.
-    let prev = GENESIS;
+    // Exclusive-create as a lock: if another session is already rotating,
+    // this one simply does not, and will find the file small next time.
+    const lock = `${this.path}.rotating`;
+    let lockFd: number;
     try {
-      const last = JSON.parse(archived[archived.length - 1]!) as LogRecord;
-      if (typeof last.hash === 'string') prev = last.hash;
+      lockFd = openSync(lock, 'wx');
     } catch {
-      // keep GENESIS
+      return;
     }
 
-    const checkpoint: LogRecord = {
-      id: `cp_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
-      at: new Date().toISOString(),
-      kind: 'checkpoint',
-      rotated: archived.length,
-      into: basename(this.archivePath),
-      prev,
-    };
-    checkpoint.hash = recordHash(checkpoint as unknown as Record<string, unknown>);
+    try {
+      if (statSync(this.path).size <= this.maxBytes) return; // lost the race
+      const prev = this.headHash();
+      const staging = `${this.path}.rotated`;
+      renameSync(this.path, staging);
 
-    // Archive first: a crash between the two leaves records duplicated in both
-    // files, which is recoverable. The other order loses them.
-    appendFileSync(this.archivePath, archived.join('\n') + '\n', 'utf8');
+      // Appending staging into the archive is safe in a way rewriting the
+      // live file is not: nothing else writes the archive, and nothing else
+      // holds the staging path.
+      appendFileSync(this.archivePath, readFileSync(staging, 'utf8'), 'utf8');
+      const moved = readFileSync(staging, 'utf8')
+        .split('\n')
+        .filter((l) => l.trim() !== '').length;
+      unlinkSync(staging);
 
-    // Temp-then-rename, so a reader never sees a half-written live file.
-    const tmp = `${this.path}.rotating`;
-    writeFileSync(tmp, [JSON.stringify(checkpoint), ...kept].join('\n') + '\n', 'utf8');
-    renameSync(tmp, this.path);
+      const checkpoint: LogRecord = {
+        id: `cp_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+        at: new Date().toISOString(),
+        kind: 'checkpoint',
+        rotated: moved,
+        into: basename(this.archivePath),
+        prev,
+      };
+      checkpoint.hash = recordHash(checkpoint as unknown as Record<string, unknown>);
+      appendFileSync(this.path, JSON.stringify(checkpoint) + '\n', 'utf8');
+    } catch {
+      // A failed rotation leaves an oversized log, which is survivable. A
+      // half-finished one would not be.
+    } finally {
+      try {
+        closeSync(lockFd);
+      } catch {
+        // nothing actionable
+      }
+      try {
+        unlinkSync(lock);
+      } catch {
+        // nothing actionable
+      }
+    }
   }
 }
 

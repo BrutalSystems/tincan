@@ -805,7 +805,7 @@ describe('pinning a peer to the session that was listed', () => {
 // and nothing to explain it.
 describe('message_log surfaces rotation', () => {
   test('returns integrity for a healthy but rotated log', async () => {
-    const rotating = new MessageLog(join(dir, 'rot.jsonl'), { maxBytes: 4_000, keepRecords: 10 });
+    const rotating = new MessageLog(join(dir, 'rot.jsonl'), { maxBytes: 4_000 });
     for (let i = 0; i < 60; i += 1) {
       rotating.appendMessage(
         buildEnvelope({
