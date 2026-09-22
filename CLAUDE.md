@@ -52,6 +52,26 @@ there:
 What IS shared: the pushed tag publishes, over OIDC, with no separate
 `npm publish` and no token.
 
+### `allow-scripts` — tincan needs no entry, and never blind-write the key
+
+`~/.npmrc`'s `allow-scripts` is **user-level, so all three repos share one
+value**, and `npm config set` **replaces** it rather than appending. A bare set
+therefore silently drops every other repo's entries, and the failure is quiet:
+the install reports the new version while something is left unbuilt. Read the
+current value and set the **union**, or leave it alone.
+
+**tincan must not be added to it.** Verified: neither `@brutalsystems/tincan`
+nor `@brutalsystems/tincan-opencode` declares `install`, `preinstall`,
+`postinstall` or `prepare`, and the whole installed dependency tree carries only
+`prepack` and `prepare` — `prepack` runs when a tarball is *built*, and
+`prepare` does not run for a published tarball installed from the registry. So
+nothing in tincan's install path wants to execute anything, and listing it would
+assert otherwise. Birddog is the same (no install scripts, no dependencies at
+all). Only muster genuinely needs an entry, because its `postinstall` builds
+node-pty.
+
+It is Mike's config, not ours: report what it should say, don't write it.
+
 ### "...and update globally"
 
 Means: **watch the run, then install the published version on this machine**,
