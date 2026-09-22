@@ -115,16 +115,40 @@ describe('self-name resolution timing', () => {
     expect(await cached()).toBe('respond-to-greeting'); // after it
   });
 
-  test('a real name is cached, so the protocol call happens once', async () => {
+  test('a real name is cached within the window, so the protocol call is not made per send', async () => {
     let calls = 0;
+    let t = 1_000;
     const resolve = async () => {
       calls++;
       return 'auth-refactor';
     };
-    const cached = makeSelfNameResolver(resolve, '/src/x');
+    const cached = makeSelfNameResolver(resolve, '/src/x', { ttlMs: 10_000, now: () => t });
     await cached();
+    t += 9_000;
     await cached();
     expect(calls).toBe(1);
+  });
+
+  // This cache used to be permanent, and that is a live defect, not a
+  // theoretical one: a Codex thread renamed mid-session kept announcing its
+  // OLD name in `from=` for the life of the MCP process. A peer that tried to
+  // reply to that name got peer_unknown, and then — observed in a real
+  // Muster -> opencode -> Tin Can run — picked a different session from the
+  // candidate list and sent the reply to a stranger.
+  test('re-resolves after the window, so a renamed session stops announcing its old name', async () => {
+    let t = 1_000;
+    let name = 'design-multi-agent-workflow';
+    const cached = makeSelfNameResolver(async () => name, '/src/x', {
+      ttlMs: 10_000,
+      now: () => t,
+    });
+
+    expect(await cached()).toBe('design-multi-agent-workflow');
+    name = 'define-remote-agent-orchestration';
+    expect(await cached()).toBe('design-multi-agent-workflow'); // still inside the window
+
+    t += 10_001;
+    expect(await cached()).toBe('define-remote-agent-orchestration');
   });
 });
 
@@ -185,6 +209,36 @@ describe('the empty-list diagnostic', () => {
       expect(d).toContain('first turn');
       expect(d.indexOf('first turn')).toBeLessThan(d.indexOf('plugin not installed'));
     });
+  });
+});
+
+// The Claude arm had the same permanent-cache defect as the Codex one, in a
+// worse form: `selfNameFor` was called ONCE when the side was built and the
+// result returned for the life of the process, with no window at all. A
+// renamed Claude session announced its old name in `from=` forever.
+describe('the claude arm re-reads its own name', () => {
+  test('a session renamed in the registry stops announcing its old name', async () => {
+    const write = (name: string) =>
+      writeFileSync(
+        join(dir, 'sessions', '5150.json'),
+        JSON.stringify({ pid: 5150, sessionId: 'sid-5150', name, cwd: '/src/x' }),
+      );
+    write('old-name');
+
+    const side = buildSide(
+      'claude-code',
+      {
+        registryDirs: () => [join(dir, 'sessions')],
+        pid: 1,
+        cwd: '/src/x',
+        env: { CLAUDE_CODE_SESSION_ID: 'sid-5150' },
+      },
+      { sweep: { socketDirs: [] }, selfNameTtlMs: 0 },
+    );
+
+    expect(await side.selfName(await side.resolveSelf())).toBe('old-name');
+    write('new-name');
+    expect(await side.selfName(await side.resolveSelf())).toBe('new-name');
   });
 });
 

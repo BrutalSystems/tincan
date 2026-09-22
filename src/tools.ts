@@ -92,6 +92,15 @@ export interface Side {
    * agree with each other.
    */
   resolveSelf(): Promise<SelfRef>;
+  /**
+   * Our OWN durable id, for the envelope's `from`. Optional because not every
+   * arm can always answer — a Codex host with no thread yet, for instance —
+   * and an absent id must stay absent rather than be invented.
+   *
+   * This is what lets a receiver route a reply by identity instead of by a
+   * display name that can be renamed out from under it.
+   */
+  selfDurableId?(self: SelfRef): Promise<{ thread_id: string } | { session_id: string } | undefined>;
   /** Resolved lazily: the Codex side must derive its own identity at runtime. */
   selfName(self: SelfRef): Promise<string>;
   selfCwd: string;
@@ -168,6 +177,9 @@ export type Refusal =
   // Distinct from peer_unreachable: that peer is fine, it is simply not the
   // one meant — and delivering to it is the failure being prevented.
   | 'peer_changed'
+  // in_reply_to names a message this recipient did not send. A reply that
+  // lands on an unrelated session is worse than one that is refused.
+  | 'reply_misrouted'
   // A key the caller has already used. Distinct from every other refusal
   // because nothing is wrong: the message was sent, and `message_id` names it.
   | 'duplicate_send'
@@ -424,6 +436,9 @@ export function createTools(side: Side, log: MessageLog) {
       const self = await side.resolveSelf();
       const { named: list, diagnostic } = await named(self);
       const selfName = await side.selfName(self);
+      // Resolved once per call, beside the name, so the two cannot disagree
+      // about who we are.
+      const selfId = (await side.selfDurableId?.(self)) ?? undefined;
 
       // Every address is resolved before anything is delivered, and ANY
       // failure refuses the whole call.
@@ -455,20 +470,69 @@ export function createTools(side: Side, log: MessageLog) {
                 `Tin Can never lists the session it is running in.${alsoMatched}`,
             };
           }
+          // Replying is the case where an arbitrary candidate is most
+          // tempting and most wrong. Observed live: a reply-to name went
+          // stale, the refusal listed every peer on the machine, and the
+          // model picked one and sent the reply to a stranger. So when this
+          // is a reply, the listing is withheld and the guidance names the
+          // only correct move.
+          const replying = args.in_reply_to !== undefined;
           return {
             delivered: none,
+            ...(replying ? {} : { candidates: resolved.candidates }),
             refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
-            candidates: resolved.candidates,
             detail:
               resolved.reason === 'unknown'
                 ? `No peer matches "${address}".` +
                   (fanOut ? ` Nothing was sent to anyone.` : '') +
-                  (diagnostic !== undefined ? ` ${diagnostic}` : ` Call peers to see what is reachable.`)
+                  (replying
+                    ? ` You are replying to ${args.in_reply_to}, so this must go to whoever ` +
+                      `sent that message and nobody else. Do not send it to a different ` +
+                      `session from the peers list. Call peers and match the sender's ` +
+                      `thread_id or session_id; if that session is gone, say so instead ` +
+                      `of redirecting the reply.`
+                    : diagnostic !== undefined
+                      ? ` ${diagnostic}`
+                      : ` Call peers to see what is reachable.`)
                 : `"${address}" matches more than one peer. Use the suffixed form.` +
                   (fanOut ? ` Nothing was sent to anyone.` : ''),
           };
         }
         targets.push(resolved.peer as NamedPeer & { side: SidePeer });
+      }
+
+      // A reply must reach whoever sent the message it answers. `in_reply_to`
+      // was an unvalidated string, so a reply could be addressed to anyone —
+      // and was. The original sender's own record is in this machine-global
+      // log, so the check is a lookup.
+      if (args.in_reply_to !== undefined) {
+        const original = log.findMessage(args.in_reply_to);
+        if (original !== undefined) {
+          const senderId = original.from.thread_id ?? original.from.session_id;
+          const matches = targets.some((t) => {
+            if (senderId !== undefined) {
+              const durable = durableIdOf(t.side);
+              const id = 'thread_id' in durable ? durable.thread_id : durable.session_id;
+              return id === senderId;
+            }
+            // Older records carry no sender id; the name is all there is.
+            return t.display.toLowerCase() === original.from.name.toLowerCase();
+          });
+          if (!matches) {
+            return {
+              delivered: none,
+              refusal: 'reply_misrouted',
+              detail:
+                `${args.in_reply_to} was sent by ${original.from.name}` +
+                `${senderId === undefined ? '' : ` (${senderId})`}, not by ` +
+                `${targets.map((t) => t.display).join(', ')}. Nothing was sent. Reply to ` +
+                `the sender, or drop in_reply_to if this is a new message rather than an ` +
+                `answer.`,
+            };
+          }
+        }
+        // Not found: it rotated out, or predates this log. Cannot check, so
+        // do not refuse — see findMessage.
       }
 
       if (args.expect_id !== undefined) {
@@ -527,7 +591,15 @@ export function createTools(side: Side, log: MessageLog) {
         const others = targets.filter((t) => t !== target).map((t) => t.display);
         const envelope = buildEnvelope({
           id: newMessageId(),
-          from: { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd },
+          from: {
+            runtime: side.selfRuntime,
+            name: selfName,
+            cwd: side.selfCwd,
+            // Spread, not two optional fields: the arm returns whichever key
+            // its runtime uses, and neither is invented when it returns
+            // nothing.
+            ...(selfId ?? {}),
+          },
           // `!== false`, not `=== true`: only the Claude arm sets the field, and
           // a Codex or opencode peer leaving it undefined must keep today's
           // wording.

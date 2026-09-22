@@ -953,3 +953,152 @@ describe('fan-out', () => {
     expect(r).not.toHaveProperty('broadcast_id');
   });
 });
+
+// The receiver could not route a reply by identity because the identity was
+// never on the wire: EnvelopeParty has always declared thread_id/session_id,
+// the `to` side filled them, and the `from` side did not. Observed live — a
+// renamed Codex thread's reply-to name no longer resolved, and the replying
+// model picked a different session from the candidate list.
+describe('the sender identifies itself durably', () => {
+  test('writes the sender durable id into the envelope and the log record', async () => {
+    const { side } = makeSide({
+      selfDurableId: async () => ({ thread_id: 'sender-thread-1' }),
+    });
+    const r = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.from.thread_id).toBe('sender-thread-1');
+  });
+
+  test('omits it rather than inventing one when the arm cannot resolve it', async () => {
+    const { side } = makeSide({ selfDurableId: async () => undefined });
+    const r = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.from.thread_id).toBeUndefined();
+    expect(rec.from.session_id).toBeUndefined();
+    expect(rec.from.name).toBe('billing-api');
+  });
+});
+
+// The stray ACK, reproduced. A reply carried in_reply_to for a message the
+// recipient never sent, and Tin Can delivered it anyway — in_reply_to was an
+// unvalidated string. The machine-global log already holds the original
+// sender's own record, so the check costs a lookup.
+describe('a reply must go to whoever sent the message', () => {
+  // What the OTHER session's Tin Can wrote when it messaged us.
+  const theirMessage = (over: { thread_id?: string; name?: string } = {}) =>
+    log.appendMessage(
+      buildEnvelope({
+        id: 'msg_theirs',
+        from: {
+          runtime: 'codex',
+          name: over.name ?? 'auth-refactor',
+          cwd: '/src/auth',
+          ...(over.thread_id !== undefined && { thread_id: over.thread_id }),
+        },
+        to: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/billing' },
+        method: 'inbox',
+        expect_reply: false,
+        reply_tool: true,
+        text: 'challenge',
+      }),
+      true,
+    );
+
+  test('refuses a reply addressed to a session that did not send it', async () => {
+    theirMessage();
+    const { side, delivered } = makeSide({
+      listPeers: async () => ({
+        peers: [peer({ rawName: 'Docs pass', uuid: '00000000-0000-0000-0000-000000000abc', threadId: '00000000-0000-0000-0000-000000000abc' })],
+      }),
+    });
+    const r = await createTools(side, log).send_peer({
+      peer: 'docs-pass',
+      message: 'ACK',
+      in_reply_to: 'msg_theirs',
+    });
+
+    expect(r.delivered).toBe(false);
+    expect(r.refusal).toBe('reply_misrouted');
+    expect(r.detail).toContain('auth-refactor');
+    expect(delivered).toHaveLength(0);
+  });
+
+  test('allows the reply when it goes to the original sender', async () => {
+    theirMessage();
+    const { side, delivered } = makeSide();
+    const r = await createTools(side, log).send_peer({
+      peer: 'auth-refactor',
+      message: 'ACK',
+      in_reply_to: 'msg_theirs',
+    });
+    expect(r.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+  });
+
+  // Matching on the durable id is the point of carrying it: the display name
+  // is exactly what goes stale when a session is renamed.
+  test('matches on the durable id, so a renamed sender is still replyable', async () => {
+    theirMessage({ thread_id: '00000000-0000-0000-0000-0000000007f3', name: 'old-name' });
+    const { side, delivered } = makeSide();
+    const r = await createTools(side, log).send_peer({
+      peer: 'auth-refactor',
+      message: 'ACK',
+      in_reply_to: 'msg_theirs',
+    });
+    expect(r.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+  });
+
+  // An envelope written by an older Tin Can is not in this log at all, and
+  // refusing those would break every conversation in flight at upgrade.
+  test('allows a reply it cannot check, rather than breaking older conversations', async () => {
+    const { side, delivered } = makeSide();
+    const r = await createTools(side, log).send_peer({
+      peer: 'auth-refactor',
+      message: 'ACK',
+      in_reply_to: 'msg_from_before_the_upgrade',
+    });
+    expect(r.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('a fan-out reply is fine as long as the original sender is one of the recipients', async () => {
+    theirMessage();
+    const { side, delivered } = makeSide({
+      listPeers: async () => ({
+        peers: [
+          peer(),
+          peer({ rawName: 'Docs pass', uuid: '00000000-0000-0000-0000-000000000abc', threadId: '00000000-0000-0000-0000-000000000abc' }),
+        ],
+      }),
+    });
+    const r: any = await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-pass'],
+      message: 'ACK and FYI',
+      in_reply_to: 'msg_theirs',
+    });
+    expect(r.delivered).toBe(2);
+    expect(delivered).toHaveLength(2);
+  });
+
+  test('never suggests picking an arbitrary peer when a reply target cannot be found', async () => {
+    theirMessage();
+    const { side } = makeSide({
+      listPeers: async () => ({
+        peers: [peer({ rawName: 'Docs pass', uuid: '00000000-0000-0000-0000-000000000abc', threadId: '00000000-0000-0000-0000-000000000abc' })],
+      }),
+    });
+    const r = await createTools(side, log).send_peer({
+      peer: 'auth-refactor',
+      message: 'ACK',
+      in_reply_to: 'msg_theirs',
+    });
+
+    expect(r.refusal).toBe('peer_unknown');
+    expect(r.detail).toMatch(/do not send it to a different/i);
+    // The full listing as `candidates` is what invited the wrong pick.
+    expect(r.candidates ?? []).not.toContain('docs-pass');
+  });
+});

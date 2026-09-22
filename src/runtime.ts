@@ -146,6 +146,12 @@ export interface SideDeps {
    * empty-list assertion could otherwise pass by taking the non-empty branch.
    */
   listCodex?: typeof listCodexPeers;
+  /**
+   * How long a resolved self-name is trusted. Production uses
+   * `SELF_NAME_TTL_MS`; a test sets 0 to assert a rename is picked up at all,
+   * without sleeping.
+   */
+  selfNameTtlMs?: number;
 }
 
 export interface SweepDeps {
@@ -346,7 +352,17 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
       // about reachability, and two logged paths to one destination is still
       // worse than one.
       const codex = createCodexEnv();
-      const name = selfNameFor(runtime, ctx);
+      // Re-read on a window rather than captured once. `selfNameFor` was
+      // called here exactly once when the side was built, so a Claude session
+      // renamed afterwards announced its OLD name in every `from=` for the
+      // life of the MCP process — and a peer replying to that name got
+      // peer_unknown. Resolving through the registry returns undefined when
+      // the session is not found, so the cwd fallback is never cached.
+      const selfNameClaude = makeSelfNameResolver(
+        async () => findSessionName(ctx.registryDirs(), env.CLAUDE_CODE_SESSION_ID),
+        ctx.cwd,
+        { ttlMs: deps.selfNameTtlMs },
+      );
       const registryDir = opencodeRegistryDir(env);
       const peerRuntimes: RuntimeName[] = ['codex', 'opencode', 'claude-code'];
 
@@ -368,7 +384,14 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         ...common,
         ownKindScope: 'cross-config-dir',
         resolveSelf: async () => NO_SESSION,
-        selfName: async () => name,
+        selfName: selfNameClaude,
+        // Read from the environment on every call, not captured: the name is
+        // now re-read on a window and the id must not be the stale half of a
+        // pair that is supposed to agree.
+        selfDurableId: async () => {
+          const id = selfClaudeSessionId(env);
+          return id === undefined ? undefined : { session_id: id };
+        },
         peerRuntimes,
         limitsFor,
         async listPeers() {
@@ -447,6 +470,11 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         // three consumers below — that is the whole point.
         resolveSelf: async () => ({ sessionId: await resolveSelfSession() }),
         selfName: (self) => opencodeSelfName(registryDir, self.sessionId, ctx.cwd),
+        // From the SelfRef resolved once for this call, not a second read:
+        // the envelope's from-name, its from-id and the wire's message_from
+        // must all name the same session (see SelfRef).
+        selfDurableId: async (self) =>
+          self.sessionId === undefined ? undefined : { session_id: self.sessionId },
         peerRuntimes,
         limitsFor,
 
@@ -574,6 +602,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
       const selfName = makeSelfNameResolver(
         () => codexThreadName(codexForSelf, ctx, env),
         ctx.cwd,
+        { ttlMs: deps.selfNameTtlMs },
       );
       const peerRuntimes: RuntimeName[] = ['codex', 'claude-code', 'opencode'];
 
@@ -582,6 +611,12 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         ownKindScope: 'included',
         resolveSelf: async () => NO_SESSION,
         selfName,
+        // Cached for the process: unlike a thread's TITLE, its id does not
+        // change, so there is nothing here for a rename to invalidate.
+        selfDurableId: async () => {
+          selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
+          return selfThread === undefined ? undefined : { thread_id: selfThread };
+        },
         peerRuntimes,
         limitsFor,
 
@@ -825,16 +860,42 @@ async function selfThreadId_(
  * startup diagnostic — caching that fallback left a session calling itself by
  * its directory for the rest of its life.
  */
+/**
+ * How long a resolved self-name is trusted before it is looked up again.
+ *
+ * This cache used to be permanent, which made a rename unobservable: a Codex
+ * thread renamed mid-session announced its OLD name in every `from=` for the
+ * life of the MCP process. A peer replying to that name got `peer_unknown` —
+ * and in a real Muster -> opencode -> Tin Can run, the replying model then
+ * chose a different session from the candidate list and sent the reply to a
+ * stranger.
+ *
+ * A window rather than a per-call lookup because resolving costs a CLI round
+ * trip on the Codex arm, and `selfName` is called on every `peers` and every
+ * `send_peer`. Ten seconds keeps that off the hot path while making a rename
+ * visible long before a human could act on it.
+ */
+export const SELF_NAME_TTL_MS = 10_000;
+
 export function makeSelfNameResolver(
   resolve: () => Promise<string | undefined>,
   cwd: string,
+  opts: { ttlMs?: number; now?: () => number } = {},
 ): () => Promise<string> {
+  const ttlMs = opts.ttlMs ?? SELF_NAME_TTL_MS;
+  const now = opts.now ?? Date.now;
   let cached: string | undefined;
+  let at = 0;
   return async () => {
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && now() - at < ttlMs) return cached;
     const name = await resolve();
+    // A fallback is still never cached: a Codex thread has no title until its
+    // first turn, and caching the directory name there left a session calling
+    // itself by its directory forever. Returning it without storing means the
+    // real name is picked up as soon as it exists.
     if (name === undefined || name === '') return basename(cwd) || 'codex';
     cached = name;
+    at = now();
     return cached;
   };
 }

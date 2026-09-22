@@ -265,6 +265,21 @@ export class MessageLog {
     return rec;
   }
 
+  /**
+   * The message record with this id, if the live log still holds one.
+   *
+   * Used to check that a reply is going to whoever actually sent the message
+   * it answers. Returns undefined for an id that has rotated out or was never
+   * here — the caller must treat that as "cannot check", never as "wrong",
+   * or an upgrade would break every conversation already in flight.
+   */
+  findMessage(id: string): MessageRecord | undefined {
+    for (const rec of this.allWithIntegrity().records) {
+      if (rec.id === id && isMessage(rec)) return rec;
+    }
+    return undefined;
+  }
+
   /** Convenience for the callers that do not inspect integrity. */
   read(query: ReadQuery): LogRecord[] {
     return this.readWithIntegrity(query).records;
