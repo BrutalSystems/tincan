@@ -187,12 +187,25 @@ timeout killed it, twice. Whatever the cause, init is not the place to make a
 round trip — which is also why the startup self-check is the only one the
 plugin performs there.
 
-One thing this turned up that the section above does not account for: the
-public namespace `input.client.session` carries its own `prompt` function
-(`typeof input.client.session.prompt === 'function'`). If it targets the
-`/api/`-prefixed route then "the private-field dependency is unavoidable" is
-too strong for 1.18.32. Not settled here — testing it means calling it from a
-later hook rather than from init.
+**`input.client.session.prompt` does not change this** (settled, #20). The
+public namespace carries its own `prompt`, which looked like a way to drop the
+private-field dependency. Reading the generated method on 1.18.32 answers it
+twice over:
+
+```js
+prompt($) { return ($.client ?? this._client).post({ url: "/session/{id}/message", … }) }
+list($)   { return ($?.client ?? this._client).get({ url: "/session", … }) }
+```
+
+It targets an **unprefixed v1 route** — and a different path again,
+`/session/{id}/message`, not `prompt` or `prompt_async` — so it cannot reach
+the v2 route this plugin depends on. And it reaches even that through
+`this._client`: the public namespace is a thin wrapper over the same private
+field. There is no version of "use the public API instead" that avoids
+`_client`, because the public API *is* `_client`.
+
+So the conclusion above stands as written, now for a stronger reason than when
+it was first reached.
 
 ---
 
