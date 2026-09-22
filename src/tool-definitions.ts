@@ -159,9 +159,10 @@ export function toolDefinitions(
         'Read the Tin Can message log — what was sent, to whom, and whether the peer\'s ' +
         'harness accepted it or it was dropped. Filter by peer, or follow a reply chain ' +
         'from a message id. ' +
-        'If an `integrity` field comes back, the log is damaged or was edited and what you ' +
-        'are reading is an incomplete account — say so rather than treating it as the ' +
-        'whole record.',
+        'If an `integrity` field comes back, read it: `ok: false` means the log is damaged ' +
+        'or was edited and what you are reading is an incomplete account — say so rather ' +
+        'than treating it as the whole record. A `rotated` field is not damage; it means ' +
+        'older history was deliberately archived and names where it went.',
       inputSchema: {
         type: 'object',
         properties: {

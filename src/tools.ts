@@ -553,7 +553,11 @@ export function createTools(side: Side, log: MessageLog) {
       // Present only when something is wrong. A field that is always there
       // and almost always says "fine" is a field the reader stops reading,
       // and this one exists to be noticed on the day it matters.
-      return { records, ...(integrity.ok ? {} : { integrity }) };
+      // Also when the log is healthy but rotated: `rotated` is not a fault, and
+      // gating on `ok` alone would compute the notice and then drop it,
+      // leaving a caller with a short log and nothing to explain it.
+      const worthSaying = !integrity.ok || integrity.rotated !== undefined;
+      return { records, ...(worthSaying ? { integrity } : {}) };
     },
   };
 }

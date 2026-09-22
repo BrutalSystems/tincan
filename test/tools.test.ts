@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MessageLog } from '../src/log.js';
+import { buildEnvelope } from '../src/envelope.js';
 import { CODEX_LIMITS, CLAUDE_LIMITS } from '../src/guard.js';
 import { createTools, labelList, type Side, type SidePeer } from '../src/tools.js';
 
@@ -795,5 +796,41 @@ describe('pinning a peer to the session that was listed', () => {
       const r = await tools.send_peer({ peer: 'auth-refactor', message: `ping ${i}`, expect_id: ID });
       expect(r.refusal).toBe('peer_changed');
     }
+  });
+});
+
+// `rotated` rides on the integrity object, which was only returned when
+// something was WRONG. A rotation is not a fault, so the notice would have
+// been computed and then silently dropped — leaving a caller with a short log
+// and nothing to explain it.
+describe('message_log surfaces rotation', () => {
+  test('returns integrity for a healthy but rotated log', async () => {
+    const rotating = new MessageLog(join(dir, 'rot.jsonl'), { maxBytes: 4_000, keepRecords: 10 });
+    for (let i = 0; i < 60; i += 1) {
+      rotating.appendMessage(
+        buildEnvelope({
+          id: `msg_${String(i).padStart(4, '0')}`,
+          from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/billing' },
+          to: { runtime: 'codex', name: 'auth-refactor', thread_id: 'x' },
+          method: 'thread/queue/add',
+          expect_reply: false,
+          reply_tool: true,
+          text: 'x'.repeat(200),
+        }),
+        true,
+      );
+    }
+    const { side } = makeSide();
+    const r = await createTools(side, rotating).message_log({ last_n: 5 });
+
+    expect(r.integrity).toBeDefined();
+    expect(r.integrity?.ok).toBe(true);
+    expect(r.integrity?.rotated?.count).toBeGreaterThan(0);
+  });
+
+  test('still says nothing for a healthy unrotated log', async () => {
+    const { side } = makeSide();
+    const r = await createTools(side, log).message_log({ last_n: 5 });
+    expect(r.integrity).toBeUndefined();
   });
 });

@@ -315,3 +315,88 @@ describe('outstanding questions', () => {
     expect(rec).not.toHaveProperty('answered');
   });
 });
+
+// Every read parsed and re-verified the entire file, and the file never got
+// smaller: the cost of reading the last twenty messages grew for the life of
+// the install. Rotation cannot simply truncate, because #17's chain would then
+// report the deliberate cut as damage.
+describe('rotation', () => {
+  const small = () => new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000, keepRecords: 10 });
+  const archivePath = () => join(dir, 'messages.archive.jsonl');
+
+  const fill = (log: MessageLog, n: number) => {
+    for (let i = 0; i < n; i += 1) log.appendMessage(env(`msg_${String(i).padStart(4, '0')}`), true);
+  };
+
+  test('leaves a small log alone', () => {
+    const l = small();
+    fill(l, 3);
+    expect(existsSync(archivePath())).toBe(false);
+    expect(l.read({ last_n: 99 })).toHaveLength(3);
+  });
+
+  test('archives the old records and keeps the recent ones readable', () => {
+    const l = small();
+    fill(l, 60);
+
+    expect(existsSync(archivePath())).toBe(true);
+    const live = l.read({ last_n: 999 });
+    // The most recent message must still be there — a rotation that loses the
+    // tail is worse than an unbounded file.
+    expect(live.at(-1)?.id).toBe('msg_0059');
+    expect(live.length).toBeLessThan(60);
+
+    const archived = readFileSync(archivePath(), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(archived[0].id).toBe('msg_0000');
+    // Nothing may be lost in the middle: every record is in one file or the other.
+    const ids = new Set([...archived.map((r: any) => r.id), ...live.map((r) => r.id)]);
+    for (let i = 0; i < 60; i += 1) expect(ids.has(`msg_${String(i).padStart(4, '0')}`)).toBe(true);
+  });
+
+  test('a rotated log still verifies: the cut is not reported as damage', () => {
+    const l = small();
+    fill(l, 60);
+    const { integrity } = l.readWithIntegrity({ last_n: 999 });
+    expect(integrity.broken).toBe(0);
+    expect(integrity.tampered).toBe(0);
+    expect(integrity.ok).toBe(true);
+  });
+
+  test('says that older history was rotated, so a short log is not a mystery', () => {
+    const l = small();
+    fill(l, 60);
+    const { integrity } = l.readWithIntegrity({ last_n: 999 });
+    expect(integrity.rotated).toBeDefined();
+    expect(integrity.rotated?.into).toContain('archive');
+    expect(integrity.rotated?.count).toBeGreaterThan(0);
+  });
+
+  test('the checkpoint is bookkeeping, not a message the caller should see', () => {
+    const l = small();
+    fill(l, 60);
+    for (const r of l.read({ last_n: 999 })) expect((r as { kind?: string }).kind).not.toBe('checkpoint');
+  });
+
+  test('a tampered checkpoint is still caught', () => {
+    const l = small();
+    fill(l, 60);
+    const lines = readFileSync(join(dir, 'messages.jsonl'), 'utf8').trim().split('\n');
+    const cp = JSON.parse(lines[0]);
+    expect(cp.kind).toBe('checkpoint');
+    cp.rotated = 1;
+    lines[0] = JSON.stringify(cp);
+    writeFileSync(join(dir, 'messages.jsonl'), lines.join('\n') + '\n');
+
+    const { integrity } = new MessageLog(join(dir, 'messages.jsonl')).readWithIntegrity({ last_n: 999 });
+    expect(integrity.tampered).toBe(1);
+  });
+
+  test('rotating twice keeps appending to the one archive', () => {
+    const l = small();
+    fill(l, 60);
+    const afterFirst = readFileSync(archivePath(), 'utf8').trim().split('\n').length;
+    fill(l, 60);
+    const afterSecond = readFileSync(archivePath(), 'utf8').trim().split('\n').length;
+    expect(afterSecond).toBeGreaterThan(afterFirst);
+  });
+});

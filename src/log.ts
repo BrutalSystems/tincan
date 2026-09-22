@@ -1,7 +1,15 @@
 /** Append-only JSONL message log (§9). Written before delivery is attempted. */
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  existsSync,
+  statSync,
+} from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Envelope } from './envelope.js';
 
@@ -54,6 +62,29 @@ export interface DroppedRecord {
 }
 
 /**
+ * The head of a rotated live file: the records before it were moved to the
+ * archive named by `into`.
+ *
+ * It is an ordinary chained record — its `prev` names the last record that was
+ * moved out — so archive and live file remain one verifiable chain, and a
+ * rotation is visible rather than history simply being shorter than it was.
+ *
+ * `allWithIntegrity` treats it as a resync point. That is not optional: the
+ * record after it chains from the last ARCHIVED record, so judging that link
+ * against the checkpoint's own hash would report a break on every rotated log.
+ * Pinned by a test.
+ */
+export interface CheckpointRecord {
+  id: string;
+  at: string;
+  kind: 'checkpoint';
+  /** How many records were moved out. */
+  rotated: number;
+  /** Basename of the archive they were moved into. */
+  into: string;
+}
+
+/**
  * The outcome of a send, appended after the attempt. The log is append-only, so
  * a delivery result cannot rewrite its message record — `read` folds these onto
  * the message instead, leaving one logical record per message (§9).
@@ -90,7 +121,13 @@ export interface ChainFields {
   sig?: string;
 }
 
-export type LogRecord = (MessageRecord | NoticeRecord | DroppedRecord | OutcomeRecord) &
+export type LogRecord = (
+  | MessageRecord
+  | NoticeRecord
+  | DroppedRecord
+  | OutcomeRecord
+  | CheckpointRecord
+) &
   ChainFields;
 
 /** `prev` of the first record in a chain. */
@@ -106,6 +143,12 @@ export interface LogIntegrity {
   broken: number;
   /** Records predating chaining. Expected on an upgraded install, not a fault. */
   unchained: number;
+  /**
+   * Set when older history was deliberately rotated out. Not a fault — but a
+   * caller seeing fewer records than it expected deserves to know why, rather
+   * than concluding the log lost them.
+   */
+  rotated?: { count: number; into: string; at: string };
   /** Said plainly, because a model reads this and has to decide what to do. */
   detail?: string;
 }
@@ -148,8 +191,33 @@ export function messagesPath(env: NodeJS.ProcessEnv, home: string = homedir()): 
   return join(env.TINCAN_HOME ?? join(home, '.tincan'), 'messages.jsonl');
 }
 
+/** Defaults chosen to bound the read cost without discarding useful history. */
+export const ROTATE_MAX_BYTES = 5 * 1024 * 1024;
+export const ROTATE_KEEP_RECORDS = 500;
+
+export interface LogOptions {
+  /** Rotate once the live file exceeds this. 0 disables rotation entirely. */
+  maxBytes?: number;
+  /** How many of the most recent records stay in the live file. */
+  keepRecords?: number;
+}
+
 export class MessageLog {
-  constructor(private readonly path: string) {}
+  private readonly maxBytes: number;
+  private readonly keepRecords: number;
+
+  constructor(
+    private readonly path: string,
+    opts: LogOptions = {},
+  ) {
+    this.maxBytes = opts.maxBytes ?? ROTATE_MAX_BYTES;
+    this.keepRecords = opts.keepRecords ?? ROTATE_KEEP_RECORDS;
+  }
+
+  /** Where rotated records go: messages.jsonl -> messages.archive.jsonl. */
+  private get archivePath(): string {
+    return `${this.path.replace(/\.jsonl$/, '')}.archive.jsonl`;
+  }
 
   appendMessage(e: Envelope, delivered: boolean, delivery?: 'queue' | 'steer'): MessageRecord {
     const rec: MessageRecord = {
@@ -241,7 +309,7 @@ export class MessageLog {
     }
 
     return records
-      .filter((r) => r.kind !== 'outcome')
+      .filter((r) => r.kind !== 'outcome' && r.kind !== 'checkpoint')
       .map((r) => {
         const o = isMessage(r) ? outcomes.get(r.id) : undefined;
         const folded =
@@ -255,6 +323,7 @@ export class MessageLog {
 
   private allWithIntegrity(): { records: LogRecord[]; integrity: LogIntegrity } {
     const tally = { unparseable: 0, tampered: 0, broken: 0, unchained: 0 };
+    let rotated: LogIntegrity['rotated'];
     if (!existsSync(this.path)) return { records: [], integrity: summarise(tally) };
 
     const out: LogRecord[] = [];
@@ -291,11 +360,22 @@ export class MessageLog {
       } else if (!resync && expected !== undefined && rec.prev !== expected) {
         tally.broken++;
       }
+      if (rec.kind === 'checkpoint') {
+        rotated = { count: rec.rotated, into: rec.into, at: rec.at };
+        // The record after this one chains from the archive, not from anything
+        // in this file, so its link cannot be judged here. This is the same
+        // "we cannot know what comes next" case `resync` already exists for —
+        // the difference being that this one is deliberate.
+        resync = true;
+        expected = undefined;
+        continue;
+      }
+
       resync = false;
       expected = rec.hash;
     }
 
-    return { records: out, integrity: summarise(tally) };
+    return { records: out, integrity: summarise(tally, rotated) };
   }
 
   /**
@@ -327,6 +407,68 @@ export class MessageLog {
     chained.hash = recordHash(chained as unknown as Record<string, unknown>);
     appendFileSync(this.path, JSON.stringify(chained) + '\n', 'utf8');
     this.head = chained.hash;
+    this.rotateIfNeeded();
+  }
+
+  /**
+   * Move all but the most recent records into the archive, leaving a chained
+   * checkpoint at the head of the live file.
+   *
+   * Note what the checkpoint does and does not buy, because the obvious
+   * rationale is wrong. Plain truncation would NOT be reported as damage: the
+   * first record in a file is never link-judged, so a headless live file
+   * verifies clean. What truncation loses is the evidence — a caller sees a
+   * short log with nothing to say why, and the archive is no longer provably
+   * the same chain. The checkpoint buys that evidence, and costs the resync
+   * handling in `allWithIntegrity`.
+   */
+  private rotateIfNeeded(): void {
+    if (this.maxBytes <= 0) return;
+    let size: number;
+    try {
+      size = statSync(this.path).size;
+    } catch {
+      return;
+    }
+    if (size <= this.maxBytes) return;
+
+    const lines = readFileSync(this.path, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '');
+    if (lines.length <= this.keepRecords) return;
+
+    const archived = lines.slice(0, lines.length - this.keepRecords);
+    const kept = lines.slice(lines.length - this.keepRecords);
+
+    // Chain the checkpoint onto the last record leaving the file. A damaged
+    // tail chains from genesis rather than aborting the rotation: the file is
+    // already over budget, and refusing to rotate would make that permanent.
+    let prev = GENESIS;
+    try {
+      const last = JSON.parse(archived[archived.length - 1]!) as LogRecord;
+      if (typeof last.hash === 'string') prev = last.hash;
+    } catch {
+      // keep GENESIS
+    }
+
+    const checkpoint: LogRecord = {
+      id: `cp_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      at: new Date().toISOString(),
+      kind: 'checkpoint',
+      rotated: archived.length,
+      into: basename(this.archivePath),
+      prev,
+    };
+    checkpoint.hash = recordHash(checkpoint as unknown as Record<string, unknown>);
+
+    // Archive first: a crash between the two leaves records duplicated in both
+    // files, which is recoverable. The other order loses them.
+    appendFileSync(this.archivePath, archived.join('\n') + '\n', 'utf8');
+
+    // Temp-then-rename, so a reader never sees a half-written live file.
+    const tmp = `${this.path}.rotating`;
+    writeFileSync(tmp, [JSON.stringify(checkpoint), ...kept].join('\n') + '\n', 'utf8');
+    renameSync(tmp, this.path);
   }
 }
 
@@ -339,7 +481,7 @@ function summarise(t: {
   tampered: number;
   broken: number;
   unchained: number;
-}): LogIntegrity {
+}, rotated?: LogIntegrity['rotated']): LogIntegrity {
   const faults: string[] = [];
   if (t.unparseable > 0) {
     faults.push(`${t.unparseable} line(s) could not be parsed (a truncated or half-written write)`);
@@ -350,6 +492,7 @@ function summarise(t: {
   return {
     ok,
     ...t,
+    ...(rotated !== undefined && { rotated }),
     ...(ok
       ? {}
       : {
