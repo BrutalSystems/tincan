@@ -12,7 +12,7 @@ import {
 } from './naming.js';
 import { buildEnvelope, newMessageId, renderEnvelope, type DeliveryMethod } from './envelope.js';
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
-import { MessageLog, type LogRecord } from './log.js';
+import { MessageLog, type LogRecord, type LogIntegrity } from './log.js';
 import type { PeerState } from './claude/discover.js';
 
 export interface SidePeer {
@@ -469,9 +469,15 @@ export function createTools(side: Side, log: MessageLog) {
       };
     },
 
-    async message_log(rawArgs: MessageLogArgs): Promise<{ records: LogRecord[] }> {
+    async message_log(
+      rawArgs: MessageLogArgs,
+    ): Promise<{ records: LogRecord[]; integrity?: LogIntegrity }> {
       const args = messageLogSchema.parse(rawArgs);
-      return { records: log.read(args) };
+      const { records, integrity } = log.readWithIntegrity(args);
+      // Present only when something is wrong. A field that is always there
+      // and almost always says "fine" is a field the reader stops reading,
+      // and this one exists to be noticed on the day it matters.
+      return { records, ...(integrity.ok ? {} : { integrity }) };
     },
   };
 }

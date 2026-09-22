@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MessageLog } from '../src/log.js';
@@ -617,4 +617,24 @@ test('the peers note names SendMessage as the path to same-account sessions', as
   const result = await tools(side).peers();
   expect(result.notes?.join(' ')).toContain('SendMessage');
   expect(result.notes?.join(' ')).toContain('CLAUDE_CONFIG_DIR');
+});
+
+describe('message_log integrity', () => {
+  test('stays quiet on a healthy log', async () => {
+    const { side } = makeSide();
+    await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
+    const r = await tools(side).message_log({ last_n: 10 });
+    expect(r.integrity).toBeUndefined();
+  });
+
+  test('reports a damaged log instead of quietly returning fewer records', async () => {
+    const { side } = makeSide();
+    await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
+    appendFileSync(join(dir, 'messages.jsonl'), '{"id":"msg_half","at":\n');
+
+    const r = await tools(side).message_log({ last_n: 10 });
+    expect(r.integrity?.ok).toBe(false);
+    expect(r.integrity?.unparseable).toBe(1);
+    expect(r.integrity?.detail).toMatch(/incomplete|edited/i);
+  });
 });

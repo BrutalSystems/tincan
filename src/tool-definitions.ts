@@ -104,7 +104,10 @@ export function toolDefinitions(
       name: 'message_log',
       description:
         'Read the Tin Can message log — what was sent, to whom, and whether it was delivered, ' +
-        'held or dropped. Filter by peer, or follow a reply chain from a message id.',
+        'held or dropped. Filter by peer, or follow a reply chain from a message id. ' +
+        'If an `integrity` field comes back, the log is damaged or was edited and what you ' +
+        'are reading is an incomplete account — say so rather than treating it as the ' +
+        'whole record.',
       inputSchema: {
         type: 'object',
         properties: {

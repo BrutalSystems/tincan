@@ -674,6 +674,35 @@ logs `"queue"`, because that is what actually happened to the peer's turn.
 Records written before this field existed simply lack it — do not read its
 absence as `"queue"`.
 
+### Damage is reported, not skipped
+
+Each record carries `prev` and `hash`: a sha256 over the record, chained to the
+one before it. A half-written line, a corrupted file or an edit in an editor
+used to be skipped silently, so the log simply reported fewer messages than
+happened and nothing said so. Now `message_log` returns an `integrity` field
+when the chain does not hold:
+
+```json
+{"records":[…],
+ "integrity":{"ok":false,"unparseable":1,"tampered":0,"broken":0,"unchained":0,
+              "detail":"Log integrity: 1 line(s) could not be parsed …"}}
+```
+
+The field is **absent when the log is healthy**, so its presence is the signal.
+Records are still returned either way — a damaged log must not become an empty
+one.
+
+**What this is and is not.** The chain lives in the same file as the data, so
+anything that can rewrite the log can recompute it. This is integrity against
+truncation, corruption and careless edits — not security against a deliberate
+same-user adversary, who can already replace the `tincan` binary. Verifiable
+provenance is a separate job and needs signing, not hashing.
+
+Records written before chaining existed are counted as `unchained` and are not
+a fault: the format is append-only and that history is real. A log that
+predates this reads back clean, and the chain simply starts at the next record
+appended.
+
 ## Troubleshooting
 
 **`peers` is empty, or missing a session you can see.**

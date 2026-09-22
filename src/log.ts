@@ -1,5 +1,6 @@
 /** Append-only JSONL message log (§9). Written before delivery is attempted. */
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Envelope } from './envelope.js';
@@ -57,7 +58,77 @@ export interface OutcomeRecord {
   detail?: string;
 }
 
-export type LogRecord = MessageRecord | NoticeRecord | DroppedRecord | OutcomeRecord;
+/**
+ * Chain metadata carried by every record written since #17 phase 1.
+ *
+ * What this buys: a truncated write, a corrupted file or a careless edit stops
+ * being a log that quietly reports fewer messages than happened, and becomes
+ * one that says so. What it does NOT buy: protection from a deliberate
+ * same-user adversary. The chain lives in the same file as the data, so
+ * anything that can rewrite the log can recompute it — and that adversary can
+ * already replace the `tincan` binary, so there is nothing here to defend.
+ *
+ * `key_id` and `sig` are phase 2's slots and are never written today. They are
+ * declared now, and deliberately excluded from the hash, so that signing a
+ * record later does not change its hash and force a rewrite of every record
+ * after it. That migration is the whole cost this empty slot avoids.
+ */
+export interface ChainFields {
+  /** Hash of the previous record, or `GENESIS` for the first of a chain. */
+  prev?: string;
+  /** sha256 over this record with `hash` and `sig` removed. */
+  hash?: string;
+  key_id?: string;
+  sig?: string;
+}
+
+export type LogRecord = (MessageRecord | NoticeRecord | DroppedRecord | OutcomeRecord) &
+  ChainFields;
+
+/** `prev` of the first record in a chain. */
+export const GENESIS = 'genesis';
+
+export interface LogIntegrity {
+  ok: boolean;
+  /** Lines that were not JSON at all — a truncated or half-written write. */
+  unparseable: number;
+  /** Records whose contents no longer hash to the value they carry. */
+  tampered: number;
+  /** Records whose `prev` does not name the record before them. */
+  broken: number;
+  /** Records predating chaining. Expected on an upgraded install, not a fault. */
+  unchained: number;
+  /** Said plainly, because a model reads this and has to decide what to do. */
+  detail?: string;
+}
+
+/**
+ * JSON with object keys sorted, recursively.
+ *
+ * The hash has to survive a round trip through `JSON.parse`, and key order is
+ * an artefact of how a record was built rather than part of its meaning. Sorting
+ * makes the hash depend on the content alone, so adding a field to a record
+ * type later cannot silently invalidate history.
+ */
+function canonicalJson(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o)
+    .filter((k) => o[k] !== undefined)
+    .sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(',')}}`;
+}
+
+/** Excludes `hash` (it is the output) and `sig` (see ChainFields). */
+export function recordHash(rec: Record<string, unknown>): string {
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    if (k === 'hash' || k === 'sig') continue;
+    rest[k] = v;
+  }
+  return createHash('sha256').update(canonicalJson(rest)).digest('hex');
+}
 
 export interface ReadQuery {
   peer?: string;
@@ -114,8 +185,14 @@ export class MessageLog {
     return rec;
   }
 
+  /** Convenience for the callers that do not inspect integrity. */
   read(query: ReadQuery): LogRecord[] {
-    let records = this.fold(this.all());
+    return this.readWithIntegrity(query).records;
+  }
+
+  readWithIntegrity(query: ReadQuery): { records: LogRecord[]; integrity: LogIntegrity } {
+    const { records: raw, integrity } = this.allWithIntegrity();
+    let records = this.fold(raw);
 
     if (query.thread !== undefined) {
       const chain = new Set<string>([query.thread]);
@@ -135,7 +212,7 @@ export class MessageLog {
       );
     }
 
-    return records.slice(-query.last_n);
+    return { records: records.slice(-query.last_n), integrity };
   }
 
   /** Applies outcome records to their message and drops them from the result. */
@@ -152,26 +229,110 @@ export class MessageLog {
       });
   }
 
-  private all(): LogRecord[] {
-    if (!existsSync(this.path)) return [];
+  private allWithIntegrity(): { records: LogRecord[]; integrity: LogIntegrity } {
+    const tally = { unparseable: 0, tampered: 0, broken: 0, unchained: 0 };
+    if (!existsSync(this.path)) return { records: [], integrity: summarise(tally) };
+
     const out: LogRecord[] = [];
+    let expected: string | undefined; // hash the next record should name in `prev`
+    // After damage we cannot know what the next record's `prev` ought to be,
+    // so the following link is not judged. One fault counted once: blaming
+    // the innocent record after a truncated line for a second break would
+    // double every real problem.
+    let resync = false;
+
     for (const line of readFileSync(this.path, 'utf8').split('\n')) {
       if (line.trim() === '') continue;
+      let rec: LogRecord;
       try {
-        out.push(JSON.parse(line) as LogRecord);
+        rec = JSON.parse(line) as LogRecord;
       } catch {
-        // A truncated or hand-edited line must not cost us the rest of the log.
+        // Still skipped — a truncated line must not cost us the rest of the
+        // log — but no longer in silence, which was the defect.
+        tally.unparseable++;
+        resync = true;
+        continue;
       }
+      out.push(rec);
+
+      if (typeof rec.hash !== 'string') {
+        // Predates chaining. Expected on any install with history.
+        tally.unchained++;
+        expected = undefined;
+        resync = true;
+        continue;
+      }
+      if (recordHash(rec as unknown as Record<string, unknown>) !== rec.hash) {
+        tally.tampered++;
+      } else if (!resync && expected !== undefined && rec.prev !== expected) {
+        tally.broken++;
+      }
+      resync = false;
+      expected = rec.hash;
     }
-    return out;
+
+    return { records: out, integrity: summarise(tally) };
+  }
+
+  /**
+   * The head this process will chain onto. Cached after the first read: the
+   * log is append-only and we are its only writer, so re-reading the file on
+   * every append would be pure cost.
+   */
+  private head: string | undefined;
+
+  private headHash(): string {
+    if (this.head !== undefined) return this.head;
+    if (!existsSync(this.path)) return (this.head = GENESIS);
+    const lines = readFileSync(this.path, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    const last = lines[lines.length - 1];
+    if (last === undefined) return (this.head = GENESIS);
+    try {
+      const rec = JSON.parse(last) as LogRecord;
+      // A legacy tail has no hash to chain onto, so a new chain starts here
+      // rather than the records before it being retrofitted.
+      return (this.head = typeof rec.hash === 'string' ? rec.hash : GENESIS);
+    } catch {
+      return (this.head = GENESIS);
+    }
   }
 
   private append(rec: LogRecord): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    appendFileSync(this.path, JSON.stringify(rec) + '\n', 'utf8');
+    const chained: LogRecord = { ...rec, prev: this.headHash() };
+    chained.hash = recordHash(chained as unknown as Record<string, unknown>);
+    appendFileSync(this.path, JSON.stringify(chained) + '\n', 'utf8');
+    this.head = chained.hash;
   }
 }
 
 function isMessage(r: LogRecord): r is MessageRecord {
   return r.kind === undefined;
+}
+
+function summarise(t: {
+  unparseable: number;
+  tampered: number;
+  broken: number;
+  unchained: number;
+}): LogIntegrity {
+  const faults: string[] = [];
+  if (t.unparseable > 0) {
+    faults.push(`${t.unparseable} line(s) could not be parsed (a truncated or half-written write)`);
+  }
+  if (t.tampered > 0) faults.push(`${t.tampered} record(s) no longer match their own hash`);
+  if (t.broken > 0) faults.push(`${t.broken} record(s) do not follow the record before them`);
+  const ok = faults.length === 0;
+  return {
+    ok,
+    ...t,
+    ...(ok
+      ? {}
+      : {
+          detail:
+            `Log integrity: ${faults.join('; ')}. Records are still returned, but the log is ` +
+            `incomplete or was edited — treat it as a partial account of what happened. The ` +
+            `chain detects damage, not a deliberate rewrite by this user.`,
+        }),
+  };
 }

@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MessageLog, messagesPath } from '../src/log.js';
+import { MessageLog, messagesPath, GENESIS } from '../src/log.js';
 import { buildEnvelope } from '../src/envelope.js';
 
 let dir: string;
@@ -146,5 +146,135 @@ describe('outcome folding', () => {
   test('leaves a message with no outcome undelivered, as a crash mid-send would', () => {
     log.appendMessage(env('msg_a'), false);
     expect(log.read({ last_n: 10 })[0]).toMatchObject({ id: 'msg_a', delivered: false });
+  });
+});
+
+// Phase 1 of #17. The chain lives in the same file as the data, so anything
+// that can rewrite the log can recompute it. This is integrity against
+// truncation, corruption and careless edits — not security against a
+// same-user adversary, who can already replace the binary.
+describe('record chaining', () => {
+  const lines = () => readFileSync(join(dir, 'nested', 'messages.jsonl'), 'utf8')
+    .split('\n').filter((l) => l.trim() !== '');
+  const parsed = () => lines().map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  test('chains each record to the hash of the one before it', () => {
+    log.appendMessage(env('msg_a'), true);
+    log.appendMessage(env('msg_b'), true);
+    const [a, b] = parsed();
+
+    expect(a!.prev).toBe(GENESIS);
+    expect(typeof a!.hash).toBe('string');
+    expect(b!.prev).toBe(a!.hash);
+    expect(b!.hash).not.toBe(a!.hash);
+  });
+
+  test('a clean log verifies', () => {
+    log.appendMessage(env('msg_a'), true);
+    log.appendOutcome('msg_a', true);
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity).toMatchObject({ ok: true, unparseable: 0, tampered: 0, broken: 0 });
+  });
+
+  test('detects a record edited in place', () => {
+    log.appendMessage(env('msg_a'), true);
+    log.appendMessage(env('msg_b'), true);
+    // Someone opens the file and changes what was said.
+    const edited = lines().map((l, i) => (i === 0 ? l.replace('text of msg_a', 'text of NOPE') : l));
+    writeFileSync(join(dir, 'nested', 'messages.jsonl'), edited.join('\n') + '\n');
+
+    const { records, integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity.ok).toBe(false);
+    expect(integrity.tampered).toBe(1);
+    expect(integrity.detail).toMatch(/chain|integrity|edited/i);
+    // Still returns what it has — a damaged log must not become an empty one.
+    expect(records.length).toBe(2);
+  });
+
+  test('detects a record removed from the middle', () => {
+    log.appendMessage(env('msg_a'), true);
+    log.appendMessage(env('msg_b'), true);
+    log.appendMessage(env('msg_c'), true);
+    const kept = lines().filter((_, i) => i !== 1);
+    writeFileSync(join(dir, 'nested', 'messages.jsonl'), kept.join('\n') + '\n');
+
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity.ok).toBe(false);
+    expect(integrity.broken).toBe(1);
+  });
+
+  test('reports a half-written line instead of silently skipping it', () => {
+    log.appendMessage(env('msg_a'), true);
+    appendFileSync(join(dir, 'nested', 'messages.jsonl'), '{"id":"msg_trunc","at":\n');
+    log.appendMessage(env('msg_b'), true);
+
+    const { records, integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity.ok).toBe(false);
+    expect(integrity.unparseable).toBe(1);
+    // The good records on both sides of the damage survive.
+    expect(records.map((r) => r.id)).toEqual(['msg_a', 'msg_b']);
+  });
+
+  test('does not blame the record after an unparseable line for the break', () => {
+    log.appendMessage(env('msg_a'), true);
+    appendFileSync(join(dir, 'nested', 'messages.jsonl'), 'not json at all\n');
+    log.appendMessage(env('msg_b'), true);
+
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    // One fault, counted once: the garbage line. msg_b's prev genuinely does
+    // not match msg_a's hash, but that is the same damage, not a second one.
+    expect(integrity.unparseable).toBe(1);
+    expect(integrity.broken).toBe(0);
+  });
+
+  test('treats records written before chaining existed as unchained, not corrupt', () => {
+    // A real log from an older Tin Can. The format is append-only and this
+    // history exists on disk today; calling it corruption would be a false
+    // alarm on every install that upgrades.
+    const legacy = { id: 'msg_old', at: '2026-09-01T00:00:00Z', kind: 'notice', detail: 'hi' };
+    mkdirSync(join(dir, 'nested'), { recursive: true });
+    writeFileSync(join(dir, 'nested', 'messages.jsonl'), JSON.stringify(legacy) + '\n');
+    log.appendMessage(env('msg_new'), true);
+
+    const { records, integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity.ok).toBe(true);
+    expect(integrity.unchained).toBe(1);
+    expect(records.map((r) => r.id)).toEqual(['msg_old', 'msg_new']);
+  });
+
+  test('continues the chain across a restart, reading the head off disk', () => {
+    log.appendMessage(env('msg_a'), true);
+    const reopened = new MessageLog(join(dir, 'nested', 'messages.jsonl'));
+    reopened.appendMessage(env('msg_b'), true);
+
+    const [a, b] = parsed();
+    expect(b!.prev).toBe(a!.hash);
+    expect(reopened.readWithIntegrity({ last_n: 10 }).integrity.ok).toBe(true);
+  });
+
+  test('a signature added later does not invalidate the chain, but a claimed key id does', () => {
+    // The phase 2 slot. `sig` is excluded from the hash because it is the
+    // output of signing the hash — including it would be circular.
+    //
+    // `key_id` is NOT excluded, deliberately. It names the key a signature is
+    // to be checked against, so it is part of what gets attested; leaving it
+    // outside would let the claimed key be swapped without detection. A record
+    // signed at write time carries its key id inside the hash from the start,
+    // which is the only case that matters — retro-signing old records is not
+    // a thing anyone needs to do.
+    log.appendMessage(env('msg_a'), true);
+    const signed = parsed().map((r) => ({ ...r, sig: 'deadbeef' }));
+    writeFileSync(
+      join(dir, 'nested', 'messages.jsonl'),
+      signed.map((r) => JSON.stringify(r)).join('\n') + '\n',
+    );
+    expect(log.readWithIntegrity({ last_n: 10 }).integrity.ok).toBe(true);
+
+    const reKeyed = parsed().map((r) => ({ ...r, key_id: 'k1' }));
+    writeFileSync(
+      join(dir, 'nested', 'messages.jsonl'),
+      reKeyed.map((r) => JSON.stringify(r)).join('\n') + '\n',
+    );
+    expect(log.readWithIntegrity({ last_n: 10 }).integrity.tampered).toBe(1);
   });
 });
