@@ -137,17 +137,50 @@ maintainer discovers by surprise.
 
 ## Resolution
 
-Input is trimmed and lowercased, then matched in two passes.
+Input is trimmed and lowercased, then matched in two passes against the peer
+listing, with one host-local check between them.
 
 **Pass 1 — exact.** Matches if the input equals the peer's display form, its
 qualified form, or its canonical id. One match resolves. More than one is
 refused as ambiguous.
 
-**Pass 2 — prefix**, only if pass 1 found nothing. Matches if the peer's slug or
-its qualified form *starts with* the input. One match resolves. More than one is
-refused as ambiguous.
+**Self check**, only if pass 1 found nothing. If the input names the session
+Tin Can is itself running in, the result is refused as `self`. See
+[Self is not a peer](#self-is-not-a-peer) — this pass is **not** part of the
+fixture contract and a second implementation is not expected to reproduce it.
 
-If neither pass matches, the result is refused as unknown.
+**Pass 2 — prefix**, only if pass 1 and the self check found nothing. Matches
+if the peer's slug or its qualified form *starts with* the input. One match
+resolves. More than one is refused as ambiguous.
+
+If nothing matches, the result is refused as unknown.
+
+### Self is not a peer
+
+A host never lists the session it is running in, so an address naming that
+session reaches pass 2 with nothing to match — or, worse, matches *something
+else*. The check sits between the passes rather than before them, and the
+order is load-bearing in both directions:
+
+- **Below pass 1**, so an exact peer name still wins. A peer genuinely called
+  `review` receives `review` even when the host is called `review-tools`,
+  which the self check matches by prefix.
+- **Above pass 2**, because that pass resolves on a *single* match. A host
+  that can only recognise itself by name — a Claude Code host carries no
+  session id of its own and falls back to its working directory's basename —
+  whose fallback name prefixed exactly one peer would otherwise resolve to
+  that peer and deliver. Where the listing spans config dirs, that peer
+  belongs to a different account: a note addressed to yourself, delivered to
+  a stranger, reported as sent.
+
+**This is deliberately outside the fixture.** Every case in
+`test/fixtures/canonical-id.json` resolves with no host identity supplied, and
+all ten behave identically with and without this pass. "Self" is a property of
+the process doing the resolving, not of the address or the listing, so a tool
+that consumes addresses — Muster launches sessions and hands back peer records
+for Tin Can to resolve — has no self to check and nothing to implement. The
+address format is unchanged; what changed is what one particular resolver does
+with its own name.
 
 - **Case-insensitive** throughout. `AUTH-REFACTOR.7F3` resolves.
 - **Input is trimmed.** Surrounding whitespace is ignored.
@@ -162,6 +195,7 @@ If neither pass matches, the result is refused as unknown.
 |---|---|
 | `ambiguous` | every matching peer, in **qualified** form |
 | `unknown` | every peer in the listing, in **display** form |
+| `self` | every peer the address *also* prefixed, in **qualified** form — so the caller is told which full name to type instead of guessing one exists |
 
 ## Known defects
 
