@@ -509,6 +509,28 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             })
             .map(toOpencodeSidePeer);
 
+          // An opencode list emptied by self-exclusion and one emptied by
+          // there being nothing to find read identically, and the caller acts
+          // on them differently: the first means "your siblings are hidden
+          // because I cannot safely tell you apart", the second means "start
+          // one". Say which (#8). Each tier fails for its own reason, so each
+          // gets its own sentence rather than one vague shared one.
+          const opencodeFound = opencodeListing.peers.length;
+          const hiddenByExclusion = opencodeFound > 0 && opencodePeers.length === 0;
+          const sessions = `${opencodeFound} opencode session${opencodeFound === 1 ? '' : 's'}`;
+          const exclusionNote = !hiddenByExclusion
+            ? undefined
+            : selfSession !== undefined
+              ? `Excluded this session; it was the only one of ${sessions} found, so no ` +
+                `opencode peers are listed.`
+              : selfPid !== undefined
+                ? `Found ${sessions}, all belonging to this opencode instance, and excluded ` +
+                  `them: the caller file could not be read, so Tin Can cannot tell which one ` +
+                  `is this session.`
+                : `Found ${sessions} and hid all of them: OPENCODE_PID is missing or ` +
+                  `unparseable, so Tin Can cannot tell which one is this session and will not ` +
+                  `risk listing it as a peer.`;
+
           const peers = [...codexPeers, ...claudePeers, ...opencodePeers];
           if (peers.length === 0) {
             return {
@@ -516,13 +538,20 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
               diagnostic: emptyListDiagnostic({
                 codex: codexListing.diagnostic,
                 claude: claudeListing.diagnostic,
-                opencode: opencodeListing.diagnostic,
+                // The exclusion note wins over the discovery diagnostic: the
+                // sessions WERE found, so "none were found" is the wrong half
+                // of the story to tell.
+                opencode: exclusionNote ?? opencodeListing.diagnostic,
               }),
             };
           }
+          // Reached whenever a Codex or Claude peer survives — which is
+          // exactly when an empty opencode list is least visible, since the
+          // result does not look empty at all.
+          const withPeers = composeEmptyDiagnostic(codexListing.diagnostic, exclusionNote);
           return {
             peers,
-            ...(codexListing.diagnostic !== undefined && { diagnostic: codexListing.diagnostic }),
+            ...(withPeers !== undefined && { diagnostic: withPeers }),
           };
         },
 

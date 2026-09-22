@@ -570,6 +570,33 @@ describe('buildSide, hosted in opencode', () => {
   );
 
   test(
+    'says so when self-exclusion is what emptied the opencode list, rather than letting it ' +
+      'read as "no opencode sessions are running" (issue #8)',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      try {
+        await writeInstance(instance); // two live opencode sessions on disk
+        const side = buildSide('opencode', {
+          registryDirs: () => [join(dir, 'sessions')],
+          pid: 1,
+          cwd: '/src/x',
+          env: { TINCAN_HOME: home, OPENCODE: '1' }, // no usable OPENCODE_PID
+        }, { sweep: { socketDirs: [] } });
+
+        const { peers, diagnostic } = await side.listPeers(await side.resolveSelf());
+        expect(peers.filter((p) => p.runtime === 'opencode')).toEqual([]);
+        // The sessions were found and then hidden. Saying nothing here is
+        // indistinguishable from having found none.
+        expect(diagnostic).toBeDefined();
+        expect(diagnostic).toMatch(/hid all|hidden|excluded/i);
+        expect(diagnostic).toContain('2');
+      } finally {
+        await instance.close();
+      }
+    },
+  );
+
+  test(
     'OPENCODE_PID as an empty string: excludes our own session (and every sibling) rather ' +
       "than treating it as pid 0 — Number('') is 0, and Number.isInteger(0) is true, so a " +
       'naive check alone would let our own session through as an ordinary, addressable peer',
