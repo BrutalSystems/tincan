@@ -1,0 +1,78 @@
+# Working on Tin Can
+
+## Vocabulary — these are instructions, not topics to discuss
+
+Mike uses these words to mean specific actions. When he says one, **do it.**
+Do not ask which bump, do not ask whether to publish, do not offer to do it —
+the asking is the thing he does not want.
+
+### "cut" / "cut a release"
+
+Means the **whole release, including the npm publish**. One command:
+
+```bash
+npm version <patch|minor|major> -m "%s — <what changed>"
+```
+
+That rewrites all five version sites, commits, tags, and pushes commit and tag.
+**The pushed `v*` tag is what publishes** — `.github/workflows/publish.yml`
+fires on it and publishes BOTH `@brutalsystems/tincan` and
+`@brutalsystems/tincan-opencode` over OIDC. There is no separate `npm publish`
+step to run, and there is no npm token anywhere in the release path.
+
+Consequences worth holding on to:
+
+- **Pushing the tag IS publishing.** Never say a cut is "not published to npm";
+  by the time the tag is on the remote, the publish is already running.
+- **Always pass `-m`.** The GitHub Release is created with `--notes-from-tag`,
+  so a cut without a message leaves the public release record reading just
+  `0.9.0` for the whole release. Write what changed.
+- Pick the bump yourself from what actually changed. See
+  [RELEASING.md](./RELEASING.md), "Choosing the version" — an address-format
+  change is **major** even when it looks like a bugfix.
+
+### "...and update globally"
+
+Means: **watch the run, then install the published version on this machine**,
+so Mike can `cd` into any local path and run the `tincan` CLI at the version
+just shipped.
+
+```bash
+gh run watch --repo BrutalSystems/tincan --exit-status   # wait for the publish
+npm install -g @brutalsystems/tincan@<version>           # then install it here
+tincan --version                                         # and prove it
+```
+
+Do not install before the run finishes — the registry lags the publish by a
+minute or two, and an install that races it either 404s or silently fetches
+the previous version. Verify with `tincan --version` and report what it
+printed; "installed" without the version is not an answer.
+
+## Before claiming anything about the release pipeline
+
+Read [RELEASING.md](./RELEASING.md) and `.github/workflows/publish.yml`.
+`package.json`'s scripts alone will mislead you: they show `version` and
+`postversion` but not the tag-triggered publish, which is the part that
+actually ships.
+
+## Issues
+
+The GitHub issues go stale — several describe behaviour that has since been
+fixed or changed. **Verify every claim against the current code before acting
+on one**, and say plainly in the issue when the premise no longer holds.
+
+## Testing
+
+`npm test` runs the core and plugin suites together (`vitest run`);
+`npm run typecheck:plugin` typechecks the plugin against its own tsconfig. Both
+must pass before a cut — CI runs them again, but finding it locally is cheaper.
+
+Write the test first, and **confirm it fails for the right reason before
+implementing**. For a regression test on code that already works, break the
+code deliberately, watch the test fail, then restore it. A test that has never
+failed has not been shown to test anything.
+
+Edit files with heredocs or the editing tools, never `python3 -c "..."` with
+nested quotes — the shell mangles escapes, and `\b` in a regex became a literal
+backspace byte that rendered invisibly in the failure output and cost real time
+to find.
