@@ -91,8 +91,13 @@ Declare it once per workflow and install exactly it, in **both** `ci.yml` and
 
 ```yaml
 env:
-  NPM_VERSION: '12.0.2'
+  NPM_VERSION: '<exact version>'
 ```
+
+A concrete version belongs in the repository's own release doc, not here: the
+three copies of this file are independent and may legitimately pin different
+npm versions, so a real number in this example would read as one repo's pin
+and go stale the moment another moved.
 
 ```yaml
 - name: Pin npm
