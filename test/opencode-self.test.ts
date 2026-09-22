@@ -175,3 +175,99 @@ describe('parseOpencodePid', () => {
     expect(parseOpencodePid({ OPENCODE_PID: '-1' })).toBeUndefined();
   });
 });
+
+// #3. The caller file is per-instance, so a sibling session on the same
+// instance can overwrite it between Tin Can writing and reading. Per-call
+// tickets replace "most recent wins" with "our own call is in flight by
+// definition, so one fresh ticket can only be ours".
+describe('selfSessionId — per-call tickets', () => {
+  const NOW = Date.parse('2026-09-22T12:00:00Z');
+  const at = (secondsAgo: number) => new Date(NOW - secondsAgo * 1000).toISOString();
+
+  const writeTicket = (
+    instanceId: string,
+    callId: string,
+    over: Record<string, unknown> = {},
+  ) =>
+    writeFileSync(
+      join(dir, `${instanceId}.${callId}.call.json`),
+      JSON.stringify({
+        instance_id: instanceId,
+        session_id: 'ses_self',
+        pid: 41233,
+        tool: 'tincan_send_peer',
+        call_id: callId,
+        at: at(0),
+        ...over,
+      }),
+    );
+
+  const resolve = () =>
+    selfSessionId({ registryDir: dir, env: { OPENCODE_PID: '41233' }, now: () => NOW });
+
+  it('resolves the session named by the only fresh ticket', async () => {
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_me' });
+    expect(await resolve()).toBe('ses_me');
+  });
+
+  it('beats a caller file a sibling overwrote — the race this exists to close', async () => {
+    // Our call is in flight, so our ticket is on disk. Meanwhile a sibling
+    // session on the same instance called a Tin Can tool and clobbered the
+    // shared caller file with its own id. Recency says the sibling; the
+    // ticket says us, and the ticket is right.
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_me' });
+    writeCaller('inst-a91f', { session_id: 'ses_sibling', at: '2026-09-22T12:00:00Z' });
+    expect(await resolve()).toBe('ses_me');
+  });
+
+  it('refuses to guess when two sessions have calls in flight', async () => {
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_me' });
+    writeTicket('inst-a91f', 'c2', { session_id: 'ses_sibling' });
+    // undefined means "exclude the whole instance" to the caller, which
+    // over-excludes a sibling rather than risking a self-send.
+    expect(await resolve()).toBeUndefined();
+  });
+
+  it('is not confused by one session holding several calls at once', async () => {
+    // Nested or concurrent Tin Can calls from the SAME session are not
+    // ambiguity — there is still only one answer.
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_me' });
+    writeTicket('inst-a91f', 'c2', { session_id: 'ses_me' });
+    expect(await resolve()).toBe('ses_me');
+  });
+
+  it('expires a ticket a crashed call left behind, and falls back', async () => {
+    // opencode skips tool.execute.after on an error, a denied permission or
+    // an abort, so leaked tickets are expected rather than exceptional.
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_ghost', at: at(3600) });
+    writeCaller('inst-a91f', { session_id: 'ses_self' });
+    expect(await resolve()).toBe('ses_self');
+  });
+
+  it('does not let a stale ticket manufacture ambiguity', async () => {
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_me' });
+    writeTicket('inst-a91f', 'c2', { session_id: 'ses_ghost', at: at(3600) });
+    expect(await resolve()).toBe('ses_me');
+  });
+
+  it('ignores a ticket whose timestamp cannot be read', async () => {
+    // Unaged is untrustworthy: counting it fresh would let one bad record
+    // block self-resolution permanently.
+    writeTicket('inst-a91f', 'c1', { session_id: 'ses_junk', at: 'not-a-date' });
+    writeCaller('inst-a91f', { session_id: 'ses_self' });
+    expect(await resolve()).toBe('ses_self');
+  });
+
+  it('ignores a ticket belonging to another opencode process', async () => {
+    writeTicket('inst-other', 'c1', { session_id: 'ses_elsewhere', pid: 999 });
+    writeCaller('inst-a91f', { session_id: 'ses_self' });
+    expect(await resolve()).toBe('ses_self');
+  });
+
+  it('falls back to the caller file when the plugin writes no tickets at all', async () => {
+    // An older plugin against a current core. The plugin installs separately,
+    // so this skew is normal and must keep working exactly as before.
+    writeCaller('inst-a91f', { session_id: 'ses_self' });
+    expect(await resolve()).toBe('ses_self');
+  });
+});

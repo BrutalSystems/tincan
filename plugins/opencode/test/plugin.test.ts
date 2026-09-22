@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startPlugin, type PluginDeps } from '../tincan-lib/plugin.js';
@@ -255,6 +255,79 @@ describe('startPlugin — caller identity', () => {
     await expect(hooks['tool.execute.before'](null)).resolves.toBeUndefined();
     await expect(hooks['tool.execute.before']({})).resolves.toBeUndefined();
     await hooks.dispose();
+  });
+
+  // #3. The caller file is scoped to the instance, so a sibling session on
+  // the same instance can overwrite it between Tin Can writing and reading
+  // it. Per-call tickets let the reader identify the caller with certainty
+  // instead of by recency: our own call is in flight by definition.
+  it('writes a per-call ticket alongside the caller file', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'tincan_send_peer', sessionID: 'ses_caller', callID: 'c1' });
+
+    const ticket = JSON.parse(readFileSync(join(dir, 'inst-self.c1.call.json'), 'utf8'));
+    expect(ticket).toMatchObject({ session_id: 'ses_caller', instance_id: 'inst-self', pid: 4242, call_id: 'c1' });
+    // The caller file is still written: an older core reads only that, and
+    // the plugin installs separately from the core.
+    expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(true);
+    await hooks.dispose();
+  });
+
+  it('removes the ticket when the call ends, and leaves the caller file alone', async () => {
+    const hooks = await startPlugin(deps());
+    const call = { tool: 'tincan_peers', sessionID: 'ses_caller', callID: 'c1' };
+    await hooks['tool.execute.before'](call);
+    await hooks['tool.execute.after'](call);
+
+    expect(existsSync(join(dir, 'inst-self.c1.call.json'))).toBe(false);
+    // Not cleared: it is the older core's only signal, and is overwritten
+    // rather than emptied by design.
+    expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(true);
+    await hooks.dispose();
+  });
+
+  it('leaves concurrent tickets standing when only one call ends', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_a', callID: 'c1' });
+    await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_b', callID: 'c2' });
+    await hooks['tool.execute.after']({ tool: 'tincan_peers', sessionID: 'ses_a', callID: 'c1' });
+
+    expect(existsSync(join(dir, 'inst-self.c1.call.json'))).toBe(false);
+    expect(existsSync(join(dir, 'inst-self.c2.call.json'))).toBe(true);
+    await hooks.dispose();
+  });
+
+  it('writes no ticket when the host supplies no callID', async () => {
+    // An opencode old enough not to pass one still gets the caller file, and
+    // the reader falls back to it.
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_caller' });
+
+    expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(true);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.call.json'))).toEqual([]);
+    await hooks.dispose();
+  });
+
+  it('cannot be made to write outside the registry directory by a hostile callID', async () => {
+    // callID is an opaque host string and this turns it into a path segment.
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({
+      tool: 'tincan_peers',
+      sessionID: 'ses_caller',
+      callID: '../../escaped',
+    });
+
+    const written = readdirSync(dir).filter((f) => f.endsWith('.call.json'));
+    expect(written).toEqual(['inst-self.------escaped.call.json']);
+    expect(existsSync(join(dir, '..', '..', 'escaped.call.json'))).toBe(false);
+    await hooks.dispose();
+  });
+
+  it('dispose removes the tickets along with everything else', async () => {
+    const hooks = await startPlugin(deps());
+    await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_caller', callID: 'c1' });
+    await hooks.dispose();
+    expect(readdirSync(dir).filter((f) => f.endsWith('.call.json'))).toEqual([]);
   });
 
   it('dispose removes the caller file along with the records', async () => {

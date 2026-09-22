@@ -1,4 +1,11 @@
-import { composeCaller, isTincanTool, writeCaller } from './caller.js';
+import {
+  composeCallTicket,
+  composeCaller,
+  isTincanTool,
+  removeCallTicket,
+  writeCallTicket,
+  writeCaller,
+} from './caller.js';
 import { deliver } from './delivery.js';
 import { effectOf } from './events.js';
 import { makeLogger, swallow, type Logger } from './log.js';
@@ -73,6 +80,7 @@ export interface PluginDeps {
 export interface PluginHooks {
   event: (input: { event: unknown }) => Promise<void>;
   'tool.execute.before': (input: unknown) => Promise<void>;
+  'tool.execute.after': (input: unknown) => Promise<void>;
   dispose: () => Promise<void>;
 }
 
@@ -92,6 +100,25 @@ async function selfCheck(transport: Transport, log: Logger): Promise<boolean> {
     log({ event: 'selfcheck.failed', detail: String(e) });
     return false;
   }
+}
+
+/**
+ * The fields both tool hooks need, or `undefined` when this is not a Tin Can
+ * tool call worth recording. Shared so the two hooks cannot drift into
+ * disagreeing about what counts — a ticket written by one and not removed by
+ * the other is a leak the reader then has to expire.
+ */
+function tincanToolCall(
+  input: unknown,
+): { tool: string; sessionID: string; callID?: string } | undefined {
+  const i = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  if (typeof i.tool !== 'string' || typeof i.sessionID !== 'string') return undefined;
+  if (!isTincanTool(i.tool)) return undefined;
+  return {
+    tool: i.tool,
+    sessionID: i.sessionID,
+    ...(typeof i.callID === 'string' && i.callID.length > 0 && { callID: i.callID }),
+  };
 }
 
 export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
@@ -205,10 +232,36 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
     'tool.execute.before': async (input: unknown): Promise<void> => {
       if (!server) return; // No delivery path, so no session worth excluding.
       try {
-        const i = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
-        if (typeof i.tool !== 'string' || typeof i.sessionID !== 'string') return;
-        if (!isTincanTool(i.tool)) return;
+        const i = tincanToolCall(input);
+        if (i === undefined) return;
+        // Both, deliberately. The caller file is what an older core reads,
+        // and the plugin installs separately from the core so that skew is
+        // normal. The ticket is what a current core prefers.
         await writeCaller(deps.dir, composeCaller(i.sessionID, i.tool, ctx));
+        if (i.callID !== undefined) {
+          await writeCallTicket(deps.dir, composeCallTicket(i.sessionID, i.tool, i.callID, ctx));
+        }
+      } catch (e) {
+        log({ event: 'caller.failed', detail: String(e) });
+      }
+    },
+
+    /**
+     * The tidy path only. opencode reaches this hook by falling off the end of
+     * a successful call — an error, a denied permission or an abort skip it
+     * [verified against 1.18.32's MCP tool wrapper, which has no `finally`].
+     * So a leaked ticket is expected, not exceptional, and the reader expires
+     * tickets rather than trusting this to have run.
+     *
+     * The caller file is deliberately NOT removed here: it is the older core's
+     * only signal, and it is overwritten rather than cleared by design.
+     */
+    'tool.execute.after': async (input: unknown): Promise<void> => {
+      if (!server) return;
+      try {
+        const i = tincanToolCall(input);
+        if (i?.callID === undefined) return;
+        await removeCallTicket(deps.dir, deps.instanceId, i.callID);
       } catch (e) {
         log({ event: 'caller.failed', detail: String(e) });
       }

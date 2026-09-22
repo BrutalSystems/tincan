@@ -3,10 +3,15 @@
  *
  * opencode exports no OPENCODE_SESSION_ID into tool subprocesses, so the
  * environment can only name the *instance* (OPENCODE_PID), never the
- * *session*. The plugin's `tool.execute.before` hook does see the calling
- * sessionID — including for MCP-provided tools — and records it on every Tin
- * Can tool call at `inst-<instance-id>.caller.json`. This module reads that
- * file and matches it against our own OPENCODE_PID.
+ * *session*. The plugin's tool hooks do see the calling sessionID — including
+ * for MCP-provided tools — and record it in two places, both matched here
+ * against our own OPENCODE_PID:
+ *
+ * - `inst-<instance-id>.<call-id>.call.json`, one per Tin Can call in flight.
+ *   Preferred, because it identifies the caller rather than ranking guesses.
+ * - `inst-<instance-id>.caller.json`, one per instance, overwritten by
+ *   whichever session called last. The fallback, and the older plugin's only
+ *   signal.
  *
  * See docs/change-notice-opencode.md §4 and plugins/opencode/SPEC.md §4.
  */
@@ -16,7 +21,26 @@ import { join } from 'node:path';
 export interface SelfSessionParams {
   registryDir: string;
   env: NodeJS.ProcessEnv;
+  /** Injectable so ticket expiry can be tested without waiting for it. */
+  now?: () => number;
 }
+
+/**
+ * How long a per-call ticket is believed.
+ *
+ * opencode reaches `tool.execute.after` only by falling off the end of a
+ * successful call — an error, a denied permission or an abort skip it
+ * [verified against 1.18.32] — so tickets leak routinely and something has to
+ * forget them.
+ *
+ * Sixty seconds sits far from both failure modes. Too short and a slow call
+ * outlives its own ticket, leaving us unable to identify the very session we
+ * are serving; a send has a 500ms deadline on the socket write, so this is
+ * ~100x headroom and a live call should never age out. Too long and one
+ * crashed call keeps a window from seeing its own siblings; a minute is
+ * recoverable, five would not be.
+ */
+export const CALL_TICKET_TTL_MS = 60_000;
 
 /**
  * `OPENCODE_PID` as a real pid, or `undefined` if it cannot possibly be one.
@@ -78,8 +102,17 @@ function callerStamp(value: unknown): number | undefined {
  * `Side`. Under-excluding here risks a self-send; over-excluding a sibling
  * session is merely inconvenient.
  *
- * SEVERAL caller files can match one pid, so the newest wins rather than the
- * first. opencode instantiates a plugin more than once per process — four
+ * RESOLUTION ORDER. Fresh per-call tickets first: a ticket means a Tin Can
+ * call is in flight on this process, and ours is one by definition, so if
+ * every fresh ticket names the same session then that session is us — decided,
+ * not guessed. Two sessions with calls in flight is real ambiguity and answers
+ * `undefined` rather than falling through to a confident wrong answer. Only
+ * with no fresh ticket at all do we fall back to the caller file below, which
+ * is what an older plugin writes and what a call slower than
+ * `CALL_TICKET_TTL_MS` degrades to.
+ *
+ * SEVERAL caller files can match one pid, so among them the newest wins rather
+ * than the first. opencode instantiates a plugin more than once per process — four
  * bound instance sockets under a single pid on opencode 1.18.31, issue #19 —
  * and each instance writes its own `inst-<id>.caller.json` stamped with the
  * same `process.pid`, naming whichever session last called a Tin Can tool on
@@ -94,7 +127,7 @@ function callerStamp(value: unknown): number | undefined {
  * sets on the temp file and `rename` carries over unchanged.
  */
 export async function selfSessionId(params: SelfSessionParams): Promise<string | undefined> {
-  const { registryDir, env } = params;
+  const { registryDir, env, now = () => Date.now() } = params;
 
   const selfPid = parseOpencodePid(env);
   if (selfPid === undefined) return undefined;
@@ -106,28 +139,62 @@ export async function selfSessionId(params: SelfSessionParams): Promise<string |
     return undefined; // Registry directory absent: plugin not installed, or not yet.
   }
 
+  // A fresh ticket means a Tin Can tool call is in flight on this process.
+  // Ours is, by definition — we are inside one. So if every fresh ticket
+  // names the same session, that session is us, with no appeal to recency.
+  const live = new Set<string>();
+  const cutoff = now() - CALL_TICKET_TTL_MS;
+
+  for (const name of names) {
+    if (!name.startsWith('inst-') || !name.endsWith('.call.json')) continue;
+    const rec = await readRecord(join(registryDir, name));
+    if (rec === undefined) continue;
+    if (rec.pid !== selfPid || !isOpencodeSessionId(rec.session_id)) continue;
+    // Unaged is untrusted. A ticket whose `at` cannot be read can never be
+    // expired, so believing it would let one bad record block self-resolution
+    // for the life of the process.
+    const at = callerStamp(rec.at);
+    if (at === undefined || at < cutoff) continue;
+    live.add(rec.session_id);
+  }
+
+  if (live.size === 1) return [...live][0];
+  // Two sessions genuinely have calls in flight and nothing on disk says which
+  // is ours. `undefined` means "exclude the whole instance" to the caller:
+  // over-excluding a sibling is inconvenient, under-excluding risks a
+  // self-send. Deliberately does NOT fall through to the caller file, which
+  // would answer confidently and might answer wrongly.
+  if (live.size > 1) return undefined;
+
+  // No fresh ticket: either the plugin predates them — it installs separately
+  // from this core, so that skew is normal — or ours expired under a call
+  // slower than the TTL. Both degrade to the previous behaviour.
+  return newestCaller(registryDir, names, selfPid);
+}
+
+/**
+ * The pre-ticket resolution, kept as the fallback: newest caller file wins,
+ * `at` first and then mtime, because `at` is whole seconds (SPEC §4) and two
+ * sessions can call inside one second.
+ *
+ * This is what an older plugin's files still resolve through, and what a
+ * current plugin falls back to when a call outlives its ticket. It remains
+ * wrong in exactly the case tickets exist to fix — a sibling overwriting the
+ * shared file mid-read — which is why it is reached only when there is no
+ * ticket to prefer.
+ */
+async function newestCaller(
+  registryDir: string,
+  names: string[],
+  selfPid: number,
+): Promise<string | undefined> {
   let best: { sessionId: string; at: number; mtimeMs: number } | undefined;
 
   for (const name of names) {
     if (!name.startsWith('inst-') || !name.endsWith('.caller.json')) continue;
     const path = join(registryDir, name);
-
-    let raw: string;
-    try {
-      raw = await readFile(path, 'utf8');
-    } catch {
-      // The plugin can unlink/rewrite this file between our readdir and our
-      // readFile (dispose, orphan sweep, a concurrent tool call). Not an
-      // error — try the next candidate.
-      continue;
-    }
-
-    let rec: Record<string, unknown>;
-    try {
-      rec = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+    const rec = await readRecord(path);
+    if (rec === undefined) continue;
 
     // The id is turned into a registry path by runtime.ts's slug lookup, so
     // it is validated here rather than trusted as written. An invalid id is
@@ -143,8 +210,8 @@ export async function selfSessionId(params: SelfSessionParams): Promise<string |
     try {
       mtimeMs = (await stat(path)).mtimeMs;
     } catch {
-      // Vanished under us between readFile and stat. The record is still
-      // usable; it just cannot win a tie.
+      // Vanished under us between read and stat. The record is still usable;
+      // it just cannot win a tie.
     }
 
     if (best === undefined || at > best.at || (at === best.at && mtimeMs > best.mtimeMs)) {
@@ -153,4 +220,19 @@ export async function selfSessionId(params: SelfSessionParams): Promise<string |
   }
 
   return best?.sessionId;
+}
+
+/**
+ * One JSON record, or `undefined` for anything we cannot use.
+ *
+ * The plugin can unlink or rewrite these between our readdir and our read
+ * (dispose, the orphan sweep, a concurrent tool call), so a vanished file is
+ * normal rather than an error.
+ */
+async function readRecord(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }

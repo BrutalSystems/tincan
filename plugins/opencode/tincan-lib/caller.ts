@@ -1,3 +1,4 @@
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isoStamp, writeJsonAtomic, type RecordContext } from './registry.js';
 
@@ -46,4 +47,70 @@ export function composeCaller(sessionID: string, toolID: string, ctx: RecordCont
 
 export async function writeCaller(dir: string, rec: CallerRecord): Promise<void> {
   await writeJsonAtomic(callerFile(dir, rec.instance_id), rec);
+}
+
+/**
+ * A per-call ticket, written when a Tin Can tool starts and removed when it
+ * ends. Tin Can reads these to identify the calling session *certainly*
+ * rather than by recency: its own call is in flight by definition, so exactly
+ * one fresh ticket for our pid can only be ours (#3).
+ *
+ * Kept ALONGSIDE the single caller file above, not instead of it. The plugin
+ * installs separately from the core, so an older core that only knows
+ * `inst-<id>.caller.json` must keep working exactly as it does today. The
+ * distinct `.call.json` suffix also keeps these invisible to that core's
+ * `.caller.json` glob.
+ *
+ * They still carry `instance_id`, so `dispose` and the orphan sweep reclaim
+ * them by the same path as every other file here.
+ */
+export interface CallTicket extends CallerRecord {
+  call_id: string;
+}
+
+/**
+ * opencode's callID is an opaque host string and this makes it a path
+ * segment, so it is constrained rather than trusted: anything outside
+ * `[A-Za-z0-9_-]` becomes `-`, and the result is capped. A `.` would collide
+ * with the suffix scheme and `/` or `..` would escape the directory.
+ */
+export function sanitizeCallId(callID: string): string {
+  const safe = callID.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64);
+  return safe.length > 0 ? safe : 'anon';
+}
+
+/** Distinct from `<instance>.caller.json`, which an older core still reads. */
+export function callTicketFile(dir: string, instanceID: string, callID: string): string {
+  return join(dir, `${instanceID}.${sanitizeCallId(callID)}.call.json`);
+}
+
+export function composeCallTicket(
+  sessionID: string,
+  toolID: string,
+  callID: string,
+  ctx: RecordContext,
+): CallTicket {
+  return { ...composeCaller(sessionID, toolID, ctx), call_id: sanitizeCallId(callID) };
+}
+
+export async function writeCallTicket(dir: string, rec: CallTicket): Promise<void> {
+  await writeJsonAtomic(callTicketFile(dir, rec.instance_id, rec.call_id), rec);
+}
+
+/**
+ * opencode fires `tool.execute.after` only when the call succeeded — an error,
+ * a denied permission or an abort skip it entirely [verified, 1.18.32], so
+ * tickets leak by design and the reader expires them. This is the tidy path,
+ * not the guarantee.
+ */
+export async function removeCallTicket(
+  dir: string,
+  instanceID: string,
+  callID: string,
+): Promise<void> {
+  try {
+    await unlink(callTicketFile(dir, instanceID, callID));
+  } catch {
+    // Already gone: a sweep, a dispose, or never written.
+  }
 }

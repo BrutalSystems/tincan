@@ -269,6 +269,16 @@ recorded here rather than patched. The exposure is narrow — two sessions in on
 opencode instance both driving Tin Can within the same read window — and the
 failure is a message delivered to yourself, not to a wrong third party.
 
+> **Closed since (#3).** The plugin now writes one ticket per call in flight,
+> `inst-<id>.<call-id>.call.json`, alongside the caller file. The reader is
+> itself inside a call, so its own ticket is on disk: one fresh ticket decides
+> the answer rather than ranking guesses, and two means genuine ambiguity and
+> excludes the whole instance. Of the two options sketched above it is the
+> second — "pick by recency plus id" turned out to be the wrong half, since
+> recency is exactly what the sibling wins. See SPEC §4 for the ticket format,
+> the 60-second expiry and why `tool.execute.after` cannot be relied on to
+> remove them.
+
 Two caveats worth knowing:
 
 - The file is written when a tool whose id ends in `_peers`, `_send_peer` or

@@ -353,6 +353,79 @@ process. A sibling plugin built against this API had opencode's tool hooks reach
 only one of its instances, leaving the others with a tool marker that never
 cleared — and because both published to one path, the stale view kept winning.
 
+### One ticket per call in flight — `inst-<instance-id>.<call-id>.call.json`
+
+Reading the newest caller file closes the *cross-instance* case above. It does
+not close the *same-instance* one: a sibling session on the same instance
+overwrites the same file, and newest-wins then selects the overwriter, because
+the overwriter genuinely is newest. That race needs a different shape of
+answer, not a better tiebreak.
+
+**On `tool.execute.before`, write a ticket as well as the caller file:**
+
+```json
+{
+  "instance_id": "inst-a91f",
+  "session_id": "ses_f41a2b3c4ffeExampleSess01Z",
+  "pid": 41233,
+  "tool": "tincan_send_peer",
+  "call_id": "call_01J8",
+  "at": "2026-09-22T14:02:11Z"
+}
+```
+
+**On `tool.execute.after`, remove it.** Suffix `.call.json`, deliberately not
+`.caller.json` — an older core globs the latter and must not see these.
+
+**Write BOTH, always.** The plugin installs separately from the core, so an
+older core that knows only the caller file has to keep working exactly as it
+does today. Dropping the caller file would silently degrade every such install
+to "exclude the whole instance".
+
+**`call_id` is a path segment, so constrain it.** Anything outside
+`[A-Za-z0-9_-]` becomes `-`, capped at 64 characters. It is an opaque host
+string; a `.` collides with the suffix scheme and `../` escapes the directory.
+
+#### How the reader uses them
+
+A ticket means a Tin Can call is in flight on this process — and the reader is
+*inside one*, so its own ticket is necessarily on disk. Therefore:
+
+| Fresh tickets for our pid | Answer |
+|---|---|
+| all naming one session | that session — **decided, not ranked** |
+| naming two or more sessions | `undefined`: real ambiguity, exclude the whole instance |
+| none | fall back to the newest caller file, as before |
+
+Several tickets naming the *same* session is not ambiguity — one session can
+hold concurrent or nested calls, and there is still only one answer.
+
+Ambiguity must NOT fall through to the caller file. That file would answer
+confidently and can answer wrongly, which is the whole defect being fixed.
+
+#### Tickets leak, so they expire
+
+**`tool.execute.after` does not always run.** opencode reaches it only by
+falling off the end of a successful call: its MCP tool wrapper has no
+`try`/`finally`, so a tool that throws, a denied permission prompt and an abort
+all skip it. [verified, 1.18.32] A leaked ticket is therefore ordinary, not
+exceptional.
+
+So the reader ignores any ticket older than **60 seconds**
+(`CALL_TICKET_TTL_MS`). The bound is chosen against both failure modes: too
+short and a call slower than the TTL outlives its own ticket and can no longer
+identify the session it is serving (a send already has a 500ms deadline on the
+socket write, so 60s is ~100x headroom); too long and one crashed call stops a
+window seeing its own siblings for that whole duration.
+
+A ticket whose `at` cannot be parsed is **ignored rather than trusted** — an
+unaged ticket can never expire, so believing it would let one bad record block
+self-resolution for the life of the process.
+
+Tickets carry `instance_id`, so `dispose` and the orphan sweep reclaim them by
+the same path as every other file here; the TTL covers the process that never
+got to run either.
+
 ---
 
 ## 5. Event handling
