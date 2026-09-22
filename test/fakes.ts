@@ -59,12 +59,19 @@ export interface FakeOpencodeInstance {
 }
 
 /** A stand-in for the opencode plugin's per-instance Unix socket (SPEC.md §7). */
-export async function fakeOpencodeInstance(): Promise<FakeOpencodeInstance> {
+export async function fakeOpencodeInstance(
+  opts: { ack?: string } = {},
+): Promise<FakeOpencodeInstance> {
   const dir = mkdtempSync(join(tmpdir(), 'tincan-oc-sock-'));
   const path = join(dir, 'inst-test.sock');
   const rawLines: string[] = [];
 
-  const server = net.createServer((conn) => {
+  // Without `ack` this is a plugin older than the ack (#9): it reads the line
+  // and says nothing, which is the compatibility case every existing test
+  // here exercises. `allowHalfOpen` is needed to answer at all — the sender
+  // FINs immediately after writing, and the default would close our writable
+  // side before we could reply.
+  const server = net.createServer({ allowHalfOpen: opts.ack !== undefined }, (conn) => {
     let buf = '';
     conn.on('data', (d) => {
       buf += d.toString();
@@ -72,6 +79,7 @@ export async function fakeOpencodeInstance(): Promise<FakeOpencodeInstance> {
       while ((i = buf.indexOf('\n')) >= 0) {
         rawLines.push(buf.slice(0, i));
         buf = buf.slice(i + 1);
+        if (opts.ack !== undefined) conn.end(opts.ack + '\n');
       }
     });
     conn.on('error', () => {});

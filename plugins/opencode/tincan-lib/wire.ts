@@ -71,3 +71,30 @@ export function parseLine(line: string): ParseResult {
     },
   };
 }
+
+/**
+ * What the plugin writes back on the same connection before closing it.
+ *
+ * Until 0.9.0 the plugin answered nothing, so Tin Can counted a message as
+ * delivered the moment the bytes reached the socket — an unknown session, a
+ * malformed frame, a missing envelope and a 404 from opencode all looked
+ * identical to success (#9). `ok` is the difference between "we received it"
+ * and "we ran it".
+ *
+ * A refusal is a FAILURE here, not a success with a note. opencode has no
+ * equivalent of the Claude inbox's hold — where a human may still release the
+ * message, so `delivered: true` is honest — and a message this plugin refused
+ * will never be acted on by anyone.
+ */
+export interface Ack {
+  ok: boolean;
+  message_id?: string;
+  /** Present when `ok`: `replay` means this id had already been delivered. */
+  status?: 'delivered' | 'replay';
+  /** Present when not `ok`: why, in terms a sender can act on. */
+  reason?: string;
+}
+
+export function renderAck(ack: Ack): string {
+  return JSON.stringify(ack);
+}

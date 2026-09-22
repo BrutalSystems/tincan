@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import net from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -335,5 +336,78 @@ describe('startPlugin — caller identity', () => {
     await hooks['tool.execute.before']({ tool: 'tincan_peers', sessionID: 'ses_caller', callID: 'c1' });
     await hooks.dispose();
     expect(existsSync(join(dir, 'inst-self.caller.json'))).toBe(false);
+  });
+});
+
+/**
+ * #9. The plugin used to answer nothing, so Tin Can could not tell a drop
+ * from a delivery. These go over a real socket because the answer depends on
+ * `allowHalfOpen`: the sender FINs straight after writing its line, and with
+ * the default the plugin's writable side is gone before it has anything to say.
+ */
+describe('startPlugin — the wire answers', () => {
+  const ask = (sock: string, line: string): Promise<string> =>
+    new Promise((resolve, reject) => {
+      let buf = '';
+      const c = net.createConnection(sock);
+      c.on('connect', () => c.end(line + '\n'));
+      c.on('data', (d) => { buf += d.toString(); });
+      c.on('close', () => resolve(buf.trim()));
+      c.on('error', reject);
+      setTimeout(() => reject(new Error('timed out waiting for an ack')), 4000);
+    });
+
+  it('refuses a message for a session this instance never heard announced', async () => {
+    const hooks = await startPlugin(deps());
+    const ack = JSON.parse(
+      await ask(join(dir, 'inst-self.sock'), JSON.stringify({
+        to_session: 'ses_nobody', message_from: 'billing-api',
+        text: '<peer_message from="billing-api" runtime="claude-code" id="msg_1">hi</peer_message>',
+        delivery: 'queue', message_id: 'msg_1',
+      })),
+    );
+    expect(ack).toMatchObject({ ok: false, message_id: 'msg_1' });
+    expect(ack.reason).toContain('unknown session');
+    await hooks.dispose();
+  });
+
+  it('refuses a frame it cannot parse', async () => {
+    const hooks = await startPlugin(deps());
+    const ack = JSON.parse(await ask(join(dir, 'inst-self.sock'), 'not json'));
+    expect(ack.ok).toBe(false);
+    expect(ack.reason).toContain('malformed');
+    await hooks.dispose();
+  });
+
+  it('confirms a message it actually ran', async () => {
+    // A transport that answers like opencode does: v1 prompt_async returns a
+    // bare 204. With `vi.fn()`'s undefined the handler fails closed and the
+    // ack says so, which is correct but not what this test is about.
+    const d = deps({
+      transport: {
+        get: vi.fn().mockResolvedValue(healthy),
+        post: vi.fn().mockResolvedValue({ response: { status: 204 } }),
+      } as unknown as Transport,
+    });
+    const hooks = await startPlugin(d);
+    await hooks.event({ event: { type: 'session.created', properties: { info } } });
+
+    const ack = JSON.parse(
+      await ask(join(dir, 'inst-self.sock'), JSON.stringify({
+        to_session: 'ses_a', message_from: 'billing-api',
+        text: '<peer_message from="billing-api" runtime="claude-code" id="msg_2">hi</peer_message>',
+        delivery: 'queue', message_id: 'msg_2',
+      })),
+    );
+    expect(ack).toMatchObject({ ok: true, message_id: 'msg_2', status: 'delivered' });
+    await hooks.dispose();
+  });
+
+  it('closes the connection even when it has nothing to say', async () => {
+    // With allowHalfOpen nothing closes our side for us. A sender that never
+    // sees a close waits out its own fallback timer on every send.
+    const hooks = await startPlugin(deps());
+    await expect(ask(join(dir, 'inst-self.sock'), '')).resolves.toBe('');
+    await hooks.dispose();
   });
 });

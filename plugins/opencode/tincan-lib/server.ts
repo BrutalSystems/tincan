@@ -19,7 +19,12 @@ export const IDLE_TIMEOUT_MS = 30_000;
 
 export interface ListenOptions {
   path: string;
-  onLine: (line: string) => void;
+  /**
+   * Resolves to the line to write back. A handler that answers nothing — or
+   * is not async at all — is still valid: the socket is closed either way,
+   * so a sender never waits on a listener that has nothing to say.
+   */
+  onLine: (line: string) => void | Promise<string | undefined>;
   onError: (err: unknown) => void;
   /** Overridable so tests need not wait out the real one. */
   idleTimeoutMs?: number;
@@ -35,7 +40,7 @@ export interface ServerHandle {
  * inside a try that reports to `onError` rather than being swallowed.
  */
 interface Handlers {
-  onLine: (line: string) => void;
+  onLine: (line: string) => void | Promise<string | undefined>;
   onError: (err: unknown) => void;
 }
 
@@ -43,15 +48,43 @@ function frame(socket: Socket, handlers: Handlers): void {
   socket.setEncoding('utf8');
   let buf = '';
   let overflowed = false;
+  // A sender writes one line and half-closes, so one connection carries one
+  // message and earns one answer. `answered` also guarantees we end the
+  // socket exactly once: the server runs with allowHalfOpen, so nothing
+  // closes our side for us any more.
+  let answered = false;
+  let handled = 0;
+
+  const reply = (line: string | undefined) => {
+    if (answered) return;
+    answered = true;
+    try {
+      if (socket.writableEnded || socket.destroyed) return;
+      if (line === undefined) socket.end();
+      else socket.end(`${line}\n`);
+    } catch (e) {
+      // An old Tin Can stops reading and destroys the connection as soon as
+      // our side closes, so writing into it can EPIPE. That is the expected
+      // shape of version skew, not a fault. SPEC §8.1.
+      handlers.onError(e);
+    }
+  };
 
   const emit = (line: string) => {
     if (line.length === 0) return;
-    try {
-      handlers.onLine(line);
-    } catch (e) {
-      // A handler failure must never reach the host. SPEC §8.1.
-      handlers.onError(e);
-    }
+    handled++;
+    void (async () => {
+      let answer: string | undefined;
+      try {
+        const r = await handlers.onLine(line);
+        answer = typeof r === 'string' ? r : undefined;
+      } catch (e) {
+        // A handler failure must never reach the host. SPEC §8.1. The sender
+        // still gets its side closed, so it falls back rather than waiting.
+        handlers.onError(e);
+      }
+      reply(answer);
+    })();
   };
 
   socket.on('data', (chunk: string) => {
@@ -77,6 +110,8 @@ function frame(socket: Socket, handlers: Handlers): void {
   socket.on('end', () => {
     if (!overflowed && buf.length > 0) emit(buf);
     buf = '';
+    // Nothing to answer and, with allowHalfOpen, nothing to close us either.
+    if (handled === 0) reply(undefined);
   });
   socket.on('error', (e) => handlers.onError(e));
 }
@@ -106,7 +141,13 @@ export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
   // never propagate out of a synchronous EventEmitter callback — SPEC §8.1
   // is absolute, and this module is its strictest instance.
   const handlers: Handlers = { onLine: opts.onLine, onError: swallow(opts.onError) };
-  const server: Server = createServer((socket) => {
+  // allowHalfOpen is what makes an answer possible at all. Without it Node
+  // ends our writable side automatically the moment the sender's FIN lands —
+  // and the sender FINs immediately after writing its line, so by the time we
+  // have something to say the socket is already closing. The cost is that
+  // every path out of `frame` must end the socket itself; `reply` is that
+  // single exit, and the idle timeout below is the backstop.
+  const server: Server = createServer({ allowHalfOpen: true }, (socket) => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     // A sender writes one line and closes. Anything still idle after this

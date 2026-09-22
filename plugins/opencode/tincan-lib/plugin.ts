@@ -16,7 +16,7 @@ import {
 } from './registry.js';
 import { listenLines, probeSocket, type ServerHandle } from './server.js';
 import { PLUGIN_VERSION, type RegistryRecord, type SessionInfo, type SessionState, type Transport } from './types.js';
-import { parseLine } from './wire.js';
+import { parseLine, renderAck, type Ack } from './wire.js';
 
 export interface LineHandlerDeps {
   transport: Transport;
@@ -26,16 +26,21 @@ export interface LineHandlerDeps {
   log: Logger;
 }
 
-export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promise<void> {
+/**
+ * Returns the ack the sender gets back. Every `return` here is a sender-visible
+ * answer, not just a log line — until 0.9.0 the only signal was "the bytes
+ * arrived", so a drop and a delivery were indistinguishable to Tin Can (#9).
+ */
+export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promise<Ack> {
   // Wrapped once, here, because deps.log is caller-supplied; called bare
   // everywhere below. SPEC §8.1.
   const log = swallow(deps.log);
-  return async (line: string): Promise<void> => {
+  return async (line: string): Promise<Ack> => {
     try {
       const parsed = parseLine(line);
       if (!parsed.ok) {
         log({ event: 'dropped', detail: parsed.reason });
-        return;
+        return { ok: false, reason: `malformed frame: ${parsed.reason}` };
       }
       const msg = parsed.message;
       if (!deps.known.has(msg.to_session)) {
@@ -46,7 +51,11 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
           message_id: msg.message_id,
           detail: 'unknown session',
         });
-        return;
+        return {
+          ok: false,
+          message_id: msg.message_id,
+          reason: `unknown session ${msg.to_session} on this opencode instance`,
+        };
       }
       const outcome = await deliver(deps.transport, msg, deps.sent);
       log({
@@ -61,9 +70,29 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
           : outcome.kind === 'transport-broken' ? outcome.detail
           : undefined,
       });
+      if (outcome.kind === 'delivered') {
+        return {
+          ok: true,
+          message_id: msg.message_id,
+          status: outcome.replay ? 'replay' : 'delivered',
+        };
+      }
+      return {
+        ok: false,
+        message_id: msg.message_id,
+        reason:
+          outcome.kind === 'rejected'
+            ? `opencode refused the prompt (status ${String(outcome.status)}${
+                outcome.tag === undefined ? '' : `: ${outcome.tag}`
+              })`
+            : `opencode transport failed: ${outcome.detail}`,
+      };
     } catch (e) {
-      // Nothing here may reach the host. SPEC §8.1.
+      // Nothing here may reach the host. SPEC §8.1. The sender is told the
+      // message did not land rather than being left to infer it from a
+      // closed socket, which would read as success.
       log({ event: 'handler.failed', detail: String(e) });
+      return { ok: false, reason: `plugin handler failed: ${String(e)}` };
     }
   };
 }
@@ -144,7 +173,7 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
       if (swept.length > 0) log({ event: 'swept', detail: swept.join(',') });
       server = await listenLines({
         path: sock,
-        onLine: (line) => { void handleLine(line); },
+        onLine: (line) => handleLine(line).then(renderAck),
         onError: (e) => log({ event: 'socket.error', detail: String(e) }),
       });
       log({ event: 'bound', detail: sock });

@@ -105,6 +105,43 @@ export function sendToInstance(
     // the line on the socket first. A connection that closes before the
     // write lands — the accept never completes, the peer goes away mid-
     // handshake — delivered nothing.
+    // The plugin's answer, when there is one. A plugin older than the ack
+    // says nothing and the 'close' path below reports exactly what it always
+    // did — the plugin installs separately from this core, so that skew is
+    // normal and must not turn into a wait.
+    let buf = '';
+    conn.on('data', (d: Buffer | string) => {
+      buf += d.toString();
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line.trim() === '') continue;
+        let ack: { ok?: unknown; reason?: unknown };
+        try {
+          ack = JSON.parse(line) as { ok?: unknown; reason?: unknown };
+        } catch {
+          continue; // Not an ack. Fall through to the close-based answer.
+        }
+        if (typeof ack.ok !== 'boolean') continue;
+        // Acceptance, not transmission. This is the whole point of the ack:
+        // an unknown session, a malformed frame or a 404 from opencode used
+        // to be indistinguishable from success.
+        finish(
+          ack.ok
+            ? { delivered: true }
+            : {
+                delivered: false,
+                error: typeof ack.reason === 'string' ? ack.reason : 'the peer refused the message',
+              },
+        );
+        return;
+      }
+    });
+
+    // No ack: either an older plugin, or one that failed before it could
+    // answer. Either way the peer closing its side after our write is the
+    // same implicit receipt it has always been.
     conn.on('close', () =>
       finish(wrote ? { delivered: true } : { delivered: false, unreachable: true }),
     );

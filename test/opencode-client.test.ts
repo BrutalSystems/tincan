@@ -202,3 +202,48 @@ describe('sendToInstance', () => {
     );
   });
 });
+
+// #9. Until the ack, `delivered: true` meant "the bytes reached the socket".
+// An unknown session, a malformed frame or a 404 from opencode all looked
+// exactly like success from here.
+describe('sendToInstance — the plugin answers', () => {
+  const send = (path: string) =>
+    sendToInstance({
+      socketPath: path,
+      toSession: 'ses_target',
+      from: 'billing-api',
+      text: '<peer_message …>',
+      delivery: 'queue',
+      messageId: 'msg_01J8',
+    });
+
+  test('a refusal is a failure, carrying the reason', async () => {
+    instance = await fakeOpencodeInstance({
+      ack: JSON.stringify({ ok: false, message_id: 'msg_01J8', reason: 'unknown session ses_target' }),
+    });
+    const r = await send(instance.path);
+    expect(r.delivered).toBe(false);
+    expect(r.error).toContain('unknown session');
+    // Not unreachable: the peer is alive and answered. It said no.
+    expect(r.unreachable).toBeUndefined();
+  });
+
+  test('an acceptance is a delivery', async () => {
+    instance = await fakeOpencodeInstance({
+      ack: JSON.stringify({ ok: true, message_id: 'msg_01J8', status: 'delivered' }),
+    });
+    expect((await send(instance.path)).delivered).toBe(true);
+  });
+
+  test('a plugin too old to answer still counts as delivered', async () => {
+    // The version-skew case. The plugin installs separately from the core, so
+    // a silent listener must behave exactly as it did before the ack existed.
+    instance = await fakeOpencodeInstance();
+    expect((await send(instance.path)).delivered).toBe(true);
+  });
+
+  test('a reply that is not an ack falls back rather than failing', async () => {
+    instance = await fakeOpencodeInstance({ ack: 'not json at all' });
+    expect((await send(instance.path)).delivered).toBe(true);
+  });
+})

@@ -529,13 +529,62 @@ The plugin cannot guarantee cleanup, so the format survives its absence.
 > opencode's `/doc`.
 
 Tin Can connects to the instance socket, writes **one JSON object on one
-line**, and closes. No auth line — the socket is owner-only. No response is
-written; delivery is acknowledged by the connection being accepted and the
-line parsing.
+line**, and half-closes. No auth line — the socket is owner-only.
+
+> **Changed in 0.9.0 (#9).** The plugin used to write no response at all, and
+> delivery was "acknowledged" by the connection being accepted. That made an
+> unknown `to_session`, a `message_id` not matching `^msg_`, a missing
+> envelope and a 400/404 from opencode **indistinguishable from success** —
+> Tin Can logged `delivered: true` for every one of them. The plugin now
+> answers.
 
 ```json
 {"to_session":"ses_f41a2b3c4ffeExampleSess01Z","message_from":"billing-api","text":"<enveloped text>","delivery":"queue","message_id":"msg_01J8…"}
 ```
+
+### The ack
+
+The plugin writes **one JSON object on one line** back, then closes:
+
+```json
+{"ok":true,"message_id":"msg_01J8…","status":"delivered"}
+{"ok":false,"message_id":"msg_01J8…","reason":"unknown session ses_… on this opencode instance"}
+```
+
+| Field | When | Notes |
+|---|---|---|
+| `ok` | always | `false` means the plugin received the message and will not act on it |
+| `message_id` | when the frame parsed | Echoed so a sender can correlate |
+| `status` | when `ok` | `delivered`, or `replay` if this id had already been delivered |
+| `reason` | when not `ok` | Why, in terms a sender can act on |
+
+**A refusal is `delivered: false`, not a success with a note.** This differs
+from the Claude inbox leg deliberately: there, a *hold* keeps `delivered: true`
+because a human may still release the message. Nothing here will ever release a
+message the plugin refused, so calling it delivered would be a lie the log
+keeps.
+
+**`allowHalfOpen` is mandatory on the listener.** Tin Can writes its line and
+FINs immediately; with Node's default the plugin's writable side is closed for
+it before it has an answer, and no ack is possible at all. The plugin therefore
+owns closing the socket on every path, including the path where it has nothing
+to say — a sender that never sees a close waits out its fallback timer on every
+send.
+
+#### Both directions of version skew
+
+The plugin installs separately from the core, so skew is normal and neither
+side may hang on the other.
+
+- **Old plugin, current Tin Can.** The plugin answers nothing and closes.
+  Tin Can already resolved on that close, under a 500ms deadline, so it reports
+  exactly what it always did. No new timeout, and no wait.
+- **Current plugin, old Tin Can.** The ack is written into a connection the old
+  core has stopped reading and is about to destroy. That is an `EPIPE` on the
+  plugin side and must stay harmless — it goes to the swallowed `onError`, not
+  to the host. SPEC §8.1.
+- **A reply that is not an ack** (no `ok` boolean, or not JSON) is ignored and
+  the close-based answer stands.
 
 | Field | Required | Notes |
 |---|---|---|

@@ -95,9 +95,12 @@ describe('makeLineHandler', () => {
     expect(logs.join('\n')).not.toContain('event=delivered');
   });
 
-  it('never throws, even when the transport rejects', async () => {
+  it('never throws when the transport rejects — it answers the sender instead', async () => {
     const post = vi.fn().mockRejectedValue(new Error('socket closed'));
-    await expect(harness(post)(line())).resolves.toBeUndefined();
+    const ack = await harness(post)(line());
+    // The sender used to infer success from a closed socket. Now it is told.
+    expect(ack.ok).toBe(false);
+    expect(ack.reason).toContain('transport');
   });
 
   it('drops a line whose text is not enveloped, without calling the transport', async () => {
@@ -126,7 +129,7 @@ describe('makeLineHandler', () => {
     const brokenLogger = vi.fn().mockImplementation(() => { throw new Error('logger exploded'); });
     const transport = { post: vi.fn().mockResolvedValue(admitted), get: vi.fn() } as unknown as Transport;
     const handler = makeLineHandler({ transport, known, sent, log: brokenLogger });
-    await expect(handler(line())).resolves.toBeUndefined();
+    await expect(handler(line())).resolves.toMatchObject({ ok: true });
     // Despite logging failing, the handler still called transport.post
     expect(transport.post).toHaveBeenCalled();
   });
