@@ -28,6 +28,9 @@ export function versionLine(): string {
   return `tincan ${VERSION}`;
 }
 
+/** Flags accepted by the binary, kept next to the classifier's contract. */
+export const SUPPORTED_FLAGS = ['--version', '-v', '--help', '-h'] as const;
+
 /** Text for `--help`. Goes to stdout only when the server is NOT starting. */
 export function helpText(): string {
   return [
@@ -63,8 +66,9 @@ export type ArgvIntent =
  */
 export function classifyArgv(argv: string[]): ArgvIntent {
   for (const arg of argv) {
-    if (arg === '--version' || arg === '-v') return { kind: 'version' };
-    if (arg === '--help' || arg === '-h') return { kind: 'help' };
+    if (SUPPORTED_FLAGS.includes(arg as (typeof SUPPORTED_FLAGS)[number])) {
+      return arg === '--version' || arg === '-v' ? { kind: 'version' } : { kind: 'help' };
+    }
     return { kind: 'unknown', arg };
   }
   return { kind: 'serve' };

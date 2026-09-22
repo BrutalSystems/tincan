@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { VERSION, versionLine, helpText, classifyArgv } from '../src/version.js';
+import { VERSION, versionLine, helpText, classifyArgv, SUPPORTED_FLAGS } from '../src/version.js';
 
 describe('version', () => {
   // The fifth version location. package.json, the canonical-id fixture and the
@@ -38,5 +38,15 @@ describe('version', () => {
     expect(classifyArgv(['-v']).kind).toBe('version');
     expect(classifyArgv(['--help']).kind).toBe('help');
     expect(classifyArgv(['-h']).kind).toBe('help');
+  });
+
+  it('keeps help flags and the argv classifier in parity', () => {
+    const documented = new Set(helpText().match(/(?<!\w)--?[a-z]+/g) ?? []);
+    const supported = new Set(SUPPORTED_FLAGS);
+
+    expect(documented).toEqual(supported);
+    for (const flag of SUPPORTED_FLAGS) {
+      expect(classifyArgv([flag]).kind).not.toBe('unknown');
+    }
   });
 });
