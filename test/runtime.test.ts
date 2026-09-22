@@ -11,6 +11,7 @@ import {
   codexSelfNameOf,
   makeSelfNameResolver,
   composeEmptyDiagnostic,
+  emptyListDiagnostic,
   NO_PEERS_DIAGNOSTIC,
 } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
@@ -156,6 +157,34 @@ describe('the empty-list diagnostic', () => {
     expect(composeEmptyDiagnostic('codex hint', undefined)).toBe('codex hint');
     expect(composeEmptyDiagnostic(undefined, 'opencode note')).toBe('opencode note');
     expect(composeEmptyDiagnostic(undefined, undefined)).toBeUndefined();
+  });
+
+  describe('emptyListDiagnostic', () => {
+    test('falls back to the generic hint when no listing explained itself', () => {
+      // #7. The Claude arm had no `?? NO_PEERS_DIAGNOSTIC`, so with the
+      // opencode plugin installed (no ENOENT note), zero peers and no Codex
+      // diagnostic it answered `peers: []` and nothing else — while the same
+      // situation on either other host explained itself.
+      expect(emptyListDiagnostic({})).toBe(NO_PEERS_DIAGNOSTIC);
+    });
+
+    test('a specific explanation replaces the generic hint rather than joining it', () => {
+      const d = emptyListDiagnostic({ codex: 'codex hint' })!;
+      expect(d).toBe('codex hint');
+      expect(d).not.toContain('first turn');
+    });
+
+    test('keeps every specific explanation when more than one listing has something to say', () => {
+      const d = emptyListDiagnostic({ codex: 'codex hint', claude: 'claude hint' })!;
+      expect(d).toContain('codex hint');
+      expect(d).toContain('claude hint');
+    });
+
+    test('the opencode note is appended to the generic hint, never substituted for it', () => {
+      const d = emptyListDiagnostic({ opencode: 'plugin not installed' })!;
+      expect(d).toContain('first turn');
+      expect(d.indexOf('first turn')).toBeLessThan(d.indexOf('plugin not installed'));
+    });
   });
 });
 
@@ -1094,6 +1123,64 @@ describe('the claude-code arm', () => {
     const { peers } = await side.listPeers({ sessionId: undefined });
     expect(peers.filter((p) => p.runtime === 'claude-code')).toEqual([]);
   });
+
+  test(
+    'an empty list keeps the Claude explanation for WHY it is empty, rather than ' +
+      'discarding it for the generic hint',
+    async () => {
+      // listClaudeSessions reports pids that appear in more than one config
+      // dir and could not be told apart — and it SKIPS them, so the report
+      // and an empty peer list arrive together. All three arms composed the
+      // empty-list diagnostic from the Codex and opencode listings only, so
+      // the one message that explained the emptiness was dropped at exactly
+      // the moment it was needed. Cross-config-dir ambiguity is a
+      // multi-account symptom, which is where this arm is pointed.
+      const ghost = 999_999; // no such process, so procStart cannot break the tie
+      for (const cfg of ['.claude', '.claude-arm']) {
+        writeFileSync(
+          join(home, cfg, 'sessions', `${ghost}.json`),
+          JSON.stringify({
+            pid: ghost,
+            sessionId: `sid-${cfg}`,
+            cwd: '/src/x',
+            name: 'contested',
+            status: 'idle',
+            messagingSocketPath: join(home, cfg, 'sessions', 'nope.sock'),
+          }),
+        );
+      }
+
+      const tincanHome = mkdtempSync(join(tmpdir(), 'tincan-arm-home-'));
+      try {
+        const side = buildSide(
+          'claude-code',
+          {
+            registryDirs: () => [
+              join(home, '.claude', 'sessions'),
+              join(home, '.claude-arm', 'sessions'),
+            ],
+            pid: 1,
+            cwd: '/x',
+            env: { CLAUDE_CONFIG_DIR: join(home, '.claude'), TINCAN_HOME: tincanHome },
+          },
+          // Both seams, or this asserts nothing: a live Codex thread on the
+          // machine running the suite puts a peer in the list, the arm takes
+          // its NON-empty branch, and the assertion passes without the code
+          // under test ever running.
+          { sweep: { socketDirs: [] }, listCodex: async () => ({ peers: [] }) },
+        );
+
+        const { peers, diagnostic } = await side.listPeers({ sessionId: undefined });
+
+        expect(peers).toEqual([]);
+        expect(diagnostic).toBeDefined();
+        expect(diagnostic).toContain('more than one config dir');
+        expect(diagnostic).toContain(String(ghost));
+      } finally {
+        rmSync(tincanHome, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('lists a session in a different config dir', async () => {
     await sessionIn(join(home, '.claude-arm'), 222, 'other-account', 'sid-222');

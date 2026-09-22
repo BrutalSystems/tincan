@@ -139,6 +139,13 @@ export interface SideDeps {
    * exists to survive.
    */
   resolveSelfSession?: () => Promise<string | undefined>;
+  /**
+   * Test seam. Production lists the real Codex threads, so without this a
+   * test sees whatever Codex sessions happen to be running on the machine it
+   * executes on — the same hazard `sweep` exists for, and the reason an
+   * empty-list assertion could otherwise pass by taking the non-empty branch.
+   */
+  listCodex?: typeof listCodexPeers;
 }
 
 export interface SweepDeps {
@@ -257,6 +264,40 @@ export const NO_PEERS_DIAGNOSTIC =
  * never asked for. Change notice §1 asked that an empty *opencode* list name
  * the plugin; it did not ask for that to outrank everything else.
  */
+/**
+ * The whole diagnostic for an empty peer list, composed the same way on every
+ * arm.
+ *
+ * Three arms each built this inline and each built it differently — the Codex
+ * and opencode arms fell back to the generic hint, the Claude arm did not, so
+ * with the opencode plugin installed (no ENOENT note), zero peers and no Codex
+ * diagnostic it answered `peers: []` and nothing at all (#7).
+ *
+ * All three also dropped the CLAUDE listing's diagnostic here, which is the
+ * more costly half: `listClaudeSessions` reports pids that appear in more than
+ * one config dir and could not be told apart, and it SKIPS them — so that
+ * report and an empty list arrive together, and the one message explaining the
+ * emptiness was discarded at exactly the moment it applied. Cross-config-dir
+ * ambiguity is a multi-account symptom, which is the case this whole arm
+ * exists to serve.
+ *
+ * The generic hint is a FALLBACK, not a prefix: a listing that explained
+ * itself has said something truer than "nothing is running".
+ */
+export function emptyListDiagnostic(listings: {
+  codex?: string | undefined;
+  claude?: string | undefined;
+  opencode?: string | undefined;
+}): string | undefined {
+  const specific = [listings.codex, listings.claude].filter(
+    (s): s is string => s !== undefined && s !== '',
+  );
+  return composeEmptyDiagnostic(
+    specific.length > 0 ? specific.join(' ') : NO_PEERS_DIAGNOSTIC,
+    listings.opencode,
+  );
+}
+
 export function composeEmptyDiagnostic(
   primary: string | undefined,
   opencodeNote: string | undefined,
@@ -294,6 +335,7 @@ function selfClaudeSessionId(env: NodeJS.ProcessEnv): string | undefined {
 export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps = {}): Side {
   const env = ctx.env ?? process.env;
   const common = { selfRuntime: runtime, selfCwd: ctx.cwd };
+  const listCodex = deps.listCodex ?? listCodexPeers;
 
   switch (runtime) {
     case 'claude-code': {
@@ -331,7 +373,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         limitsFor,
         async listPeers() {
           const [codexListing, opencodeListing, claudeListing] = await Promise.all([
-            listCodexPeers(codex),
+            listCodex(codex),
             listOpencodeSessions({ registryDir }),
             claudePeersWithSweep(
               ctx,
@@ -364,7 +406,11 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           ];
           const diagnostic =
             peers.length === 0
-              ? composeEmptyDiagnostic(codexListing.diagnostic, opencodeListing.diagnostic)
+              ? emptyListDiagnostic({
+                  codex: codexListing.diagnostic,
+                  claude: claudeListing.diagnostic,
+                  opencode: opencodeListing.diagnostic,
+                })
               : (codexListing.diagnostic ?? claudeListing.diagnostic);
           return {
             peers,
@@ -407,7 +453,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         async listPeers(self) {
           const selfSession = self.sessionId;
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
-            listCodexPeers(codexForOpencode),
+            listCodex(codexForOpencode),
             claudePeersWithSweep(
               ctx,
               env,
@@ -467,10 +513,11 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           if (peers.length === 0) {
             return {
               peers,
-              diagnostic: composeEmptyDiagnostic(
-                codexListing.diagnostic ?? NO_PEERS_DIAGNOSTIC,
-                opencodeListing.diagnostic,
-              ),
+              diagnostic: emptyListDiagnostic({
+                codex: codexListing.diagnostic,
+                claude: claudeListing.diagnostic,
+                opencode: opencodeListing.diagnostic,
+              }),
             };
           }
           return {
@@ -515,7 +562,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
 
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
-            listCodexPeers(codexForSelf),
+            listCodex(codexForSelf),
             claudePeersWithSweep(
               ctx,
               env,
@@ -549,10 +596,11 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           if (peers.length === 0) {
             return {
               peers,
-              diagnostic: composeEmptyDiagnostic(
-                codexListing.diagnostic ?? NO_PEERS_DIAGNOSTIC,
-                opencodeListing.diagnostic,
-              ),
+              diagnostic: emptyListDiagnostic({
+                codex: codexListing.diagnostic,
+                claude: claudeListing.diagnostic,
+                opencode: opencodeListing.diagnostic,
+              }),
             };
           }
           return {

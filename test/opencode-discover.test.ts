@@ -32,6 +32,55 @@ describe('listOpencodeSessions', () => {
     expect(r.peers).toEqual([]);
   });
 
+  it('drops unreachable marks for a registry directory that has since vanished', async () => {
+    // #6. A refused probe marks the record in a process-wide in-memory Set,
+    // so the peer is reported unreachable once and removed on the second
+    // refusal. The sweep that forgets marks whose records are gone runs after
+    // readdir — and the ENOENT path returns before it. A registry directory
+    // deleted while marks are held therefore leaked them for the life of the
+    // process, and the leak is not inert: a mark says "already reported", so
+    // if the directory came back with the same record and a still-dead
+    // socket, the peer would be pruned silently instead of being reported
+    // unreachable the one time it is owed.
+    const marks = new Set<string>();
+    write('ses_f41a2b3c4ffeExampleSess01Z.json', record());
+
+    const first = await listOpencodeSessions({
+      registryDir: dir,
+      probe: async () => false,
+      unreachableMarks: marks,
+    });
+    expect(first.peers.map((p) => p.state)).toEqual(['unreachable']);
+    expect(marks.size).toBe(1);
+
+    rmSync(dir, { recursive: true, force: true });
+
+    const second = await listOpencodeSessions({
+      registryDir: dir,
+      probe: async () => false,
+      unreachableMarks: marks,
+    });
+    expect(second.peers).toEqual([]);
+    expect(second.diagnostic).toContain('does not appear to be installed');
+    expect([...marks]).toEqual([]);
+  });
+
+  it('leaves another directory\'s marks alone when ours vanishes', async () => {
+    // The mark set is process-wide, so the ENOENT sweep must be scoped by
+    // prefix exactly as the post-readdir one is. A second registry directory's
+    // marks are none of this call's business.
+    const marks = new Set<string>();
+    const otherKey = join(tmpdir(), 'some-other-registry', 'ses_other.json');
+    marks.add(otherKey);
+    write('ses_f41a2b3c4ffeExampleSess01Z.json', record());
+
+    await listOpencodeSessions({ registryDir: dir, probe: async () => false, unreachableMarks: marks });
+    rmSync(dir, { recursive: true, force: true });
+    await listOpencodeSessions({ registryDir: dir, probe: async () => false, unreachableMarks: marks });
+
+    expect([...marks]).toEqual([otherKey]);
+  });
+
   it('reads a session record', async () => {
     write('ses_f41a2b3c4ffeExampleSess01Z.json', record());
     const { peers } = await listOpencodeSessions({ registryDir: dir, probe: async () => true });

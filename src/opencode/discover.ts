@@ -113,6 +113,33 @@ function readRecord(raw: string): OpencodeSession | null {
   };
 }
 
+/**
+ * Forget marks for records this listing did not see.
+ *
+ * Marks for records that have since vanished (the plugin's own sweep, a
+ * `session.deleted`) would otherwise accumulate for the life of the process.
+ * Scoped by prefix: the default set is process-wide and a second registry
+ * directory's marks are none of this call's business.
+ *
+ * Called on the ENOENT path too, with an empty `seen` — the whole directory
+ * vanishing is the same fact about every record in it, only more so. That
+ * path used to return before this ran (#6), and the leak was not merely
+ * untidy: a mark means "already reported unreachable once", so a directory
+ * that came back with the same record and a still-refused socket had its peer
+ * pruned in silence instead of being reported unreachable the one time it is
+ * owed.
+ *
+ * NOT called for other readdir failures. EACCES or EIO leaves the records in
+ * place and unread, so their marks are still true; dropping them there would
+ * re-report every peer as unreachable on the next successful listing.
+ */
+function forgetVanishedMarks(marks: Set<string>, registryDir: string, seen: Set<string>): void {
+  const prefix = registryDir.endsWith(sep) ? registryDir : registryDir + sep;
+  for (const key of marks) {
+    if (key.startsWith(prefix) && !seen.has(key)) marks.delete(key);
+  }
+}
+
 export async function listOpencodeSessions(params: ListParams): Promise<OpencodeListing> {
   const {
     registryDir,
@@ -128,6 +155,7 @@ export async function listOpencodeSessions(params: ListParams): Promise<Opencode
     // is explicit that an empty list must name the plugin rather than look
     // like a working system with no peers.
     const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') forgetVanishedMarks(marks, registryDir, new Set());
     return {
       peers: [],
       diagnostic:
@@ -200,14 +228,7 @@ export async function listOpencodeSessions(params: ListParams): Promise<Opencode
     peers.push({ ...entry.session, state: 'unreachable' });
   }
 
-  // Marks for records that have since vanished (the plugin's own sweep, a
-  // `session.deleted`) would otherwise accumulate for the life of the process.
-  // Scoped by prefix: the default set is process-wide and a second registry
-  // directory's marks are none of this call's business.
-  const prefix = registryDir.endsWith(sep) ? registryDir : registryDir + sep;
-  for (const key of marks) {
-    if (key.startsWith(prefix) && !seen.has(key)) marks.delete(key);
-  }
+  forgetVanishedMarks(marks, registryDir, seen);
 
   await Promise.all(prune.map((file) => unlink(join(registryDir, file)).catch(() => {})));
   return { peers };
