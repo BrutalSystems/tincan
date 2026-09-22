@@ -24,7 +24,7 @@ publishing](https://docs.npmjs.com/trusted-publishers). The registry issues a
 short-lived credential to the workflow run in exchange for GitHub's OIDC
 identity.
 
-**No `NPM_TOKEN` secret exists in either repository.** Nothing to rotate,
+**No `NPM_TOKEN` secret exists in any of these repositories.** Nothing to rotate,
 nothing to expire unnoticed, nothing to leak from a public repo's secret
 store. Provenance is generated as a consequence, so consumers can verify which
 workflow run built the artifact.
@@ -135,16 +135,23 @@ full install and test run. A **fork guard** — `if: github.repository ==
 12. **Create the GitHub Release.** Mandatory. From the release notes if the
     repository has them, otherwise `gh release create --notes-from-tag`.
 
-> **The release runs on a toolchain no CI run has exercised.** `npm install -g
-> npm@latest` in the publish job means anything shelling out to npm must
-> tolerate a version CI never saw. This is not hypothetical: npm 12 changed
+> **Why the pin above is not merely tidiness.** Before it, the release ran on
+> a toolchain no CI run had exercised: `npm install -g npm@latest` in the
+> publish job against whatever npm the runner shipped in CI. npm 12 changed
 > `npm pack --json` from an array to an object keyed by package name, which
-> broke `verify-tarball.mjs` while every CI run stayed green — because CI runs
-> it under the runner's older bundled npm.
+> broke `verify-tarball.mjs` **while every CI run stayed green** — CI was
+> running it under the runner's older bundled npm and never saw the shape the
+> release would meet.
+>
+> That is the failure the pin exists to prevent, and it is worth keeping in
+> mind when writing anything that shells out to npm: parse defensively, and
+> assume the output shape is a version-dependent fact rather than a contract.
+> A repository that has not pinned yet still has the live version of this
+> warning.
 
 ## `scripts/verify-tarball.mjs`
 
-Both repositories carry this script at the same path. It runs **two
+Each repository carries this script at the same path. It runs **two
 independent checks** over `npm pack --dry-run --json`, because they catch
 different mistakes:
 
