@@ -278,3 +278,40 @@ describe('record chaining', () => {
     expect(log.readWithIntegrity({ last_n: 10 }).integrity.tampered).toBe(1);
   });
 });
+
+// An acknowledgement is not an answer. "Any record pointing back at it" is the
+// easy rule and the wrong one: a peer replying "got it" leaves the question
+// open, and a log that calls it answered is worse than one that says nothing.
+describe('outstanding questions', () => {
+  const question = (id: string) => ({ ...env(id), expect_reply: true });
+  const reply = (id: string, to: string, answers: boolean) => ({
+    ...env(id, { in_reply_to: to }),
+    ...(answers && { answers: true }),
+  });
+
+  test('a question with no reply at all is unanswered', () => {
+    log.appendMessage(question('msg_q1'), true);
+    const rec = log.read({ last_n: 10 }).find((r) => r.id === 'msg_q1');
+    expect(rec).toMatchObject({ expect_reply: true, answered: false });
+  });
+
+  test('a bare acknowledgement does not answer it', () => {
+    log.appendMessage(question('msg_q1'), true);
+    log.appendMessage(reply('msg_r1', 'msg_q1', false), true);
+    const rec = log.read({ last_n: 10 }).find((r) => r.id === 'msg_q1');
+    expect(rec).toMatchObject({ answered: false });
+  });
+
+  test('a reply marked as an answer discharges it', () => {
+    log.appendMessage(question('msg_q1'), true);
+    log.appendMessage(reply('msg_r1', 'msg_q1', true), true);
+    const rec = log.read({ last_n: 10 }).find((r) => r.id === 'msg_q1');
+    expect(rec).toMatchObject({ answered: true });
+  });
+
+  test('a message that never asked for an answer is not reported either way', () => {
+    log.appendMessage(env('msg_fyi'), true);
+    const rec = log.read({ last_n: 10 }).find((r) => r.id === 'msg_fyi');
+    expect(rec).not.toHaveProperty('answered');
+  });
+});

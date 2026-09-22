@@ -121,6 +121,7 @@ export const sendPeerSchema = z.object({
   message: z.string().min(1),
   in_reply_to: z.string().optional(),
   expect_reply: z.boolean().default(false),
+  answers: z.boolean().default(false),
   urgent: z.boolean().default(false),
   idempotency_key: z.string().min(1).optional(),
 });
@@ -452,6 +453,7 @@ export function createTools(side: Side, log: MessageLog) {
         method: methodFor(target.side.runtime),
         expect_reply: args.expect_reply,
         ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
+        ...(args.answers && { answers: true }),
         text: args.message,
       });
 

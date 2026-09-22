@@ -16,6 +16,14 @@ export interface MessageRecord {
   delivered: boolean;
   expect_reply: boolean;
   in_reply_to?: string;
+  /** Set by a replier: this message answers the question, rather than acknowledging it. */
+  answers?: boolean;
+  /**
+   * Computed at read time for messages with `expect_reply`, never written.
+   * Absent on every other message: a record that never asked for an answer
+   * should not report one way or the other.
+   */
+  answered?: boolean;
   /**
    * The effective delivery mode requested for this send: `'steer'` only when
    * `urgent` was set AND the peer's runtime can act on it (opencode today);
@@ -155,6 +163,7 @@ export class MessageLog {
       delivered,
       expect_reply: e.expect_reply,
       ...(e.in_reply_to !== undefined && { in_reply_to: e.in_reply_to }),
+      ...(e.answers === true && { answers: true }),
       ...(delivery !== undefined && { delivery }),
     };
     this.append(rec);
@@ -220,12 +229,27 @@ export class MessageLog {
     const outcomes = new Map<string, OutcomeRecord>();
     for (const r of records) if (r.kind === 'outcome') outcomes.set(r.id, r);
 
+    // Only a reply that CLAIMS to answer discharges the question. Collecting
+    // every record with a matching `in_reply_to` would let "got it" close a
+    // question nobody answered — and a log that reports an unanswered question
+    // as answered is worse than one that reports nothing at all.
+    const answered = new Set<string>();
+    for (const r of records) {
+      if (isMessage(r) && r.answers === true && r.in_reply_to !== undefined) {
+        answered.add(r.in_reply_to);
+      }
+    }
+
     return records
       .filter((r) => r.kind !== 'outcome')
       .map((r) => {
         const o = isMessage(r) ? outcomes.get(r.id) : undefined;
-        if (o === undefined) return r;
-        return { ...r, delivered: o.delivered, ...(o.detail !== undefined && { notice: o.detail }) };
+        const folded =
+          o === undefined
+            ? r
+            : { ...r, delivered: o.delivered, ...(o.detail !== undefined && { notice: o.detail }) };
+        if (!isMessage(r) || !r.expect_reply) return folded;
+        return { ...folded, answered: answered.has(r.id) };
       });
   }
 

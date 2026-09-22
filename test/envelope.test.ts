@@ -111,3 +111,31 @@ test('tells a peer without Tin Can to answer in its own terminal', () => {
   expect(text).not.toContain('Tin Can is not running');
   expect(text).not.toMatch(/call send_peer/);
 });
+
+// `expect_reply` was recorded and inert: a question that needed an answer and
+// a message sent for information reached the peer looking identical, so the
+// receiving agent had to guess which it was.
+describe('renderEnvelope and expect_reply', () => {
+  test('tells the peer an answer is expected, and that acknowledging is not answering', () => {
+    const rendered = renderEnvelope(base());
+    expect(rendered).toMatch(/waiting on an answer/i);
+    expect(rendered).toMatch(/acknowledg/i);
+    expect(rendered).toContain('answers');
+  });
+
+  test('says none of that when no answer is expected', () => {
+    const fyi: Envelope = { ...base(), expect_reply: false };
+    const rendered = renderEnvelope(fyi);
+    expect(rendered).not.toMatch(/waiting on an answer/i);
+    // The plain "to answer, call send_peer" line stays: a peer may always
+    // reply, it is just not being asked to.
+    expect(rendered).toContain('in_reply_to');
+  });
+
+  test('does not promise an answer path to a peer that has no send_peer', () => {
+    const noTool: Envelope = { ...base(), reply_tool: false };
+    const rendered = renderEnvelope(noTool);
+    expect(rendered).not.toMatch(/waiting on an answer/i);
+    expect(rendered).toMatch(/no Tin Can registration/i);
+  });
+});

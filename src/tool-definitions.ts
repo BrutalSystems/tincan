@@ -99,7 +99,22 @@ export function toolDefinitions(
           expect_reply: {
             type: 'boolean',
             default: false,
-            description: 'True if you are waiting on an answer. Recorded; nothing blocks.',
+            description:
+              'True if you are waiting on an answer. The peer is told an answer is ' +
+              'expected, and message_log reports the question as unanswered until one ' +
+              'arrives. Nothing blocks — this marks the message, it does not wait.',
+          },
+          // The obliging thing for an agent to do on receipt is say "got it",
+          // and that is exactly what leaves the sender waiting. So answering
+          // has to be something the replier states, not something inferred
+          // from a record pointing back at the question.
+          answers: {
+            type: 'boolean',
+            default: false,
+            description:
+              'True if this message ANSWERS the question in in_reply_to, rather than ' +
+              'just acknowledging it. Only an answer closes the question; "got it" ' +
+              'leaves it open, and should.',
           },
           urgent: {
             type: 'boolean',

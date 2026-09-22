@@ -30,6 +30,12 @@ export interface Envelope {
   /** Whether the receiver has a send_peer to answer with. */
   reply_tool: boolean;
   in_reply_to?: string;
+  /**
+   * Set by a replier: this message ANSWERS the question it replies to, rather
+   * than merely acknowledging it. Absent on an acknowledgement, which is the
+   * whole distinction — see `renderEnvelope`.
+   */
+  answers?: boolean;
   text: string;
 }
 
@@ -41,6 +47,7 @@ export interface EnvelopeInput {
   expect_reply: boolean;
   reply_tool: boolean;
   in_reply_to?: string;
+  answers?: boolean;
   text: string;
 }
 
@@ -79,8 +86,19 @@ export function renderEnvelope(e: Envelope): string {
   // absence, and a receiver told the wrong cause acts on it, going off to
   // start something that is already running. Observed on the 0.7.0 rollout,
   // where a session with a pre-0.7.0 Tin Can was told it had none.
+  //
+  // A question and an FYI arrived looking identical, so a receiving agent had
+  // to infer which it was from the prose. Saying it costs one line and removes
+  // the guess. "Acknowledging is not answering" is stated because the obliging
+  // thing for an agent to do on receipt is say "got it", and that is precisely
+  // what leaves the sender still waiting.
   const tail = e.reply_tool
-    ? [`To answer, call send_peer with in_reply_to="${e.id}".`]
+    ? e.expect_reply
+      ? [
+          `The sender is waiting on an answer. Acknowledging is not answering: when you`,
+          `have one, call send_peer with in_reply_to="${e.id}" and answers=true.`,
+        ]
+      : [`To answer, call send_peer with in_reply_to="${e.id}".`]
     : [
         `No Tin Can registration was found for this session, so it has no send_peer`,
         `to answer with — Tin Can may not be running here, or may predate the version`,
