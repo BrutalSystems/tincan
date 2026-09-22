@@ -13,6 +13,7 @@ import {
 import { buildEnvelope, newMessageId, renderEnvelope, type DeliveryMethod } from './envelope.js';
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
 import { MessageLog, type LogRecord, type LogIntegrity } from './log.js';
+import { IdempotencyStore, IDEMPOTENCY_WINDOW_MS } from './idempotency.js';
 import type { PeerState } from './claude/discover.js';
 
 export interface SidePeer {
@@ -121,6 +122,7 @@ export const sendPeerSchema = z.object({
   in_reply_to: z.string().optional(),
   expect_reply: z.boolean().default(false),
   urgent: z.boolean().default(false),
+  idempotency_key: z.string().min(1).optional(),
 });
 
 export const messageLogSchema = z.object({
@@ -142,6 +144,9 @@ export type Refusal =
   // listed, and yourself.
   | 'self_send'
   | 'peer_unreachable'
+  // A key the caller has already used. Distinct from every other refusal
+  // because nothing is wrong: the message was sent, and `message_id` names it.
+  | 'duplicate_send'
   | GuardReason
   | 'delivery_failed';
 
@@ -261,6 +266,10 @@ export function createTools(side: Side, log: MessageLog) {
   // One guard per peer runtime, so a Codex peer's tight budget does not
   // throttle a Claude peer sharing the same listing.
   const guards = new Map<RuntimeName, Guard>();
+  // One store for the whole process, not one per runtime: a key identifies the
+  // caller's intent, and the same intent must not be sendable once per runtime.
+  const idempotency = new IdempotencyStore();
+
   const guardFor = (runtime: RuntimeName): Guard => {
     let g = guards.get(runtime);
     if (g === undefined) {
@@ -334,6 +343,32 @@ export function createTools(side: Side, log: MessageLog) {
 
     async send_peer(rawArgs: SendPeerArgs): Promise<SendPeerResult> {
       const args = sendPeerSchema.parse(rawArgs);
+
+      // Before resolution, deliberately. A retry under the same key must still
+      // answer "already sent" when the peer has exited in the meantime —
+      // resolving first would report peer_unreachable, which is true of the
+      // peer and false about the message.
+      if (args.idempotency_key !== undefined) {
+        const prior = idempotency.lookup(args.idempotency_key);
+        if (prior !== undefined) {
+          const sameCall = prior.peerArg === args.peer && prior.text === args.message;
+          return {
+            delivered: false,
+            refusal: 'duplicate_send',
+            // The original id, not a new one: the caller asked about an intent
+            // that already has a message, and this is how they find it.
+            message_id: prior.messageId,
+            detail: sameCall
+              ? `Already sent as ${prior.messageId} to ${prior.peer}. Nothing was sent ` +
+                `again. Read it in message_log; do not retry under a new key.`
+              : `idempotency_key "${args.idempotency_key}" was already used to send ` +
+                `${prior.messageId} to ${prior.peer}, and the peer or message differs ` +
+                `from that call — so this is a reused key, not a retry. Nothing was ` +
+                `sent. Use a new key for a new message.`,
+          };
+        }
+      }
+
       // One resolution for the whole call: the exclusion in listPeers, the
       // envelope's `from=`, and the wire's `message_from` must all name the
       // same session. See SelfRef.
@@ -445,6 +480,17 @@ export function createTools(side: Side, log: MessageLog) {
         outcome.delivered,
         outcome.notice ?? (outcome.delivered ? undefined : outcome.error),
       );
+
+      // Only on success. A transient failure must leave the key usable, since
+      // retrying under it is exactly what the caller is supposed to do.
+      if (args.idempotency_key !== undefined && outcome.delivered) {
+        idempotency.record(args.idempotency_key, {
+          messageId: envelope.id,
+          peer: target.display,
+          peerArg: args.peer,
+          text: args.message,
+        });
+      }
 
       // A peer that is simply gone and a peer whose delivery errored are not
       // the same answer, and a caller branching on `refusal` could not tell

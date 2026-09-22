@@ -1,6 +1,7 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
 import { LABEL, type RuntimeName } from './naming.js';
 import { labelList, NATIVE_PEER_PATH, runtimeSupportsUrgent, type OwnKindScope } from './tools.js';
+import { IDEMPOTENCY_WINDOW_MS } from './idempotency.js';
 
 export interface ToolDefinition {
   name: string;
@@ -104,6 +105,19 @@ export function toolDefinitions(
             type: 'boolean',
             default: false,
             description: urgentDescription,
+          },
+          // The window is stated rather than left to be discovered: a caller
+          // that believes the key is remembered forever will eventually send
+          // twice and have no idea why.
+          idempotency_key: {
+            type: 'string',
+            description:
+              `Your own id for this send, so a retry cannot deliver twice. Reusing a key ` +
+              `refuses the second call and returns the first message's id instead of ` +
+              `sending again. Use one when you may retry — an interrupted turn, a call ` +
+              `you are unsure landed. Remembered for ` +
+              `${Math.round(IDEMPOTENCY_WINDOW_MS / 60_000)} minutes, and forgotten if ` +
+              `Tin Can restarts.`,
           },
         },
         required: ['peer', 'message'],

@@ -638,3 +638,100 @@ describe('message_log integrity', () => {
     expect(r.integrity?.detail).toMatch(/incomplete|edited/i);
   });
 });
+
+// A model that is unsure whether its first send landed — its turn was
+// interrupted, the tool call timed out, the human retried the prompt — has no
+// way to ask. The only safe move available to it today is to send again, and
+// the peer reads the message twice. `identical_repeat` catches only byte-equal
+// text inside 60s, so changing one character defeats it.
+describe('idempotency_key', () => {
+  test('a repeat under the same key is refused and names the original message', async () => {
+    const { side, delivered } = makeSide();
+    const tools = createTools(side, log);
+
+    const first = await tools.send_peer({
+      peer: 'auth-refactor',
+      message: 'rebase onto main',
+      idempotency_key: 'turn-41-send-1',
+    });
+    expect(first.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+
+    const second = await tools.send_peer({
+      peer: 'auth-refactor',
+      message: 'rebase onto main',
+      idempotency_key: 'turn-41-send-1',
+    });
+
+    expect(second.delivered).toBe(false);
+    expect(second.refusal).toBe('duplicate_send');
+    // The whole point: the caller can tell "already sent" from "failed", and
+    // can go read the original rather than guessing.
+    expect(second.message_id).toBe(first.message_id);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('a key reused with different text is refused and says the parameters differ', async () => {
+    const { side, delivered } = makeSide();
+    const tools = createTools(side, log);
+
+    const first = await tools.send_peer({
+      peer: 'auth-refactor',
+      message: 'rebase onto main',
+      idempotency_key: 'turn-41-send-1',
+    });
+    const second = await tools.send_peer({
+      peer: 'auth-refactor',
+      message: 'actually, hold off',
+      idempotency_key: 'turn-41-send-1',
+    });
+
+    expect(second.refusal).toBe('duplicate_send');
+    expect(second.message_id).toBe(first.message_id);
+    // A reused key with changed parameters is a caller bug, not a retry, and
+    // saying so is the difference between fixing it and resending forever.
+    expect(second.detail).toMatch(/differ/i);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('without a key, nothing changes: two different messages both go through', async () => {
+    const { side, delivered } = makeSide();
+    const tools = createTools(side, log);
+
+    const a = await tools.send_peer({ peer: 'auth-refactor', message: 'first' });
+    const b = await tools.send_peer({ peer: 'auth-refactor', message: 'second' });
+
+    expect(a.delivered).toBe(true);
+    expect(b.delivered).toBe(true);
+    expect(a.message_id).not.toBe(b.message_id);
+    expect(delivered).toHaveLength(2);
+  });
+
+  test('a refused send does not burn the key: the retry that follows it can succeed', async () => {
+    // Otherwise the first transient failure poisons the key permanently, and
+    // the caller's correct behaviour — retry under the same key — is exactly
+    // what stops working.
+    const { side, delivered } = makeSide({
+      deliver: async () => ({ delivered: false, error: 'socket closed' }),
+    });
+    const tools = createTools(side, log);
+    const first = await tools.send_peer({
+      peer: 'auth-refactor',
+      message: 'rebase onto main',
+      idempotency_key: 'turn-41-send-1',
+    });
+    expect(first.delivered).toBe(false);
+    expect(first.refusal).not.toBe('duplicate_send');
+
+    const { side: working, delivered: sent } = makeSide();
+    const retryTools = createTools(working, log);
+    const second = await retryTools.send_peer({
+      peer: 'auth-refactor',
+      message: 'rebase onto main',
+      idempotency_key: 'turn-41-send-1',
+    });
+    expect(second.delivered).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(delivered).toHaveLength(0);
+  });
+});
