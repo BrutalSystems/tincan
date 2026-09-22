@@ -94,13 +94,20 @@ export interface Side {
   limitsFor(runtime: RuntimeName): GuardLimits;
   listPeers(self: SelfRef): Promise<{ peers: SidePeer[]; diagnostic?: string }>;
   /**
-   * `self` comes first deliberately. An implementation that simply forgot it
-   * would otherwise still type-check — an arrow with fewer parameters is
-   * assignable — and would silently fall back to re-resolving. Leading with it
-   * makes the omission a compile error.
+   * `self` and `selfName` come first deliberately. An implementation that
+   * simply forgot them would otherwise still type-check — an arrow with fewer
+   * parameters is assignable — and would silently fall back to re-resolving.
+   * Leading with them makes the omission a compile error.
+   *
+   * `selfName` is the name already resolved for this call, and is the only
+   * name an implementation may use. Re-deriving it here is the defect in #2:
+   * the envelope's `from=` and the opencode wire's `message_from` then come
+   * from two independent reads, and our own registry record can change (or
+   * vanish, dropping to the cwd fallback) in between.
    */
   deliver(
     self: SelfRef,
+    selfName: string,
     peer: SidePeer,
     envelopeId: string,
     text: string,
@@ -426,6 +433,7 @@ export function createTools(side: Side, log: MessageLog) {
 
       const outcome = await side.deliver(
         self,
+        selfName,
         target.side,
         envelope.id,
         renderEnvelope(envelope),

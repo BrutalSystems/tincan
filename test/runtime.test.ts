@@ -264,13 +264,15 @@ describe('buildSide', () => {
             cwd: '/src/x',
             env: { TINCAN_HOME: home },
           }, { sweep: { socketDirs: [] } });
-          // One SelfRef for the whole "call", exactly as createTools does.
+          // One SelfRef and one name for the whole "call", exactly as
+          // createTools does.
           const self = await side.resolveSelf();
+          const selfName = await side.selfName(self);
           const { peers } = await side.listPeers(self);
           const ocPeer = peers.find((p) => p.runtime === 'opencode')!;
 
-          await side.deliver(self, ocPeer, 'msg_urgent', 'hi urgent', true);
-          await side.deliver(self, ocPeer, 'msg_queued', 'hi queued', false);
+          await side.deliver(self, selfName, ocPeer, 'msg_urgent', 'hi urgent', true);
+          await side.deliver(self, selfName, ocPeer, 'msg_queued', 'hi queued', false);
 
           expect(instance.rawLines.map((l) => JSON.parse(l).delivery)).toEqual(['steer', 'queue']);
         } finally {
@@ -740,6 +742,74 @@ describe('buildSide, hosted in opencode', () => {
         expect(['nimble-wizard', 'proud-forest']).toContain(wire.message_from);
         // One tool call, one resolution.
         expect(i).toBe(1);
+      } finally {
+        await instance.close();
+        rmSync(logDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test(
+    'resolves the self NAME exactly once per tool call: the envelope from= and the wire ' +
+      'message_from still agree when our own registry record changes between the two ' +
+      'reads (issue #2)',
+    async () => {
+      const instance = await fakeOpencodeInstance();
+      const logDir = mkdtempSync(join(tmpdir(), 'tincan-oc-name-'));
+      try {
+        await writeInstance(instance); // ses_self / nimble-wizard
+        writeFileSync(
+          join(registryDir, 'ses_target.json'),
+          JSON.stringify({
+            session_id: 'ses_target',
+            slug: 'target-session',
+            directory: '/repo',
+            state: 'idle',
+            socket: instance.path,
+            instance_id: 'inst-a91f',
+            pid: 41233,
+          }),
+        );
+
+        // The session id was already threaded; the NAME was not. The plugin
+        // rewrites our own record whenever a session event lands, so the slug
+        // can change — or the record vanish — between the envelope's read and
+        // the wire's. `appendMessage` runs after the first and before the
+        // second, which makes it the seam this race actually lives in.
+        const side = buildSide(
+          'opencode',
+          {
+            registryDirs: () => [join(dir, 'sessions')],
+            pid: 1,
+            cwd: '/src/x',
+            env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
+          },
+          { resolveSelfSession: async () => 'ses_self' },
+          { sweep: { socketDirs: [] } },
+        );
+
+        const log = new MessageLog(join(logDir, 'messages.jsonl'));
+        const appendMessage = log.appendMessage.bind(log);
+        let straddled = false;
+        log.appendMessage = ((...args: Parameters<typeof log.appendMessage>) => {
+          rmSync(join(registryDir, 'ses_self.json'), { force: true });
+          straddled = true;
+          return appendMessage(...args);
+        }) as typeof log.appendMessage;
+
+        const r = await createTools(side, log).send_peer({
+          peer: 'target-session',
+          message: 'hi',
+        });
+        expect(r.delivered).toBe(true);
+        expect(straddled).toBe(true);
+
+        const wire = JSON.parse(instance.rawLines[0]!) as { message_from: string; text: string };
+        // Re-resolving would read a record that is now gone and fall back to
+        // the cwd basename ('x'), so the wire would say 'x' while the envelope
+        // still said 'nimble-wizard'.
+        expect(wire.message_from).toBe('nimble-wizard');
+        expect(wire.text).toContain(`from="${wire.message_from}"`);
       } finally {
         await instance.close();
         rmSync(logDir, { recursive: true, force: true });

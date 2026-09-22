@@ -417,8 +417,8 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             ...(diagnostic !== undefined && { diagnostic }),
           };
         },
-        deliver: (_self, peer, id, text, urgent) =>
-          deliverTo(codex, ctx, peer, id, text, urgent, async () => name),
+        deliver: (_self, selfName, peer, id, text, urgent) =>
+          deliverTo(codex, ctx, peer, id, text, urgent, selfName),
       };
     }
 
@@ -526,10 +526,8 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           };
         },
 
-        deliver: (self, peer, id, text, urgent) =>
-          deliverTo(codexForOpencode, ctx, peer, id, text, urgent, () =>
-            opencodeSelfName(registryDir, self.sessionId, ctx.cwd),
-          ),
+        deliver: (_self, selfName, peer, id, text, urgent) =>
+          deliverTo(codexForOpencode, ctx, peer, id, text, urgent, selfName),
       };
     }
 
@@ -609,8 +607,8 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           };
         },
 
-        deliver: (_self, peer, id, text, urgent) =>
-          deliverTo(codexForSelf, ctx, peer, id, text, urgent, selfName),
+        deliver: (_self, resolvedSelfName, peer, id, text, urgent) =>
+          deliverTo(codexForSelf, ctx, peer, id, text, urgent, resolvedSelfName),
       };
     }
 
@@ -669,6 +667,10 @@ function toOpencodeSidePeer(p: OpencodeSession): SidePeer {
  * is assignable to it with no compiler error (see runtime.test.ts and
  * tools.test.ts's end-to-end `urgent` tests). `selfName` is only needed for
  * the opencode wire, which is the one that carries a sender field explicitly.
+ *
+ * It arrives as a VALUE, not a resolver. Every arm used to hand over a closure
+ * that re-derived the name at the moment of delivery, which is how the wire
+ * could disagree with the envelope that had already been rendered (#2).
  */
 async function deliverTo(
   codex: CodexEnv,
@@ -677,7 +679,7 @@ async function deliverTo(
   id: string,
   text: string,
   urgent: boolean,
-  selfName: () => Promise<string>,
+  selfName: string,
 ): Promise<DeliveryOutcome> {
   switch (peer.runtime) {
     case 'codex': {
@@ -707,7 +709,7 @@ async function deliverTo(
       const r = await sendToInstance({
         socketPath: peer.socketPath!,
         toSession: peer.uuid,
-        from: await selfName(),
+        from: selfName,
         text,
         // opencode's own default is "steer"; Tin Can's policy is queue-by-
         // default (SPEC §7 / change-notice-opencode.md §3). This field must
