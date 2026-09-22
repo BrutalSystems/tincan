@@ -416,7 +416,16 @@ With the plugin installed and a plain `opencode` TUI running with no flags:
   from the caller file, so a sibling session in the same instance is still
   addressable.
 - Quitting the TUI removes the peer; killing it with `-9` leaves a registry file
-  that Tin Can prunes on first contact.
+  that Tin Can reports `unreachable` once and prunes on the **second**
+  consecutive refused probe.
+
+  > Rev 2 said "prunes on first contact". That stopped being true in 0.5.0,
+  > which made a record survive one listing so the peer is *reported*
+  > unreachable before it disappears — otherwise `tools.ts`'s
+  > `peer_unreachable` refusal would be unreachable itself. See
+  > `src/opencode/discover.ts`. Corrected in place rather than left as a dated
+  > observation, because this is the document a reader comes to for this
+  > behaviour.
 - A session resumed with `opencode --continue` and not yet typed into does not
   appear, and appears correctly once it is active. This is expected behaviour,
   not a bug — see SPEC §5.
