@@ -165,6 +165,35 @@ If that check fails — `_client` missing, `post` not a function, HTML body,
 throw — **log once and advertise nothing.** A registry entry the plugin cannot
 deliver to is worse than no entry. Do not bind the socket either.
 
+### Re-verified on 1.18.32 (2026-09-22)
+
+Every claim in this section was re-checked on opencode 1.18.32 with a probe
+plugin that recorded what it was handed. **Plugins are instantiated when a
+prompt is processed, not when the server starts** — `opencode serve` on its own
+loads nothing, and a probe that waits for boot alone sees nothing. Worth
+knowing before writing the next one.
+
+| Claim | 1.18.32 |
+|---|---|
+| `input.client._client` exists | yes — `_client` is the first own key, then `global`, `project`, `pty`, `config`, `tool`, … |
+| `_client.post` / `.get` / `.getConfig` | all `function` |
+| `"v2" in input.client` | `false` |
+| `GET /api/session` | `200`, object body, keys `["data", "cursor"]` |
+| `POST /session/{id}/prompt` (no `/api`) | `200` with an HTML string — the trap above still bites |
+
+**Do not `await` an SDK call inside plugin init.** The probe's first version
+awaited `client.session.list()` at init and hung opencode's startup until the
+timeout killed it, twice. Whatever the cause, init is not the place to make a
+round trip — which is also why the startup self-check is the only one the
+plugin performs there.
+
+One thing this turned up that the section above does not account for: the
+public namespace `input.client.session` carries its own `prompt` function
+(`typeof input.client.session.prompt === 'function'`). If it targets the
+`/api/`-prefixed route then "the private-field dependency is unavoidable" is
+too strong for 1.18.32. Not settled here — testing it means calling it from a
+later hook rather than from init.
+
 ---
 
 ## 4. Registry layout

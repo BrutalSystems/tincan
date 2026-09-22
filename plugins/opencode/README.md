@@ -8,7 +8,9 @@ The plugin receives inbound messages delivered to a Unix socket and injects them
 
 ## Requirements
 
-- **opencode** 1.18.31 (verified; other versions untested)
+- **opencode** 1.18.31 (fully verified). **1.18.32** re-verified for the
+  transport contract the plugin depends on — see SPEC.md §3. Other versions
+  untested.
 - **Tin Can** 0.4.0 or later
 
 ## Install
@@ -94,10 +96,10 @@ tail -f "$TINCAN_HOME/opencode-plugin.log"
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| **No registry files appear at all** | The plugin is not loading, or initialization failed. | Check the plugin log for `event=selfcheck.failed`. This usually means opencode's private `client._client` field moved due to a version change. Only opencode 1.18.31 is verified. See SPEC.md §3. |
+| **No registry files appear at all** | The plugin is not loading, or initialization failed. | Check the plugin log for `event=selfcheck.failed`. This usually means opencode's private `client._client` field moved due to a version change. `_client` is present and carries `post`/`get`/`getConfig` on both 1.18.31 and 1.18.32; a later version is the thing to suspect. See SPEC.md §3. |
 | **No file appears after `opencode --continue`** | Expected, not a bug. A resumed session is invisible until it next does something. | Send one message to the session (type input or wait for agent activity). The registry file will appear then. See SPEC.md §5. |
 | **`event=bind.failed` mentioning socket path too long** | `TINCAN_HOME` directory nesting is too deep. macOS caps AF_UNIX socket paths near 103 bytes. | Shorten `TINCAN_HOME` or the path to it. For example, move `~/.tincan` to a shallower location. |
-| **Messages accepted but nothing happens; `event=transport-broken detail=html response`** | The `/api/` prefix was lost in the request path. The opencode server falls back to its web UI and returns 200 with HTML instead of JSON, making an invalid request look like success. | Verify you are running opencode 1.18.31. Check the plugin source to ensure `POST /api/session/{sessionID}/prompt` is the exact path. |
+| **Messages accepted but nothing happens; `event=transport-broken detail=html response`** | The `/api/` prefix was lost in the request path. The opencode server falls back to its web UI and returns 200 with HTML instead of JSON, making an invalid request look like success. | Verify you are running opencode 1.18.31 or 1.18.32. Check the plugin source to ensure `POST /api/session/{sessionID}/prompt` is the exact path. |
 | **`event=rejected status=409`** | The same `message_id` was re-sent with different content. opencode treats this as a mismatched re-submit. | This is not a retryable failure. Check the Tin Can side to ensure message IDs are not being duplicated. |
 | **`event=dropped detail="missing envelope"`** | The `text` on the wire did not carry Tin Can's `<peer_message …>` envelope. | The envelope is the only thing marking an injected prompt as a peer's words rather than the operator's, so the plugin requires it. A hand-rolled sender must include it; from Tin Can itself this means a bug on the sending side. See SPEC.md §7. |
 | **`event=dropped detail=unknown session`** | A message arrived for a session ID this plugin never heard announced. | Expected right after `opencode --continue` if messages arrive before the session is active. Send the message again; the session will be registered on its next activity. |

@@ -473,7 +473,8 @@ created automatically.
 daemon and no control socket are required — see
 [Codex: no daemon required](#codex-no-daemon-required).
 
-**opencode 1.18.31** (verified; other versions untested), **with the plugin
+**opencode 1.18.31** (fully verified) or **1.18.32** (transport contract
+re-verified; see the plugin SPEC §3), **with the plugin
 installed** — an opencode session with only the MCP registration is invisible
 to every other peer's `peers` list. See [Install](#install) and
 [opencode: inverted reach](#opencode-inverted-reach).
