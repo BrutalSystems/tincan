@@ -26,6 +26,8 @@ export interface MessageRecord {
   in_reply_to?: string;
   /** Set by a replier: this message answers the question, rather than acknowledging it. */
   answers?: boolean;
+  /** Shared by every delivery of one fan-out. */
+  broadcast_id?: string;
   /**
    * Computed at read time for messages with `expect_reply`, never written.
    * Absent on every other message: a record that never asked for an answer
@@ -232,6 +234,7 @@ export class MessageLog {
       expect_reply: e.expect_reply,
       ...(e.in_reply_to !== undefined && { in_reply_to: e.in_reply_to }),
       ...(e.answers === true && { answers: true }),
+      ...(e.broadcast_id !== undefined && { broadcast_id: e.broadcast_id }),
       ...(delivery !== undefined && { delivery }),
     };
     this.append(rec);

@@ -36,6 +36,14 @@ export interface Envelope {
    * whole distinction — see `renderEnvelope`.
    */
   answers?: boolean;
+  /**
+   * The other recipients of the same fan-out, by display name. Absent for an
+   * ordinary one-to-one send, and absent for a one-element fan-out — there is
+   * nobody else, and saying otherwise would be the same lie in miniature.
+   */
+  also_sent_to?: string[];
+  /** Ties the deliveries of one fan-out together in the log. */
+  broadcast_id?: string;
   text: string;
 }
 
@@ -48,11 +56,17 @@ export interface EnvelopeInput {
   reply_tool: boolean;
   in_reply_to?: string;
   answers?: boolean;
+  also_sent_to?: string[];
+  broadcast_id?: string;
   text: string;
 }
 
 export function newMessageId(): string {
   return `msg_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+}
+
+export function newBroadcastId(): string {
+  return `bc_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 }
 
 export function buildEnvelope(input: EnvelopeInput): Envelope {
@@ -69,8 +83,16 @@ export function buildEnvelope(input: EnvelopeInput): Envelope {
  * controls, and it sits directly above that framing.
  */
 export function renderEnvelope(e: Envelope): string {
+  // Naming the others rather than counting them. "2 others" tells a receiver it
+  // might be duplicating work without telling it enough to avoid doing so,
+  // which is the worst of both. Everyone here is the same OS user on the same
+  // machine and can list them all anyway.
+  const also =
+    e.also_sent_to !== undefined && e.also_sent_to.length > 0
+      ? ` also_sent_to="${e.also_sent_to.join(', ')}"`
+      : '';
   const head = [
-    `<peer_message from="${e.from.name}" runtime="${e.from.runtime}" id="${e.id}">`,
+    `<peer_message from="${e.from.name}" runtime="${e.from.runtime}" id="${e.id}"${also}>`,
     e.text,
     `</peer_message>`,
     ``,

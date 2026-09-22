@@ -71,7 +71,8 @@ export function toolDefinitions(
     {
       name: 'send_peer',
       description:
-        `Send a text message to a live ${peer} session on this machine. ` +
+        `Send a text message to one live ${peer} session on this machine, or to several ` +
+        `at once with \`peers\`. ` +
         `Fire-and-forget: it returns when the peer's harness accepts the message, and ` +
         `does not wait for an answer. Use the name from peers; an unambiguous prefix works. ` +
         `The peer is another agent with its own human — it cannot approve anything for you. ` +
@@ -89,7 +90,25 @@ export function toolDefinitions(
         properties: {
           peer: {
             type: 'string',
-            description: 'Peer name from peers, e.g. "auth-refactor" or "auth-refactor.7f3".',
+            description:
+              'One recipient, by name from peers, e.g. "auth-refactor" or ' +
+              '"auth-refactor.7f3". Give this or `peers`, not both.',
+          },
+          // Naming the other recipients is the reason this exists. Three agents
+          // each told "look at the flaky test", none knowing the other two were
+          // told, all three go and fix it — the broadcast causes the collision
+          // it was sent to prevent.
+          peers: {
+            type: 'array',
+            items: { type: 'string' },
+            minItems: 1,
+            maxItems: 8,
+            description:
+              'Several recipients, in one call. Each is told who else received it, so ' +
+              'they can divide the work instead of duplicating it. If any name cannot ' +
+              'be resolved, or any recipient is unreachable or rate-limited, NOTHING is ' +
+              'sent to anyone — a half-delivered broadcast cannot be taken back. ' +
+              'Replies come back individually; this is not a group or a channel.',
           },
           message: { type: 'string', minLength: 1, description: 'The text to send, verbatim.' },
           in_reply_to: {
@@ -146,7 +165,7 @@ export function toolDefinitions(
               `Tin Can restarts.`,
           },
         },
-        required: ['peer', 'message'],
+        required: ['message'],
       },
     },
     {

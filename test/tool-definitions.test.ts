@@ -11,8 +11,23 @@ describe('toolDefinitions', () => {
     expect(defs.map((d) => d.name).sort()).toEqual(['message_log', 'peers', 'send_peer']);
   });
 
-  test('requires peer and message on send_peer, and nothing else', () => {
-    expect(byName('send_peer').inputSchema.required).toEqual(['peer', 'message']);
+  // Only `message` is structurally required now: a recipient may be given as
+  // `peer` OR `peers`, and JSON Schema's `required` cannot express "exactly one
+  // of these two". That constraint lives in `sendPeerSchema` (zod), which
+  // refuses both-or-neither with a message naming the choice, and in the two
+  // parameter descriptions. Asserted here so that a future edit adding `peer`
+  // back to `required` — which would make every fan-out call structurally
+  // invalid — fails loudly.
+  test('requires only message on send_peer: the recipient may be peer or peers', () => {
+    const schema = byName('send_peer').inputSchema;
+    expect(schema.required).toEqual(['message']);
+    expect(Object.keys(schema.properties)).toContain('peer');
+    expect(Object.keys(schema.properties)).toContain('peers');
+  });
+
+  test('caps fan-out width in the schema the model reads', () => {
+    const props = byName('send_peer').inputSchema.properties as Record<string, { maxItems?: number }>;
+    expect(props.peers?.maxItems).toBe(8);
   });
 
   test('defaults expect_reply and urgent to false', () => {

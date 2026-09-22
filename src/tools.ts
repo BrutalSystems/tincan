@@ -10,7 +10,13 @@ import {
   type NamedPeer,
   type RuntimeName,
 } from './naming.js';
-import { buildEnvelope, newMessageId, renderEnvelope, type DeliveryMethod } from './envelope.js';
+import {
+  buildEnvelope,
+  newMessageId,
+  newBroadcastId,
+  renderEnvelope,
+  type DeliveryMethod,
+} from './envelope.js';
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
 import { MessageLog, type LogRecord, type LogIntegrity } from './log.js';
 import { IdempotencyStore, IDEMPOTENCY_WINDOW_MS } from './idempotency.js';
@@ -116,16 +122,28 @@ export interface Side {
   ): Promise<DeliveryOutcome>;
 }
 
-export const sendPeerSchema = z.object({
-  peer: z.string(),
-  message: z.string().min(1),
-  in_reply_to: z.string().optional(),
-  expect_reply: z.boolean().default(false),
-  answers: z.boolean().default(false),
-  urgent: z.boolean().default(false),
-  idempotency_key: z.string().min(1).optional(),
-  expect_id: z.string().min(1).optional(),
-});
+export const sendPeerSchema = z
+  .object({
+    peer: z.string().optional(),
+    // Capped deliberately. Fan-out makes it trivially easy to exhaust a peer's
+    // budget — Codex and opencode allow 3 sends/minute — and a width limit is
+    // cheap insurance that also says what this is for: a machine's worth of
+    // sessions, not a mailing list.
+    peers: z.array(z.string()).min(1).max(8).optional(),
+    message: z.string().min(1),
+    in_reply_to: z.string().optional(),
+    expect_reply: z.boolean().default(false),
+    answers: z.boolean().default(false),
+    urgent: z.boolean().default(false),
+    idempotency_key: z.string().min(1).optional(),
+    expect_id: z.string().min(1).optional(),
+  })
+  .refine((d) => (d.peer === undefined) !== (d.peers === undefined), {
+    message: 'Give exactly one of `peer` (one recipient) or `peers` (several).',
+  })
+  .refine((d) => !(d.expect_id !== undefined && d.peers !== undefined), {
+    message: '`expect_id` pins a single session, so it cannot be used with `peers`.',
+  });
 
 export const messageLogSchema = z.object({
   peer: z.string().optional(),
@@ -156,8 +174,30 @@ export type Refusal =
   | GuardReason
   | 'delivery_failed';
 
-export interface SendPeerResult {
+/** One recipient's outcome within a fan-out. */
+export interface FanOutResult {
+  peer: string;
   delivered: boolean;
+  message_id?: string;
+  method?: DeliveryMethod;
+  refusal?: Refusal;
+  detail?: string;
+  notice?: string;
+}
+
+export interface SendPeerResult {
+  /**
+   * `boolean` for a single recipient — unchanged — and a COUNT of successful
+   * deliveries when `peers` was used. The type differing between the two
+   * shapes is the ugly part of this design; always returning the array form
+   * would be cleaner on paper and would break every existing caller for the
+   * common case.
+   */
+  delivered: boolean | number;
+  /** Fan-out only. */
+  requested?: number;
+  broadcast_id?: string;
+  results?: FanOutResult[];
   method?: DeliveryMethod;
   peer_state?: PeerState;
   message_id?: string;
@@ -349,6 +389,11 @@ export function createTools(side: Side, log: MessageLog) {
 
     async send_peer(rawArgs: SendPeerArgs): Promise<SendPeerResult> {
       const args = sendPeerSchema.parse(rawArgs);
+      // One code path for both shapes. A separate fan-out branch would be a
+      // second place for the resolution and guard rules to drift.
+      const addresses = args.peers ?? [args.peer as string];
+      const fanOut = args.peers !== undefined;
+      const none = fanOut ? 0 : false;
 
       // Before resolution, deliberately. A retry under the same key must still
       // answer "already sent" when the peer has exited in the meantime —
@@ -357,12 +402,10 @@ export function createTools(side: Side, log: MessageLog) {
       if (args.idempotency_key !== undefined) {
         const prior = idempotency.lookup(args.idempotency_key);
         if (prior !== undefined) {
-          const sameCall = prior.peerArg === args.peer && prior.text === args.message;
+          const sameCall = prior.peerArg === addresses.join(', ') && prior.text === args.message;
           return {
-            delivered: false,
+            delivered: none,
             refusal: 'duplicate_send',
-            // The original id, not a new one: the caller asked about an intent
-            // that already has a message, and this is how they find it.
             message_id: prior.messageId,
             detail: sameCall
               ? `Already sent as ${prior.messageId} to ${prior.peer}. Nothing was sent ` +
@@ -380,171 +423,199 @@ export function createTools(side: Side, log: MessageLog) {
       // same session. See SelfRef.
       const self = await side.resolveSelf();
       const { named: list, diagnostic } = await named(self);
-
-      // Resolved once, here: the self check below, the envelope's `from=` and
-      // the wire's `message_from` must not disagree about who we are.
       const selfName = await side.selfName(self);
 
-      const resolved = resolvePeer(list, args.peer, (q) =>
-        isSelfAddress(side.selfRuntime, selfName, q),
-      );
-      if (!resolved.ok) {
-        if (resolved.reason === 'self') {
-          // A host filters itself out of its own listing, so this would
-          // otherwise read as "no such peer" — true, but misleading.
-          const alsoMatched =
-            resolved.candidates.length > 0
-              ? ` If you meant a peer whose name starts the same way, address it in full: ` +
-                `${resolved.candidates.join(', ')}.`
-              : '';
+      // Every address is resolved before anything is delivered, and ANY
+      // failure refuses the whole call.
+      //
+      // The split that governs this function: a failure Tin Can can see coming
+      // is all-or-nothing, because a message cannot be un-sent and a caller who
+      // reads `delivered` without reading `detail` would otherwise believe
+      // three peers know something only two were told. A failure that happens
+      // after the point of no return is reported per recipient, because by then
+      // honesty is the only option left.
+      const targets: Array<NamedPeer & { side: SidePeer }> = [];
+      for (const address of addresses) {
+        const resolved = resolvePeer(list, address, (q) =>
+          isSelfAddress(side.selfRuntime, selfName, q),
+        );
+        if (!resolved.ok) {
+          if (resolved.reason === 'self') {
+            const alsoMatched =
+              resolved.candidates.length > 0
+                ? ` If you meant a peer whose name starts the same way, address it in full: ` +
+                  `${resolved.candidates.join(', ')}.`
+                : '';
+            return {
+              delivered: none,
+              refusal: 'self_send',
+              ...(resolved.candidates.length > 0 && { candidates: resolved.candidates }),
+              detail:
+                `"${address}" is this session. You cannot send a message to yourself — ` +
+                `Tin Can never lists the session it is running in.${alsoMatched}`,
+            };
+          }
           return {
-            delivered: false,
-            refusal: 'self_send',
-            ...(resolved.candidates.length > 0 && { candidates: resolved.candidates }),
+            delivered: none,
+            refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
+            candidates: resolved.candidates,
             detail:
-              `"${args.peer}" is this session. You cannot send a message to yourself — ` +
-              `Tin Can never lists the session it is running in.${alsoMatched}`,
+              resolved.reason === 'unknown'
+                ? `No peer matches "${address}".` +
+                  (fanOut ? ` Nothing was sent to anyone.` : '') +
+                  (diagnostic !== undefined ? ` ${diagnostic}` : ` Call peers to see what is reachable.`)
+                : `"${address}" matches more than one peer. Use the suffixed form.` +
+                  (fanOut ? ` Nothing was sent to anyone.` : ''),
           };
         }
-        return {
-          delivered: false,
-          refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
-          candidates: resolved.candidates,
-          detail:
-            resolved.reason === 'unknown'
-              ? `No peer matches "${args.peer}".` +
-                (diagnostic !== undefined ? ` ${diagnostic}` : ` Call peers to see what is reachable.`)
-              : `"${args.peer}" matches more than one peer. Use the suffixed form.`,
-        };
+        targets.push(resolved.peer as NamedPeer & { side: SidePeer });
       }
 
-      const target = resolved.peer as NamedPeer & { side: SidePeer };
-
-      // Before the reachability check and before the guard: a name that now
-      // answers for a different session is not a delivery problem, and neither
-      // "that peer is busy" nor a rate-limit refusal would tell the caller the
-      // one thing that matters — that the session it meant is gone. Checking
-      // here also means a mismatch costs no guard budget, since no message to
-      // this peer was ever intended.
       if (args.expect_id !== undefined) {
-        const durable = durableIdOf(target.side);
+        const only = targets[0]!;
+        const durable = durableIdOf(only.side);
         const actual = 'thread_id' in durable ? durable.thread_id : durable.session_id;
         if (actual !== args.expect_id) {
           return {
-            delivered: false,
+            delivered: none,
             refusal: 'peer_changed',
-            peer_state: target.side.state,
+            peer_state: only.side.state,
             detail:
-              `"${args.peer}" now resolves to session ${actual}, not ${args.expect_id} — ` +
+              `"${addresses[0]}" now resolves to session ${actual}, not ${args.expect_id} — ` +
               `the session you listed has exited and another has taken its name. Nothing ` +
               `was sent. Call peers again and decide whether this message still applies.`,
           };
         }
       }
 
-      if (target.side.state === 'unreachable') {
+      const gone = targets.find((t) => t.side.state === 'unreachable');
+      if (gone !== undefined) {
         return {
-          delivered: false,
+          delivered: none,
           refusal: 'peer_unreachable',
           peer_state: 'unreachable',
-          detail: `${target.display} is not accepting input (gone, ephemeral, or a subagent thread).`,
+          detail:
+            `${gone.display} is not accepting input (gone, ephemeral, or a subagent thread).` +
+            (fanOut ? ` Nothing was sent to anyone.` : ''),
         };
       }
 
-      const guard = guardFor(target.side.runtime);
-      const verdict = guard.check(target.canonicalId, args.message);
-      if (!verdict.ok) {
-        const id = newMessageId();
-        log.appendDropped(id, verdict.reason);
-        return {
-          delivered: false,
-          refusal: verdict.reason,
-          peer_state: target.side.state,
-          message_id: id,
-          detail: verdict.detail,
-        };
+      // Checked for every recipient before any is recorded: a guard refusal is
+      // knowable in advance, so it refuses the whole call rather than leaving a
+      // fan-out half delivered.
+      for (const t of targets) {
+        const verdict = guardFor(t.side.runtime).check(t.canonicalId, args.message);
+        if (!verdict.ok) {
+          const id = newMessageId();
+          log.appendDropped(id, verdict.reason);
+          return {
+            delivered: none,
+            refusal: verdict.reason,
+            peer_state: t.side.state,
+            message_id: id,
+            detail: verdict.detail + (fanOut ? ` Nothing was sent to anyone.` : ''),
+          };
+        }
       }
 
-      const envelope = buildEnvelope({
-        id: newMessageId(),
-        from: { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd },
-        // `!== false`, not `=== true`: only the Claude arm sets the field, and
-        // a Codex or opencode peer leaving it undefined must keep today's
-        // wording.
-        reply_tool: target.side.canReply !== false,
-        to: {
-          runtime: target.side.runtime,
-          name: target.display,
-          cwd: target.side.cwd,
-          ...(target.side.threadId !== undefined && { thread_id: target.side.threadId }),
-        },
-        method: methodFor(target.side.runtime),
-        expect_reply: args.expect_reply,
-        ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
-        ...(args.answers && { answers: true }),
-        text: args.message,
-      });
+      const broadcastId = fanOut && targets.length > 1 ? newBroadcastId() : undefined;
+      const results: FanOutResult[] = [];
 
-      // Effective mode, not bare `urgent` intent: 'steer' only when the peer's
-      // runtime can actually act on it (opencode today). An urgent send to
-      // Codex or Claude Code still queues — recording 'steer' there would be
-      // reporting what was asked for, not what happened to the peer's turn.
-      const delivery: 'queue' | 'steer' =
-        args.urgent && runtimeSupportsUrgent(target.side.runtime) ? 'steer' : 'queue';
+      // Sequential, in the order given: the log stays deterministic and a
+      // fan-out cannot stampede three harnesses at once.
+      for (const target of targets) {
+        const others = targets.filter((t) => t !== target).map((t) => t.display);
+        const envelope = buildEnvelope({
+          id: newMessageId(),
+          from: { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd },
+          // `!== false`, not `=== true`: only the Claude arm sets the field, and
+          // a Codex or opencode peer leaving it undefined must keep today's
+          // wording.
+          reply_tool: target.side.canReply !== false,
+          to: {
+            runtime: target.side.runtime,
+            name: target.display,
+            cwd: target.side.cwd,
+            ...(target.side.threadId !== undefined && { thread_id: target.side.threadId }),
+          },
+          method: methodFor(target.side.runtime),
+          expect_reply: args.expect_reply,
+          ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
+          ...(args.answers && { answers: true }),
+          ...(others.length > 0 && { also_sent_to: others }),
+          ...(broadcastId !== undefined && { broadcast_id: broadcastId }),
+          text: args.message,
+        });
 
-      // Log before delivering, so a crash mid-send still leaves a record (§8.6).
-      log.appendMessage(envelope, false, delivery);
-      guard.record(target.canonicalId, args.message);
+        const delivery: 'queue' | 'steer' =
+          args.urgent && runtimeSupportsUrgent(target.side.runtime) ? 'steer' : 'queue';
 
-      const outcome = await side.deliver(
-        self,
-        selfName,
-        target.side,
-        envelope.id,
-        renderEnvelope(envelope),
-        args.urgent,
-      );
+        // Log before delivering, so a crash mid-send still leaves a record (§8.6).
+        log.appendMessage(envelope, false, delivery);
+        guardFor(target.side.runtime).record(target.canonicalId, args.message);
 
-      log.appendOutcome(
-        envelope.id,
-        outcome.delivered,
-        outcome.notice ?? (outcome.delivered ? undefined : outcome.error),
-      );
+        const outcome = await side.deliver(
+          self,
+          selfName,
+          target.side,
+          envelope.id,
+          renderEnvelope(envelope),
+          args.urgent,
+        );
 
-      // Only on success. A transient failure must leave the key usable, since
-      // retrying under it is exactly what the caller is supposed to do.
-      if (args.idempotency_key !== undefined && outcome.delivered) {
-        idempotency.record(args.idempotency_key, {
-          messageId: envelope.id,
+        log.appendOutcome(
+          envelope.id,
+          outcome.delivered,
+          outcome.notice ?? (outcome.delivered ? undefined : outcome.error),
+        );
+
+        const vanished = !outcome.delivered && outcome.unreachable === true;
+        results.push({
           peer: target.display,
-          peerArg: args.peer,
+          delivered: outcome.delivered,
+          message_id: envelope.id,
+          ...(outcome.method !== undefined && { method: outcome.method }),
+          ...(outcome.notice !== undefined && { notice: outcome.notice }),
+          ...(!outcome.delivered && {
+            refusal: vanished ? ('peer_unreachable' as const) : ('delivery_failed' as const),
+            detail: vanished
+              ? `${target.display} stopped accepting input before the message landed` +
+                `${outcome.error === undefined ? '' : ` (${outcome.error})`}.`
+              : (outcome.error ?? 'The peer runtime did not accept the message.'),
+          }),
+        });
+      }
+
+      const landed = results.filter((r) => r.delivered);
+      if (args.idempotency_key !== undefined && landed.length > 0) {
+        idempotency.record(args.idempotency_key, {
+          messageId: landed[0]!.message_id!,
+          peer: landed.map((r) => r.peer).join(', '),
+          peerArg: addresses.join(', '),
           text: args.message,
         });
       }
 
-      // A peer that is simply gone and a peer whose delivery errored are not
-      // the same answer, and a caller branching on `refusal` could not tell
-      // them apart while both collapsed to `delivery_failed` (#10). The
-      // listing-time check above catches a peer already known to be
-      // unreachable; this catches the one that was still listed when we
-      // resolved it and had exited by the time we wrote to it.
-      const gone = !outcome.delivered && outcome.unreachable === true;
+      if (fanOut) {
+        return {
+          delivered: landed.length,
+          requested: targets.length,
+          ...(broadcastId !== undefined && { broadcast_id: broadcastId }),
+          results,
+        };
+      }
+
+      // Byte-identical to what a single-peer caller has always received.
+      const only = results[0]!;
       return {
-        delivered: outcome.delivered,
-        method: outcome.method,
-        peer_state: gone ? 'unreachable' : target.side.state,
-        message_id: envelope.id,
-        ...(outcome.notice !== undefined && { notice: outcome.notice }),
-        ...(!outcome.delivered && {
-          refusal: gone ? ('peer_unreachable' as const) : ('delivery_failed' as const),
-          detail: gone
-            ? `${target.display} stopped accepting input before the message landed` +
-              `${outcome.error === undefined ? '' : ` (${outcome.error})`}.`
-            : (outcome.error ?? 'The peer runtime did not accept the message.'),
-        }),
+        delivered: only.delivered,
+        ...(only.method !== undefined && { method: only.method }),
+        peer_state: only.refusal === 'peer_unreachable' ? 'unreachable' : targets[0]!.side.state,
+        message_id: only.message_id,
+        ...(only.notice !== undefined && { notice: only.notice }),
+        ...(only.refusal !== undefined && { refusal: only.refusal, detail: only.detail }),
       };
     },
-
     async message_log(
       rawArgs: MessageLogArgs,
     ): Promise<{ records: LogRecord[]; integrity?: LogIntegrity }> {

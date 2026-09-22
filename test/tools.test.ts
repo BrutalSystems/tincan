@@ -834,3 +834,122 @@ describe('message_log surfaces rotation', () => {
     expect(r.integrity).toBeUndefined();
   });
 });
+
+// Telling three agents the same thing took three calls, and none of the three
+// knew the other two had been told — so all three went and did the same work.
+// The fan-out is the cheap half; saying who else was told is the point.
+describe('fan-out', () => {
+  const three = () => [
+    peer({ rawName: 'Auth refactor', uuid: '00000000-0000-0000-0000-0000000007f3', threadId: '00000000-0000-0000-0000-0000000007f3' }),
+    peer({ rawName: 'Docs pass', uuid: '00000000-0000-0000-0000-000000000abc', threadId: '00000000-0000-0000-0000-000000000abc' }),
+    peer({ rawName: 'Tests pass', uuid: '00000000-0000-0000-0000-000000000def', threadId: '00000000-0000-0000-0000-000000000def' }),
+  ];
+  const fleet = (over = {}) => makeSide({ listPeers: async () => ({ peers: three() }), ...over });
+
+  test('delivers to each named peer and ties them with one broadcast id', async () => {
+    const { side, delivered } = fleet();
+    const r: any = await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-pass'],
+      message: 'the flaky test is mine',
+    });
+
+    expect(delivered).toHaveLength(2);
+    expect(r.requested).toBe(2);
+    expect(r.delivered).toBe(2);
+    expect(r.results).toHaveLength(2);
+    expect(r.broadcast_id).toMatch(/^bc_/);
+    expect(new Set(r.results.map((x: any) => x.message_id)).size).toBe(2);
+  });
+
+  test('each recipient is told who else was told, and never itself', async () => {
+    const { side, delivered } = fleet();
+    await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-pass', 'tests-pass'],
+      message: 'look at the flaky test',
+    });
+
+    const toAuth = delivered[0]!.text;
+    expect(toAuth).toContain('also_sent_to');
+    expect(toAuth).toContain('docs-pass');
+    expect(toAuth).toContain('tests-pass');
+    expect(toAuth).not.toMatch(/also_sent_to="[^"]*auth-refactor/);
+  });
+
+  test('a single-element list says nothing about others, because there are none', async () => {
+    const { side, delivered } = fleet();
+    await createTools(side, log).send_peer({ peers: ['auth-refactor'], message: 'just you' });
+    expect(delivered[0]!.text).not.toContain('also_sent_to');
+  });
+
+  // You cannot un-send a message. A caller who reads `delivered` and skips
+  // `detail` would otherwise believe three peers know something two were told.
+  // Note the name has to be one that cannot resolve by PREFIX: 'docs-pas'
+  // would legitimately resolve to 'docs-pass', which is documented behaviour
+  // and not a typo Tin Can can detect.
+  test('one unresolvable name refuses the whole call and sends nothing', async () => {
+    const { side, delivered } = fleet();
+    const before = log.read({ last_n: 999 }).length;
+    const r: any = await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-passed', 'tests-pass'],
+      message: 'x',
+    });
+
+    expect(r.delivered).toBe(0);
+    expect(r.refusal).toBe('peer_unknown');
+    expect(r.detail).toContain('docs-passed');
+    expect(delivered).toHaveLength(0);
+    // Assert the log too: a result that says nothing was sent is not evidence
+    // that nothing was sent.
+    expect(log.read({ last_n: 999 }).length).toBe(before);
+  });
+
+  test('one unreachable peer refuses the whole call: it was knowable before sending', async () => {
+    const { side, delivered } = makeSide({
+      listPeers: async () => ({
+        peers: [three()[0]!, { ...three()[1]!, state: 'unreachable' as const }],
+      }),
+    });
+    const r: any = await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-pass'],
+      message: 'x',
+    });
+    expect(r.refusal).toBe('peer_unreachable');
+    expect(delivered).toHaveLength(0);
+  });
+
+  test('a peer that dies mid-fan-out is reported per recipient, not as a whole-call failure', async () => {
+    let n = 0;
+    const { side, delivered } = fleet({
+      deliver: async (_s: unknown, _n: unknown, _p: unknown, _e: unknown, text: string) => {
+        n += 1;
+        if (n === 2) return { delivered: false, unreachable: true, error: 'gone' };
+        delivered.push({ text, logLinesAtDeliveryTime: 0 });
+        return { delivered: true, method: 'thread/queue/add' as const };
+      },
+    });
+    const r: any = await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-pass', 'tests-pass'],
+      message: 'x',
+    });
+
+    expect(r.requested).toBe(3);
+    expect(r.delivered).toBe(2);
+    expect(r.results.filter((x: any) => !x.delivered)).toHaveLength(1);
+    expect(r.results.find((x: any) => !x.delivered).refusal).toBe('peer_unreachable');
+  });
+
+  test('peer and peers together, or neither, is a schema error', async () => {
+    const { side } = fleet();
+    const tools = createTools(side, log);
+    await expect(tools.send_peer({ peer: 'a', peers: ['b'], message: 'x' } as any)).rejects.toThrow();
+    await expect(tools.send_peer({ message: 'x' } as any)).rejects.toThrow();
+  });
+
+  test('the single-peer result shape is untouched', async () => {
+    const { side } = fleet();
+    const r: any = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
+    expect(r.delivered).toBe(true);
+    expect(r).not.toHaveProperty('results');
+    expect(r).not.toHaveProperty('broadcast_id');
+  });
+});
