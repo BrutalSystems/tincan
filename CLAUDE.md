@@ -31,6 +31,27 @@ Consequences worth holding on to:
   [RELEASING.md](./RELEASING.md), "Choosing the version" — an address-format
   change is **major** even when it looks like a bugfix.
 
+### Two of those are tincan-only — do not carry them to muster or birddog
+
+The three repos share the pipeline ([docs/ci-cd-standard.md](./docs/ci-cd-standard.md))
+but not these, and getting it backwards sends you hunting a bug that is not
+there:
+
+- **`--notes-from-tag` is tincan's because tincan has no `RELEASE_NOTES.md`;
+  the tag annotation *is* its release record.** muster extracts the version's
+  section from `RELEASE_NOTES.md` and passes `--notes-file`, so a missing `-m`
+  cannot empty its release body — and muster will not cut at all until a
+  non-empty `## Unreleased` section exists. Check which shape a repo has before
+  repeating the `-m` warning in it.
+- **tincan follows normal semver.** muster fixes the bump in its own
+  RELEASING.md: while it is 0.x, *minor* is the breaking-change signal — minor
+  only for an incompatible interface or permission-default change, patch for
+  everything else including new features. That rule is muster's, not a house
+  style; applying it here would make every feature a patch.
+
+What IS shared: the pushed tag publishes, over OIDC, with no separate
+`npm publish` and no token.
+
 ### "...and update globally"
 
 Means: **watch the run, then install the published version on this machine**,
