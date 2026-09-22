@@ -29,6 +29,20 @@ export function toolDefinitions(
         `CLAUDE_CONFIG_DIR; your host reaches same-account sessions natively` +
         `${NATIVE_PEER_PATH[selfRuntime] !== undefined ? ` (${NATIVE_PEER_PATH[selfRuntime]})` : ''}.`
       : '';
+  // `runtimeSupportsUrgent` is false for every runtime as of 0.6.0 (see its
+  // docstring for the trade), so `steerable` is always empty and only the
+  // first of the three wordings below can currently be reached.
+  //
+  // The other two are kept rather than deleted. opencode's v2 prompt route
+  // does accept `delivery: "steer"` and is defective for a different reason
+  // (docs/opencode-v2-prompt-defect.md); if that is ever fixed upstream, one
+  // runtime goes steerable and both branches come straight back — with the
+  // mixed-fleet wording, the harder of the two to get right, already written.
+  //
+  // `tool-definitions.test.ts` pins this: it asserts no runtime is steerable
+  // today, and says there that the moment that assertion fails these two
+  // wordings are live again and need their own coverage. That is the fact
+  // this comment would otherwise be asserting on trust.
   const steerable = peerRuntimes.filter(runtimeSupportsUrgent);
   const notSteerable = peerRuntimes.filter((r) => !runtimeSupportsUrgent(r));
   const urgentDescription =

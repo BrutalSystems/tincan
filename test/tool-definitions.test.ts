@@ -1,5 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { toolDefinitions } from '../src/tool-definitions.js';
+import { runtimeSupportsUrgent } from '../src/tools.js';
+import type { RuntimeName } from '../src/types.js';
 
 const defs = toolDefinitions(['codex'], 'codex', 'included');
 const byName = (n: string) => defs.find((d) => d.name === n)!;
@@ -17,6 +19,32 @@ describe('toolDefinitions', () => {
     const props = byName('send_peer').inputSchema.properties as Record<string, { default?: unknown }>;
     expect(props.expect_reply?.default).toBe(false);
     expect(props.urgent?.default).toBe(false);
+  });
+
+  // The reachability of the `urgent` wordings below depends on a fact recorded
+  // in tools.ts, a different file: nothing is steerable as of 0.6.0. Asserting
+  // it here is what keeps the two unreachable branches in tool-definitions.ts
+  // distinguishable from dead code.
+  //
+  // WHEN THIS FAILS a runtime has gone steerable, which is good news: the
+  // "all steerable" and mixed-fleet wordings are reachable again and need
+  // tests of their own. Do not simply relax this — go and cover them.
+  test('no runtime is steerable, so only the "unsupported" urgent wording is reachable', () => {
+    const all: RuntimeName[] = ['codex', 'claude-code', 'opencode'];
+    expect(all.filter(runtimeSupportsUrgent)).toEqual([]);
+
+    const mixed = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included');
+    const urgent = (
+      mixed.find((d) => d.name === 'send_peer')!.inputSchema.properties as Record<
+        string,
+        { description?: string }
+      >
+    ).urgent?.description;
+    expect(urgent).toContain('Unsupported on');
+    expect(urgent).toContain('queued either way');
+    // The two wordings that would replace it if anything were steerable.
+    expect(urgent).not.toContain('instead of queuing behind it');
+    expect(urgent).not.toContain('Only takes effect for');
   });
 
   test('takes no arguments for peers', () => {
