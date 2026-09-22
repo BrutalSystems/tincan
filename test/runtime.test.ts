@@ -291,6 +291,59 @@ describe('buildSide', () => {
     expect(side.peerRuntimes).toEqual(['codex', 'claude-code', 'opencode']);
   });
 
+  test(
+    'hosted in Codex, our own Claude Code session is excluded when CLAUDE_CODE_SESSION_ID ' +
+      'is in the environment — the Codex arm must be safe on its own terms, not because ' +
+      'detectRuntime happens to check OPENCODE first',
+    async () => {
+      // #5. listClaudeSessions can only drop `pid === selfPid`, and selfPid is
+      // Tin Can's own MCP subprocess pid, never the session's — so without an
+      // explicit filter the host's own Claude session is listed as an ordinary
+      // peer and a self-send delivers over its inbox. The opencode arm got
+      // this filter in 0.5.0; this arm kept the identical construct and was
+      // safe only because detectRuntime cannot return `codex` while
+      // CLAUDE_CODE_MESSAGING_SOCKET is set. That is a property of the
+      // detection order, not of this arm, and reordering detectRuntime would
+      // silently reintroduce the self-send. buildSide is called directly here
+      // for exactly that reason: the arm is tested on its own merits.
+      const inbox = await fakeInbox();
+      try {
+        const selfUuid = '5af69d42-2214-41d9-b13f-9c3177eb60ce';
+        const peerUuid = '01a0b9b4-a33e-7ab1-80a0-bb715504a0fb';
+        for (const [pid, sessionId, name, cwd] of [
+          [777, selfUuid, 'our-own-claude-session', '/src/x'],
+          [888, peerUuid, 'a-genuine-peer', '/src/y'],
+        ] as const) {
+          writeFileSync(
+            join(dir, 'sessions', `${pid}.json`),
+            JSON.stringify({
+              pid,
+              sessionId,
+              name,
+              cwd,
+              status: 'idle',
+              messagingSocketPath: inbox.path,
+            }),
+          );
+        }
+
+        const side = buildSide('codex', {
+          registryDirs: () => [join(dir, 'sessions')],
+          pid: 1,
+          cwd: '/src/x',
+          env: { CLAUDE_CODE_SESSION_ID: selfUuid },
+        }, { sweep: { socketDirs: [] } });
+
+        const { peers } = await side.listPeers(await side.resolveSelf());
+        const claude = peers.filter((p) => p.runtime === 'claude-code').map((p) => p.uuid);
+        expect(claude).not.toContain(selfUuid);
+        expect(claude).toContain(peerUuid);
+      } finally {
+        await inbox.close();
+      }
+    },
+  );
+
   test('hosted in Codex, a live opencode session appears in listPeers (change notice §9 row 2)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'tincan-oc-codex-'));
     try {
@@ -760,7 +813,8 @@ describe('buildSide, hosted in opencode', () => {
       const log = new MessageLog(join(logDir, 'messages.jsonl'));
       const r = await createTools(side, log).send_peer({ peer: 'nimble-wizard', message: 'hi' });
       expect(r.delivered).toBe(false);
-      expect(r.refusal).toBe('peer_unknown');
+      // #4: `self_send`, not `peer_unknown` — the peer exists, it is us.
+      expect(r.refusal).toBe('self_send');
       expect(r.detail?.toLowerCase()).toContain('yourself');
     } finally {
       await instance.close();

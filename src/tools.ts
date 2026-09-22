@@ -128,6 +128,12 @@ export type MessageLogArgs = z.input<typeof messageLogSchema>;
 export type Refusal =
   | 'peer_unknown'
   | 'peer_ambiguous'
+  // Distinct from peer_unknown: the peer exists, it is us. A caller branching
+  // on `refusal` saw "no such peer" for the one peer guaranteed to exist, and
+  // on a Claude Code host peer_unknown otherwise covers three unrelated
+  // situations — a typo, a session in another CLAUDE_CONFIG_DIR that is not
+  // listed, and yourself.
+  | 'self_send'
   | 'peer_unreachable'
   | GuardReason
   | 'delivery_failed';
@@ -327,17 +333,29 @@ export function createTools(side: Side, log: MessageLog) {
       const self = await side.resolveSelf();
       const { named: list, diagnostic } = await named(self);
 
-      const resolved = resolvePeer(list, args.peer);
+      // Resolved once, here: the self check below, the envelope's `from=` and
+      // the wire's `message_from` must not disagree about who we are.
+      const selfName = await side.selfName(self);
+
+      const resolved = resolvePeer(list, args.peer, (q) =>
+        isSelfAddress(side.selfRuntime, selfName, q),
+      );
       if (!resolved.ok) {
-        // A host filters itself out of its own listing, so a self-send would
-        // otherwise read as "no such peer" — true, but misleading.
-        if (resolved.reason === 'unknown' && (await isSelfAddress(side, self, args.peer))) {
+        if (resolved.reason === 'self') {
+          // A host filters itself out of its own listing, so this would
+          // otherwise read as "no such peer" — true, but misleading.
+          const alsoMatched =
+            resolved.candidates.length > 0
+              ? ` If you meant a peer whose name starts the same way, address it in full: ` +
+                `${resolved.candidates.join(', ')}.`
+              : '';
           return {
             delivered: false,
-            refusal: 'peer_unknown',
+            refusal: 'self_send',
+            ...(resolved.candidates.length > 0 && { candidates: resolved.candidates }),
             detail:
               `"${args.peer}" is this session. You cannot send a message to yourself — ` +
-              `Tin Can never lists the session it is running in.`,
+              `Tin Can never lists the session it is running in.${alsoMatched}`,
           };
         }
         return {
@@ -378,7 +396,7 @@ export function createTools(side: Side, log: MessageLog) {
 
       const envelope = buildEnvelope({
         id: newMessageId(),
-        from: { runtime: side.selfRuntime, name: await side.selfName(self), cwd: side.selfCwd },
+        from: { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd },
         // `!== false`, not `=== true`: only the Claude arm sets the field, and
         // a Codex or opencode peer leaving it undefined must keep today's
         // wording.
@@ -440,10 +458,16 @@ export function createTools(side: Side, log: MessageLog) {
   };
 }
 
-/** Does this address name the session Tin Can is running in? */
-async function isSelfAddress(side: Side, self: SelfRef, input: string): Promise<boolean> {
-  const q = input.trim().toLowerCase();
-  if (q === '') return false;
-  const name = (await side.selfName(self)).toLowerCase();
-  return name === q || name.startsWith(q) || q.startsWith(`${side.selfRuntime}:${name}`);
+/**
+ * Does this address name the session Tin Can is running in?
+ *
+ * Takes the self name already resolved by the caller rather than reading it
+ * again: send_peer resolves it once for the envelope's `from=`, and a second
+ * read can answer differently (the plugin rewrites the record on events), so
+ * the check and the provenance marking would disagree about who we are.
+ */
+function isSelfAddress(selfRuntime: RuntimeName, selfName: string, query: string): boolean {
+  if (query === '') return false;
+  const name = selfName.toLowerCase();
+  return name === query || name.startsWith(query) || query.startsWith(`${selfRuntime}:${name}`);
 }

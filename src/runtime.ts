@@ -273,6 +273,24 @@ export function composeEmptyDiagnostic(
  */
 const NO_SESSION: SelfRef = { sessionId: undefined };
 
+/**
+ * The host's own Claude Code session id, or `undefined` when there is not one.
+ *
+ * Shared by all three arms rather than re-derived, for the reason
+ * `parseOpencodePid` is shared: a guard copied per call site gets tightened at
+ * one and not the others. This one had two copies and the third arm had none
+ * at all (#5).
+ *
+ * Normalised to `undefined` when absent or empty: a Claude registry record
+ * with no sessionId reads back as `''`, and two empty strings must not match
+ * each other into "this peer is us".
+ */
+function selfClaudeSessionId(env: NodeJS.ProcessEnv): string | undefined {
+  return env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
+    ? env.CLAUDE_CODE_SESSION_ID
+    : undefined;
+}
+
 export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps = {}): Side {
   const env = ctx.env ?? process.env;
   const common = { selfRuntime: runtime, selfCwd: ctx.cwd };
@@ -302,10 +320,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           'sessions',
         ),
       );
-      const selfSessionId =
-        env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
-          ? env.CLAUDE_CODE_SESSION_ID
-          : undefined;
+      const selfSessionId = selfClaudeSessionId(env);
 
       return {
         ...common,
@@ -416,10 +431,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           // Normalised to undefined when absent or empty: a Claude record
           // with no sessionId reads back as '' and must not be mistaken for
           // us on the strength of two empty strings matching.
-          const selfClaudeSession =
-            env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
-              ? env.CLAUDE_CODE_SESSION_ID
-              : undefined;
+          const selfClaudeSession = selfClaudeSessionId(env);
           const claudePeers: SidePeer[] = claudeListing.peers.filter(
             (p) => p.uuid !== selfClaudeSession,
           );
@@ -518,7 +530,18 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             .filter((p) => p.threadId !== selfThread) // never list ourselves
             .map(toCodexSidePeer);
 
-          const claudePeers: SidePeer[] = claudeListing.peers;
+          // #5. The same filter the opencode arm has carried since 0.5.0.
+          // listClaudeSessions can only drop `pid === selfPid`, and selfPid is
+          // ctx.pid — Tin Can's own MCP subprocess, never the session's — so
+          // without this our host's own Claude session is an ordinary peer and
+          // a self-send delivers over its inbox. This arm was safe only
+          // because detectRuntime cannot return `codex` while
+          // CLAUDE_CODE_MESSAGING_SOCKET is set: a property of the detection
+          // order, not of this arm. One function's safety should not rest on
+          // another function's internals.
+          const claudePeers: SidePeer[] = claudeListing.peers.filter(
+            (p) => p.uuid !== selfClaudeSessionId(env),
+          );
 
           const opencodePeers = opencodeListing.peers.map(toOpencodeSidePeer);
 
@@ -662,8 +685,8 @@ async function deliverTo(
  * advertises (I6), not by our working directory's basename. `isSelfAddress`
  * (tools.ts) compares a typed address against exactly this value, so getting
  * it wrong means a self-send typed as our slug is never recognised as self —
- * it either returns a misleading `peer_unknown`, or, when the caller file is
- * absent, is not excluded at all and delivers.
+ * it either returns a misleading `peer_unknown` instead of `self_send`, or,
+ * when the caller file is absent, is not excluded at all and delivers.
  *
  * Slugified, exactly as the Codex path slugifies its thread title
  * (`codexSelfNameOf`). The registry slug is the plugin's to write and is

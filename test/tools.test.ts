@@ -320,8 +320,78 @@ describe('send_peer', () => {
     const { side } = makeSide({ selfName: async () => 'auth-service' });
     const r = await tools(side).send_peer({ peer: 'auth-service', message: 'hi' });
     expect(r.delivered).toBe(false);
-    expect(r.refusal).toBe('peer_unknown');
+    expect(r.refusal).toBe('self_send');
     expect(r.detail?.toLowerCase()).toContain('yourself');
+  });
+
+  test('a self-send is refusal "self_send", not "peer_unknown" — the peer exists', async () => {
+    // #4. The detail string always said this plainly, but the machine-readable
+    // code did not: a caller branching on `refusal` saw "no such peer" for a
+    // peer that definitely exists. It matters most on a Claude Code host,
+    // where `peer_unknown` otherwise covers three different situations at
+    // once — a typo, a session in another CLAUDE_CONFIG_DIR that is not
+    // listed, and yourself.
+    const { side } = makeSide({ selfName: async () => 'auth-service' });
+    const r = await tools(side).send_peer({ peer: 'auth-service', message: 'hi' });
+    expect(r.refusal).toBe('self_send');
+    expect(r.refusal).not.toBe('peer_unknown');
+  });
+
+  /**
+   * Cross-account mis-send.
+   *
+   * A Claude Code host lists Claude sessions ONLY from other CLAUDE_CONFIG_DIRs
+   * — same-account ones are reached natively by SendMessage — and it carries no
+   * session id of its own (`resolveSelf` answers NO_SESSION), so `isSelfAddress`
+   * can only compare NAMES. `selfNameFor` falls back to `basename(cwd)` when
+   * CLAUDE_CODE_SESSION_ID is absent or the registry lookup misses.
+   *
+   * `resolvePeer` delivers on a single PREFIX match. So a fallback self-name
+   * that prefixes exactly one other-account peer resolves to that peer and
+   * delivers: the message leaves the account, to a stranger's session, while
+   * the sender believes they addressed themselves. Under-exclusion like #19,
+   * except the message does not loop back — it lands somewhere else.
+   */
+  test('never delivers to another account when the address also names us', async () => {
+    const { side, delivered } = makeSide({
+      // The cwd-basename fallback: CLAUDE_CODE_SESSION_ID absent.
+      selfName: async () => 'tincan',
+      listPeers: async () => ({
+        peers: [
+          peer({
+            runtime: 'claude-code',
+            rawName: 'tincan arm',
+            uuid: '00000000-0000-0000-0000-00000000a17f',
+            cwd: '/Users/other/Source/tincan',
+            threadId: undefined,
+            configDir: '/Users/other/.claude-arm',
+          }),
+        ],
+      }),
+    });
+
+    const r = await tools(side).send_peer({ peer: 'tincan', message: 'note to self' });
+
+    expect(delivered).toHaveLength(0);
+    expect(r.delivered).toBe(false);
+    expect(r.refusal).toBe('self_send');
+  });
+
+  test('an exact peer name still wins over a self-name that merely prefixes it', async () => {
+    // The precedence above must not swallow a legitimate send. Exact beats
+    // self; self beats prefix. Here `review` is exactly a peer's name and
+    // also a prefix of our own `review-tools`, and the peer must get it.
+    const { side, delivered } = makeSide({
+      selfName: async () => 'review-tools',
+      listPeers: async () => ({
+        peers: [peer({ rawName: 'review', uuid: '00000000-0000-0000-0000-0000000004e2' })],
+      }),
+    });
+
+    const r = await tools(side).send_peer({ peer: 'review', message: 'hi' });
+
+    expect(r.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
   });
 
   test('refuses an unknown peer', async () => {

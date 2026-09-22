@@ -32,7 +32,7 @@ export interface NamedPeer extends PeerBase {
 
 export type Resolution =
   | { ok: true; peer: NamedPeer }
-  | { ok: false; reason: 'unknown' | 'ambiguous'; candidates: string[] };
+  | { ok: false; reason: 'unknown' | 'ambiguous' | 'self'; candidates: string[] };
 
 /** Makes a widened RuntimeName a compile error at every branch that ignores it. */
 export function assertNever(x: never, context: string): never {
@@ -81,7 +81,32 @@ export function assignNames(peers: PeerBase[]): NamedPeer[] {
   });
 }
 
-export function resolvePeer(peers: NamedPeer[], input: string): Resolution {
+/**
+ * Resolve an address, in three stages: an exact peer, then ourselves, then a
+ * peer by prefix.
+ *
+ * `isSelf` sits BETWEEN the two peer stages, and the order is the whole point.
+ *
+ * Below it, so an exact peer name still wins: a peer really called `review`
+ * must receive `review` even when our own name is `review-tools`, which
+ * `isSelf` matches by prefix.
+ *
+ * Above the prefix stage, because that stage delivers on a SINGLE match and a
+ * Claude Code host can only recognise itself by name — it carries no session
+ * id (`resolveSelf` answers NO_SESSION) and `selfNameFor` falls back to the
+ * cwd basename when CLAUDE_CODE_SESSION_ID is absent. It also lists Claude
+ * peers from OTHER config dirs, i.e. other accounts. A fallback self-name that
+ * prefixes exactly one of those resolved to it and delivered: a note addressed
+ * to yourself landing in a stranger's session, in another account, reported as
+ * sent. Checking self first at this stage costs a prefix send that could have
+ * been disambiguated by typing the full name, and buys back a message that
+ * cannot be recalled.
+ */
+export function resolvePeer(
+  peers: NamedPeer[],
+  input: string,
+  isSelf: (query: string) => boolean = () => false,
+): Resolution {
   const q = input.trim().toLowerCase();
   const qualified = (p: NamedPeer) => `${p.slug}.${p.suffix}`;
 
@@ -92,6 +117,12 @@ export function resolvePeer(peers: NamedPeer[], input: string): Resolution {
   if (exact.length > 1) return { ok: false, reason: 'ambiguous', candidates: exact.map(qualified) };
 
   const prefixed = peers.filter((p) => p.slug.startsWith(q) || qualified(p).startsWith(q));
+
+  // `candidates` carries the peers this address ALSO matched, so the refusal
+  // can say which full name to type instead of leaving the caller to guess
+  // that a longer form exists.
+  if (isSelf(q)) return { ok: false, reason: 'self', candidates: prefixed.map(qualified) };
+
   if (prefixed.length === 1) return { ok: true, peer: prefixed[0]! };
   if (prefixed.length > 1)
     return { ok: false, reason: 'ambiguous', candidates: prefixed.map(qualified) };
