@@ -124,6 +124,7 @@ export const sendPeerSchema = z.object({
   answers: z.boolean().default(false),
   urgent: z.boolean().default(false),
   idempotency_key: z.string().min(1).optional(),
+  expect_id: z.string().min(1).optional(),
 });
 
 export const messageLogSchema = z.object({
@@ -145,6 +146,10 @@ export type Refusal =
   // listed, and yourself.
   | 'self_send'
   | 'peer_unreachable'
+  // The name resolved, but to a different session than the caller listed.
+  // Distinct from peer_unreachable: that peer is fine, it is simply not the
+  // one meant — and delivering to it is the failure being prevented.
+  | 'peer_changed'
   // A key the caller has already used. Distinct from every other refusal
   // because nothing is wrong: the message was sent, and `message_id` names it.
   | 'duplicate_send'
@@ -414,6 +419,29 @@ export function createTools(side: Side, log: MessageLog) {
       }
 
       const target = resolved.peer as NamedPeer & { side: SidePeer };
+
+      // Before the reachability check and before the guard: a name that now
+      // answers for a different session is not a delivery problem, and neither
+      // "that peer is busy" nor a rate-limit refusal would tell the caller the
+      // one thing that matters — that the session it meant is gone. Checking
+      // here also means a mismatch costs no guard budget, since no message to
+      // this peer was ever intended.
+      if (args.expect_id !== undefined) {
+        const durable = durableIdOf(target.side);
+        const actual = 'thread_id' in durable ? durable.thread_id : durable.session_id;
+        if (actual !== args.expect_id) {
+          return {
+            delivered: false,
+            refusal: 'peer_changed',
+            peer_state: target.side.state,
+            detail:
+              `"${args.peer}" now resolves to session ${actual}, not ${args.expect_id} — ` +
+              `the session you listed has exited and another has taken its name. Nothing ` +
+              `was sent. Call peers again and decide whether this message still applies.`,
+          };
+        }
+      }
+
       if (target.side.state === 'unreachable') {
         return {
           delivered: false,

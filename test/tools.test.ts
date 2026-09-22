@@ -735,3 +735,65 @@ describe('idempotency_key', () => {
     expect(delivered).toHaveLength(0);
   });
 });
+
+// A peer can exit between `peers` and `send_peer`, and a new session can take
+// its slug — Codex titles threads from their first prompt, so two sessions
+// started from similar work slug identically. The message then goes to a
+// stranger and is reported delivered, because it was.
+describe('pinning a peer to the session that was listed', () => {
+  const ID = '00000000-0000-0000-0000-0000000007f3';
+
+  test('delivers when the listed session is still the one answering to the name', async () => {
+    const { side, delivered } = makeSide();
+    const tools = createTools(side, log);
+    const r = await tools.send_peer({ peer: 'auth-refactor', message: 'ping', expect_id: ID });
+    expect(r.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('refuses when the name now resolves to a different session', async () => {
+    // Same slug, different durable id: the original exited and a new session
+    // took the name.
+    const { side, delivered } = makeSide({
+      listPeers: async () => ({
+        peers: [peer({ uuid: '11111111-1111-1111-1111-111111111abc', threadId: '11111111-1111-1111-1111-111111111abc' })],
+      }),
+    });
+    const tools = createTools(side, log);
+
+    const r = await tools.send_peer({ peer: 'auth-refactor', message: 'ping', expect_id: ID });
+
+    expect(r.delivered).toBe(false);
+    expect(r.refusal).toBe('peer_changed');
+    // Both ids, so the caller can tell which session it meant and which one is
+    // there now, rather than being told only that something went wrong.
+    expect(r.detail).toContain(ID);
+    expect(r.detail).toContain('11111111-1111-1111-1111-111111111abc');
+    expect(delivered).toHaveLength(0);
+  });
+
+  test('without expect_id nothing changes: the name resolves as it always did', async () => {
+    const { side, delivered } = makeSide({
+      listPeers: async () => ({
+        peers: [peer({ uuid: '11111111-1111-1111-1111-111111111abc', threadId: '11111111-1111-1111-1111-111111111abc' })],
+      }),
+    });
+    const tools = createTools(side, log);
+    const r = await tools.send_peer({ peer: 'auth-refactor', message: 'ping' });
+    expect(r.delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('a mismatch is refused before the guard sees it, so it costs no budget', async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({
+        peers: [peer({ uuid: '11111111-1111-1111-1111-111111111abc', threadId: '11111111-1111-1111-1111-111111111abc' })],
+      }),
+    });
+    const tools = createTools(side, log);
+    for (let i = 0; i < 6; i += 1) {
+      const r = await tools.send_peer({ peer: 'auth-refactor', message: `ping ${i}`, expect_id: ID });
+      expect(r.refusal).toBe('peer_changed');
+    }
+  });
+});

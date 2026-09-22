@@ -121,6 +121,17 @@ export function toolDefinitions(
             default: false,
             description: urgentDescription,
           },
+          // The durable id is already in every `peers` result, so pinning costs
+          // a caller nothing it does not already hold — and CANONICAL_ID.md
+          // has always said to key on that id rather than on the address.
+          expect_id: {
+            type: 'string',
+            description:
+              'The thread_id or session_id you saw in peers. If the name now answers ' +
+              'for a different session — the one you listed exited and another took ' +
+              'its slug — the send is refused instead of delivered to a stranger. ' +
+              'Pass it whenever you listed peers and then did something else first.',
+          },
           // The window is stated rather than left to be discovered: a caller
           // that believes the key is remembered forever will eventually send
           // twice and have no idea why.
