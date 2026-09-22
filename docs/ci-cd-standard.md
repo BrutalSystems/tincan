@@ -1,12 +1,28 @@
 # CI/CD standard — BrutalSystems npm packages
 
-This is the shared CI/CD standard for BrutalSystems' Node/npm packages
-(currently muster, Tin Can and birddog). Each repo implements it identically;
-changes here should be proposed to each at once. No secrets, tokens, session
-IDs, or private paths belong in this file or in the workflows it describes —
-each repo is public.
+The CI/CD standard for BrutalSystems' Node/npm packages. muster, Tin Can and
+birddog each keep their own copy and implement it independently — no repo
+reads another's file, and no build here depends on a sibling being in step.
 
-Two workflows per repository, same filenames everywhere:
+The copies will therefore diverge. That is a consequence of keeping the repos
+independent, not a defect in it, and this file makes no claim to be identical
+to any other. What it does instead is mark local facts where they occur, as
+`> **Repository-specific, tincan.**`, so a reader can tell a deviation from
+the shared standard without going to look at a sibling to find out.
+
+> Last reconciled with muster, 2026-09-22.
+>
+> A date, not a status. It records where this copy came from and when, and
+> says nothing about what is in flight elsewhere — that half would be stale by
+> the time anyone read it. A dated fact does not become false, it becomes old,
+> and a reader can see how old.
+
+No secrets, tokens, session IDs, or private paths belong in this file or in
+the workflows it describes — each repo is public.
+
+## Two workflows
+
+Two per repository, same filenames everywhere:
 
 | File | Trigger | Job |
 |---|---|---|
@@ -16,6 +32,13 @@ Two workflows per repository, same filenames everywhere:
 The filenames are part of the contract, not a preference: a trusted publisher
 is registered against a specific workflow **filename**, so renaming the file
 breaks publishing until the registration is redone.
+
+**What `ci.yml` deliberately does not do:** no publish steps, and no
+credentials of any kind — it has nothing to leak and nothing to misfire. It
+does run the *same* tarball verification the publish job runs, from the same
+script, so the two workflows cannot drift apart on what "verified" means. A
+check that only the release runs is a check whose first real execution is the
+one you cannot take back.
 
 ## Publishing uses OIDC, never a token
 
@@ -97,11 +120,26 @@ Three things make the pin hold rather than rot:
 The one-time `npm trust` setup below is a different question — that runs on a
 person's own machine and wants a current npm, not the runner's pin.
 
+## Fork guard
+
+```yaml
+if: github.repository == 'BrutalSystems/<repo>'
+```
+
+On the publish **job** itself, so a fork that pushes a tag gets no run at all.
+OIDC would refuse it anyway — the registry trusts one repository — but an
+explicit gate beats a confusing red run in somebody else's fork, and it costs
+one line.
+
+Its own heading, rather than a sentence inside the section below: this guard
+belongs to the job, not to the sequence of checks, and folding it into another
+section's preamble is how one copy came to carry the same paragraph twice for
+months. A thing with its own heading is hard to duplicate by accident.
+
 ## Pipeline order
 
 Cheapest checks first, so a bad release fails in seconds rather than after a
-full install and test run. A **fork guard** — `if: github.repository ==
-'BrutalSystems/<repo>'` — sits on the job itself, before any of this.
+full install and test run. The fork guard above sits ahead of all of it.
 
 1. **Tag matches `package.json`.** Fails the run. A published version is
    immutable, so shipping the wrong number is not recoverable.
@@ -169,9 +207,13 @@ notices.
 
 Anything deliberately shipped out of a denied tree goes in a named
 `EXCEPTIONS` set, so the exception appears in review instead of hiding inside
-a loosened pattern. Tincan has exactly one:
-`test/fixtures/canonical-id.json`, which ships because consumers implement
-against it.
+a loosened pattern. An empty set is the expected state; each entry is a
+standing decision somebody should be able to defend.
+
+> **Repository-specific, tincan.** Exactly one exception:
+> `test/fixtures/canonical-id.json`, which ships because consumers implement
+> against it — see CANONICAL_ID.md. Another repository's set is its own
+> business and belongs in its own copy of this file, not here.
 
 > **A guard that has never been observed to fail is not a guard.** The
 > allowlist-only version of this script was written first, and its negative
