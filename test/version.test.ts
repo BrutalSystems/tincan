@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { VERSION, versionLine, helpText, classifyArgv } from '../src/version.js';
+import { VERSION, versionLine, helpText, classifyArgv, FLAGS } from '../src/version.js';
 
 describe('version', () => {
   // The fifth version location. package.json, the canonical-id fixture and the
@@ -30,6 +30,33 @@ describe('version', () => {
   it('rejects arguments it does not understand instead of starting the server', () => {
     expect(classifyArgv(['mcp', 'peers', 'list'])).toEqual({ kind: 'unknown', arg: 'mcp' });
     expect(classifyArgv(['--peers'])).toEqual({ kind: 'unknown', arg: '--peers' });
+  });
+
+  // Documentation drift is silent: nothing fails when help describes a flag
+  // that no longer exists, or omits one that does. Both directions are checked
+  // because they fail differently — an invented flag sends a caller down a path
+  // that errors, while an omitted one hides a capability that works.
+  describe('help and argv parsing cannot drift apart', () => {
+    /** Flag tokens from the usage block, which is the part that makes promises. */
+    const documented = (): string[] =>
+      helpText()
+        .split('\n')
+        .filter((line) => line.startsWith('  tincan'))
+        .flatMap((line) => line.match(/(?<![\w-])--?[a-z][\w-]*/g) ?? []);
+
+    it('documents every flag it accepts', () => {
+      const docs = documented();
+      for (const flag of FLAGS.flatMap((f) => f.flags)) {
+        expect(docs, `${flag} is accepted but undocumented`).toContain(flag);
+      }
+    });
+
+    it('accepts every flag it documents', () => {
+      const accepted = FLAGS.flatMap((f) => f.flags);
+      for (const flag of documented()) {
+        expect(accepted, `help documents ${flag}, which is not accepted`).toContain(flag);
+      }
+    });
   });
 
   it('recognises the flags it does support, and bare invocation', () => {

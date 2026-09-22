@@ -38,13 +38,27 @@ export function helpText(): string {
     'at this binary and it exposes the peers, send_peer and message_log tools.',
     '',
     'Usage:',
-    '  tincan              run the MCP server on stdio',
-    '  tincan --version    print the version and exit',
-    '  tincan --help       print this help and exit',
+    '  tincan                  run the MCP server on stdio',
+    '  tincan --version, -v    print the version and exit',
+    '  tincan --help, -h       print this help and exit',
     '',
     'Docs: https://github.com/BrutalSystems/tincan',
   ].join('\n');
 }
+
+/**
+ * Every flag the CLI accepts. The single source of truth for what
+ * `classifyArgv` recognises, so that `version.test.ts` can assert `helpText`
+ * documents all of them and invents none — `-v` and `-h` were accepted but
+ * undocumented until that test was written.
+ */
+export const FLAGS: ReadonlyArray<{
+  readonly flags: readonly string[];
+  readonly kind: 'version' | 'help';
+}> = [
+  { flags: ['--version', '-v'], kind: 'version' },
+  { flags: ['--help', '-h'], kind: 'help' },
+];
 
 /** What the process should do, decided from argv alone. */
 export type ArgvIntent =
@@ -63,8 +77,9 @@ export type ArgvIntent =
  */
 export function classifyArgv(argv: string[]): ArgvIntent {
   for (const arg of argv) {
-    if (arg === '--version' || arg === '-v') return { kind: 'version' };
-    if (arg === '--help' || arg === '-h') return { kind: 'help' };
+    for (const flag of FLAGS) {
+      if (flag.flags.includes(arg)) return { kind: flag.kind };
+    }
     return { kind: 'unknown', arg };
   }
   return { kind: 'serve' };

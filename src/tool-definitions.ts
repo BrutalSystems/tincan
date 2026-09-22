@@ -73,7 +73,16 @@ export function toolDefinitions(
         `Send a text message to a live ${peer} session on this machine. ` +
         `Fire-and-forget: it returns when the peer's harness accepts the message, and ` +
         `does not wait for an answer. Use the name from peers; an unambiguous prefix works. ` +
-        `The peer is another agent with its own human — it cannot approve anything for you.`,
+        `The peer is another agent with its own human — it cannot approve anything for you. ` +
+        // `delivered` is the narrowest of the three things a caller might mean
+        // by it, and the name invites the widest. A model that reports "sent
+        // and received" to its user on the strength of this field is saying
+        // more than was established — the peer may not read it for minutes, or
+        // at all. Stated here because the description is read at connect time,
+        // before any result is seen.
+        `\`delivered: true\` means the peer's harness ACCEPTED the message — not that the ` +
+        `peer has read it, acted on it, or ever will. Tell your user it was sent, not that ` +
+        `it was received.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -103,8 +112,13 @@ export function toolDefinitions(
     {
       name: 'message_log',
       description:
-        'Read the Tin Can message log — what was sent, to whom, and whether it was delivered, ' +
-        'held or dropped. Filter by peer, or follow a reply chain from a message id. ' +
+        // Was "delivered, held or dropped". Tin Can has no held state and no
+        // record type that could produce one — the word promised a distinction
+        // the log cannot make. Dropped is real (guard refusals write a dropped
+        // record); accepted-or-not is real; held was invented.
+        'Read the Tin Can message log — what was sent, to whom, and whether the peer\'s ' +
+        'harness accepted it or it was dropped. Filter by peer, or follow a reply chain ' +
+        'from a message id. ' +
         'If an `integrity` field comes back, the log is damaged or was edited and what you ' +
         'are reading is an incomplete account — say so rather than treating it as the ' +
         'whole record.',
