@@ -471,6 +471,40 @@ describe('send_peer', () => {
     expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivered: false });
   });
 
+  test(
+    'a peer that vanished mid-send is refused as peer_unreachable, not delivery_failed ' +
+      '— the caller can tell "that session exited" from "something went wrong" (issue #10)',
+    async () => {
+      const { side } = makeSide({
+        deliver: async () => ({
+          delivered: false,
+          method: 'inbox' as const,
+          unreachable: true,
+          error: 'ECONNREFUSED',
+        }),
+      });
+      const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
+      expect(r.delivered).toBe(false);
+      expect(r.refusal).toBe('peer_unreachable');
+      expect(r.peer_state).toBe('unreachable');
+      // The transport's own error is still worth surfacing, but the refusal
+      // is what a caller branches on.
+      expect(r.detail).toContain('ECONNREFUSED');
+    },
+  );
+
+  test('a delivery that genuinely errored is still delivery_failed', async () => {
+    const { side } = makeSide({
+      deliver: async () => ({
+        delivered: false,
+        method: 'thread/queue/add' as const,
+        error: 'malformed request',
+      }),
+    });
+    const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
+    expect(r.refusal).toBe('delivery_failed');
+  });
+
   test('logs delivery:"queue" for a normal send', async () => {
     const { side } = makeSide();
     await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });

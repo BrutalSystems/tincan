@@ -446,15 +446,25 @@ export function createTools(side: Side, log: MessageLog) {
         outcome.notice ?? (outcome.delivered ? undefined : outcome.error),
       );
 
+      // A peer that is simply gone and a peer whose delivery errored are not
+      // the same answer, and a caller branching on `refusal` could not tell
+      // them apart while both collapsed to `delivery_failed` (#10). The
+      // listing-time check above catches a peer already known to be
+      // unreachable; this catches the one that was still listed when we
+      // resolved it and had exited by the time we wrote to it.
+      const gone = !outcome.delivered && outcome.unreachable === true;
       return {
         delivered: outcome.delivered,
         method: outcome.method,
-        peer_state: target.side.state,
+        peer_state: gone ? 'unreachable' : target.side.state,
         message_id: envelope.id,
         ...(outcome.notice !== undefined && { notice: outcome.notice }),
         ...(!outcome.delivered && {
-          refusal: 'delivery_failed' as const,
-          detail: outcome.error ?? 'The peer runtime did not accept the message.',
+          refusal: gone ? ('peer_unreachable' as const) : ('delivery_failed' as const),
+          detail: gone
+            ? `${target.display} stopped accepting input before the message landed` +
+              `${outcome.error === undefined ? '' : ` (${outcome.error})`}.`
+            : (outcome.error ?? 'The peer runtime did not accept the message.'),
         }),
       };
     },
