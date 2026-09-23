@@ -960,7 +960,9 @@ describe('buildSide, hosted in opencode', () => {
 
         const wire = JSON.parse(instance.rawLines[0]!) as { text: string };
         expect(wire.text.split('\n')[0]).toMatch(
-          /^<peer_message from="[a-z0-9-]+" runtime="opencode" id="msg_[0-9a-f]+">$/,
+          // The sender id is part of the framing now, so its charset is
+          // pinned here too — that is the whole point of this assertion.
+          /^<peer_message from="[a-z0-9-]+" runtime="opencode" session_id="[A-Za-z0-9_.:-]*" id="msg_[0-9a-f]+">$/,
         );
       } finally {
         await instance.close();

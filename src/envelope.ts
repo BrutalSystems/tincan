@@ -91,8 +91,29 @@ export function renderEnvelope(e: Envelope): string {
     e.also_sent_to !== undefined && e.also_sent_to.length > 0
       ? ` also_sent_to="${e.also_sent_to.join(', ')}"`
       : '';
+  // The sender's durable id, in the same key `peers` reports it under, so a
+  // receiver can match the two without translating.
+  //
+  // This reached the log record before it reached here, and that gap was only
+  // survivable because the log is machine-global: a receiver could look the
+  // sender up in the record the sender's own Tin Can wrote. Across machines
+  // that record stays on the sender's disk, so an id that is not in the
+  // envelope is an id the receiver never sees. A display name is not a
+  // substitute — it is precisely what goes stale when a session is renamed.
+  //
+  // Sanitised for the same reason the name is slugified: this value arrives
+  // from the environment or a registry file, and a quote or a closing tag in
+  // it would break the one control that marks a message as a peer's rather
+  // than the operator's. Real ids — UUIDs, `ses_...` — pass through unchanged.
+  const safeId = (raw: string): string => raw.replace(/[^A-Za-z0-9_.:-]/g, '');
+  const senderId =
+    e.from.thread_id !== undefined
+      ? ` thread_id="${safeId(e.from.thread_id)}"`
+      : e.from.session_id !== undefined
+        ? ` session_id="${safeId(e.from.session_id)}"`
+        : '';
   const head = [
-    `<peer_message from="${e.from.name}" runtime="${e.from.runtime}" id="${e.id}"${also}>`,
+    `<peer_message from="${e.from.name}" runtime="${e.from.runtime}"${senderId} id="${e.id}"${also}>`,
     e.text,
     `</peer_message>`,
     ``,
