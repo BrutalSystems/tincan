@@ -613,9 +613,12 @@ test('a codex peer reports neither field', async () => {
   expect(result.peers[0]).not.toHaveProperty('can_reply');
 });
 
-test('the peers note names SendMessage as the path to same-account sessions', async () => {
+test('the peers note names both halves of the native path to same-account sessions', async () => {
   const { side } = makeSide({ listPeers: async () => ({ peers: [] }) });
   const result = await tools(side).peers();
+  // Discovery as well as delivery: naming only the send verb leaves the
+  // reader knowing a path exists but not how to enumerate what is on it.
+  expect(result.notes?.join(' ')).toContain('ListAgents');
   expect(result.notes?.join(' ')).toContain('SendMessage');
   expect(result.notes?.join(' ')).toContain('CLAUDE_CONFIG_DIR');
 });

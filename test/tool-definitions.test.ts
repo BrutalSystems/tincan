@@ -97,6 +97,11 @@ describe('toolDefinitions', () => {
     )!.description;
     expect(d).toContain('Claude Code');
     expect(d).toMatch(/only when they run under a different CLAUDE_CONFIG_DIR/i);
+    // Both halves of the native path, not just the send verb. A model told
+    // only that SendMessage exists still has no way to FIND the session it
+    // would send to, which is exactly how a caller concluded the excluded
+    // peers were unreachable rather than natively listed.
+    expect(d).toContain('ListAgents');
     expect(d).toContain('SendMessage');
   });
 
@@ -109,6 +114,7 @@ describe('toolDefinitions', () => {
     )!.description;
     expect(d).not.toMatch(/does not list|not listed/i);
     expect(d).not.toContain('SendMessage');
+    expect(d).not.toContain('ListAgents');
   });
 
   test('tells the model send_peer does not wait for an answer', () => {
@@ -124,6 +130,7 @@ describe('toolDefinitions', () => {
 test('the claude arm says its own-kind listing is scoped to other config dirs', () => {
   const [peers] = toolDefinitions(['codex', 'opencode', 'claude-code'], 'claude-code', 'cross-config-dir');
   expect(peers?.description).toContain('different CLAUDE_CONFIG_DIR');
+  expect(peers?.description).toContain('ListAgents');
   expect(peers?.description).toContain('SendMessage');
 });
 

@@ -295,7 +295,11 @@ export function runtimeSupportsUrgent(_runtime: RuntimeName): boolean {
  * otherwise without anyone remembering to edit the wording.
  */
 export const NATIVE_PEER_PATH: Partial<Record<RuntimeName, string>> = {
-  'claude-code': 'SendMessage',
+  // Discovery first, then delivery. Naming only the send verb told the reader
+  // a native path exists without saying how to enumerate what is on it — and a
+  // caller who read this concluded the excluded same-config peers were
+  // unreachable, when its host had been listing them the whole time.
+  'claude-code': 'ListAgents and SendMessage',
 };
 
 /** Whether this side hides the host's own kind from its peer list. */
