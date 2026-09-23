@@ -33,9 +33,9 @@ describe('assignNames', () => {
     expect(a!.display).toBe('auth-refactor');
   });
 
-  test('builds the canonical id as runtime:slug.suffix regardless of collision', () => {
+  test('builds the canonical id as runtime:slug.<durable id>, unique regardless of collision', () => {
     const [a] = assignNames([p('codex', 'Auth refactor', '00000000-0000-0000-0000-0000000007f3')]);
-    expect(a!.canonicalId).toBe('codex:auth-refactor.7f3');
+    expect(a!.canonicalId).toBe('codex:auth-refactor.00000000-0000-0000-0000-0000000007f3');
   });
 
   test('suffixes every colliding peer and only those', () => {
@@ -66,7 +66,7 @@ describe('resolvePeer', () => {
 
   test('resolves an exact display name', () => {
     const r = resolvePeer(peers, 'auth-refactor');
-    expect(r.ok && r.peer.canonicalId).toBe('codex:auth-refactor.7f3');
+    expect(r.ok && r.peer.canonicalId).toBe('codex:auth-refactor.00000000-0000-0000-0000-0000000007f3');
   });
 
   test('resolves case-insensitively', () => {
@@ -97,5 +97,58 @@ describe('resolvePeer', () => {
     const r = resolvePeer(peers, 'nope');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe('unknown');
+  });
+});
+
+// #31. Two changes to the address format, taken together because each is a
+// breaking change to a contract Muster copies, and doing them separately
+// would mean two coordinated releases.
+describe('addresses carry a machine, and canonical ids are unique', () => {
+  const peerA = { runtime: 'codex' as const, rawName: 'Auth refactor', uuid: '01a0b9b4-a33e-7ab1-80a0-bb715504a0fb' };
+  // Same slug, and the last three hex characters also match — the documented
+  // collision that made BOTH peers unaddressable.
+  const peerB = { runtime: 'codex' as const, rawName: 'Auth refactor', uuid: '5af69d42-2214-41d9-b13f-9c317700a0fb' };
+
+  test('a canonical id carries the whole durable id, so two peers can never share one', () => {
+    const [a, b] = assignNames([peerA, peerB]);
+    expect(a!.canonicalId).not.toBe(b!.canonicalId);
+    expect(a!.canonicalId).toContain('01a0b9b4-a33e-7ab1-80a0-bb715504a0fb');
+  });
+
+  test('both collided peers stay addressable by their canonical ids', () => {
+    const named = assignNames([peerA, peerB]);
+    for (const p of named) {
+      const r = resolvePeer(named, p.canonicalId);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.peer.uuid).toBe(p.uuid);
+    }
+  });
+
+  test('the short display form is unchanged for a peer on this machine', () => {
+    const [only] = assignNames([peerA]);
+    expect(only!.display).toBe('auth-refactor');
+  });
+
+  test('a peer on another machine carries it after @', () => {
+    const [remote] = assignNames([{ ...peerA, machine: 'm4pro' }]);
+    expect(remote!.display).toBe('auth-refactor@m4pro');
+    expect(remote!.canonicalId).toBe('codex:auth-refactor.01a0b9b4-a33e-7ab1-80a0-bb715504a0fb@m4pro');
+  });
+
+  test('the same slug on two machines does not collide', () => {
+    const named = assignNames([peerA, { ...peerA, machine: 'm4pro' }]);
+    expect(named[0]!.display).toBe('auth-refactor');
+    expect(named[1]!.display).toBe('auth-refactor@m4pro');
+    const r = resolvePeer(named, 'auth-refactor@m4pro');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.peer.machine).toBe('m4pro');
+  });
+
+  test('a bare name never reaches another machine by accident', () => {
+    // Only the remote peer exists. A bare local-looking address must not
+    // silently resolve to a session on a different computer.
+    const named = assignNames([{ ...peerA, machine: 'm4pro' }]);
+    const r = resolvePeer(named, 'auth-refactor');
+    expect(r.ok).toBe(false);
   });
 });

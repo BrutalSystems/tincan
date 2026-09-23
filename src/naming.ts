@@ -20,11 +20,27 @@ export interface PeerBase {
   rawName: string | null;
   /** Thread id (Codex) or session id (Claude Code). */
   uuid: string;
+  /**
+   * Which machine this peer is on, absent for this one.
+   *
+   * Absent rather than "localhost" so every address anyone types today keeps
+   * working and keeps meaning the same thing. It also makes the dangerous
+   * direction the explicit one: reaching another computer requires saying so.
+   */
+  machine?: string;
 }
 
 export interface NamedPeer extends PeerBase {
   slug: string;
   suffix: string;
+  /**
+   * Unique, unlike the old three-hex form. Two peers sharing a slug whose ids
+   * also shared their last three hex characters produced the SAME canonical
+   * id, and Tin Can then refused to resolve either — telling the caller to
+   * disambiguate with a string that did not disambiguate. Both were
+   * unreachable until one exited. Carrying the whole durable id makes that
+   * impossible rather than merely unlikely.
+   */
   canonicalId: string;
   /** What `peers` shows and `send_peer` accepts: bare slug, suffixed only on collision. */
   display: string;
@@ -56,27 +72,39 @@ export function suffixOf(uuid: string): string {
   return uuid.replace(/[^0-9a-f]/gi, '').slice(-3).toLowerCase();
 }
 
+/** `@machine`, or nothing at all for a peer on this machine. */
+function at(machine: string | undefined): string {
+  return machine === undefined || machine === '' ? '' : `@${slugify(machine)}`;
+}
+
 export function assignNames(peers: PeerBase[]): NamedPeer[] {
   const slugs = peers.map((peer) => {
     const s = peer.rawName ? slugify(peer.rawName) : '';
     return s.length > 0 ? s : 'thread';
   });
 
+  // Collisions are counted per machine. The same slug on two computers is two
+  // different addresses already, so suffixing both would add noise to
+  // distinguish things that were never confusable.
   const counts = new Map<string, number>();
-  for (const s of slugs) counts.set(s, (counts.get(s) ?? 0) + 1);
+  for (const [i, s] of slugs.entries()) {
+    const key = `${s}${at(peers[i]!.machine)}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
 
   return peers.map((peer, i) => {
     const slug = slugs[i]!;
     const suffix = suffixOf(peer.uuid);
-    const qualified = `${slug}.${suffix}`;
+    const host = at(peer.machine);
+    const qualified = `${slug}.${suffix}${host}`;
     // An unnamed thread has no name to stand on, so it always carries its suffix.
-    const collides = (counts.get(slug) ?? 0) > 1 || peer.rawName === null;
+    const collides = (counts.get(`${slug}${host}`) ?? 0) > 1 || peer.rawName === null;
     return {
       ...peer,
       slug,
       suffix,
-      canonicalId: `${peer.runtime}:${qualified}`,
-      display: collides ? qualified : slug,
+      canonicalId: `${peer.runtime}:${slug}.${peer.uuid}${host}`,
+      display: collides ? qualified : `${slug}${host}`,
     };
   });
 }
@@ -108,7 +136,20 @@ export function resolvePeer(
   isSelf: (query: string) => boolean = () => false,
 ): Resolution {
   const q = input.trim().toLowerCase();
-  const qualified = (p: NamedPeer) => `${p.slug}.${p.suffix}`;
+  const qualified = (p: NamedPeer) =>
+    `${p.slug}.${p.suffix}${p.machine === undefined || p.machine === '' ? '' : `@${slugify(p.machine)}`}`;
+
+  // A bare address names a peer on THIS machine. Prefix matching is what makes
+  // that matter: without this, an address with no `@` could fall through and
+  // resolve to a session on another computer, and a message meant for a local
+  // peer would leave the machine. The dangerous direction has to be the
+  // explicit one.
+  const wantsMachine = q.includes('@');
+  const eligible = peers.filter((p) => {
+    const remote = p.machine !== undefined && p.machine !== '';
+    return wantsMachine ? remote : !remote;
+  });
+  peers = eligible;
 
   const exact = peers.filter(
     (p) => p.display.toLowerCase() === q || qualified(p) === q || p.canonicalId.toLowerCase() === q,

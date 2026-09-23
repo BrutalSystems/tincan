@@ -108,7 +108,7 @@ describe('peers', () => {
     expect(r.peers[0]).toMatchObject({
       name: 'auth-refactor',
       display_label: 'auth-refactor',
-      canonical_id: 'codex:auth-refactor.7f3',
+      canonical_id: 'codex:auth-refactor.00000000-0000-0000-0000-0000000007f3',
       state: 'idle',
       cwd: '/src/auth',
       thread_id: '00000000-0000-0000-0000-0000000007f3',
@@ -215,8 +215,8 @@ describe('mixed-runtime peer lists', () => {
   test('names each peer by its own runtime, not the host side', async () => {
     const r = await tools(mixed().side).peers();
     expect(r.peers.map((p) => p.canonical_id)).toEqual([
-      'codex:auth-refactor.7f3',
-      'claude-code:billing-api.0ce',
+      'codex:auth-refactor.00000000-0000-0000-0000-0000000007f3',
+      'claude-code:billing-api.5af69d42-2214-41d9-b13f-9c3177eb60ce',
     ]);
   });
 

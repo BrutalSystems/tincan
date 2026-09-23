@@ -2,188 +2,569 @@
   "$comment": "FROZEN. Describes @brutalsystems/tincan address behaviour as shipped. Adding cases is fine; changing an expected value means the address format changed - see CANONICAL_ID.md, 'Changing this format'.",
   "tincan_version": "0.17.0",
   "spec": "CANONICAL_ID.md",
-
   "slugify": [
-    { "case": "spaces and case are folded", "input": "Auth Refactor", "output": "auth-refactor" },
-    { "case": "runs of punctuation collapse to one dash", "input": "auth/refactor (v2)", "output": "auth-refactor-v2" },
-    { "case": "leading and trailing separators are stripped", "input": "  --Auth--  ", "output": "auth" },
-    { "case": "non-ascii is not transliterated, it is a separator", "input": "café ☕ time", "output": "caf-time" },
-    { "case": "digits survive", "input": "123", "output": "123" },
-    { "case": "all-caps folds", "input": "ALLCAPS", "output": "allcaps" },
-    { "case": "a name of only punctuation slugifies to empty", "input": "???", "output": "" },
-    { "case": "empty in, empty out", "input": "", "output": "" }
+    {
+      "case": "spaces and case are folded",
+      "input": "Auth Refactor",
+      "output": "auth-refactor"
+    },
+    {
+      "case": "runs of punctuation collapse to one dash",
+      "input": "auth/refactor (v2)",
+      "output": "auth-refactor-v2"
+    },
+    {
+      "case": "leading and trailing separators are stripped",
+      "input": "  --Auth--  ",
+      "output": "auth"
+    },
+    {
+      "case": "non-ascii is not transliterated, it is a separator",
+      "input": "café ☕ time",
+      "output": "caf-time"
+    },
+    {
+      "case": "digits survive",
+      "input": "123",
+      "output": "123"
+    },
+    {
+      "case": "all-caps folds",
+      "input": "ALLCAPS",
+      "output": "allcaps"
+    },
+    {
+      "case": "a name of only punctuation slugifies to empty",
+      "input": "???",
+      "output": ""
+    },
+    {
+      "case": "empty in, empty out",
+      "input": "",
+      "output": ""
+    }
   ],
-
   "suffix": [
-    { "case": "codex thread id (uuidv7): last three hex", "input": "01a0b9b4-a33e-7ab1-80a0-bb715504a0fb", "output": "0fb" },
-    { "case": "claude session id (uuidv4): last three hex", "input": "5af69d42-2214-41d9-b13f-9c3177eb60ce", "output": "0ce" },
-    { "case": "opencode session id (ses_ + hex timestamp + base62 random tail): last three hex", "input": "ses_f41a2b3c4ffeExampleSess01Z", "output": "e01" },
-    { "case": "uppercase hex is lowercased", "input": "...ABC", "output": "abc" },
-    { "case": "non-hex characters are stripped before slicing", "input": "z-9", "output": "9" },
-    { "case": "no hex at all yields an empty suffix", "input": "zzzz", "output": "" },
-    { "case": "empty in, empty out", "input": "", "output": "" }
+    {
+      "case": "codex thread id (uuidv7): last three hex",
+      "input": "01a0b9b4-a33e-7ab1-80a0-bb715504a0fb",
+      "output": "0fb"
+    },
+    {
+      "case": "claude session id (uuidv4): last three hex",
+      "input": "5af69d42-2214-41d9-b13f-9c3177eb60ce",
+      "output": "0ce"
+    },
+    {
+      "case": "opencode session id (ses_ + hex timestamp + base62 random tail): last three hex",
+      "input": "ses_f41a2b3c4ffeExampleSess01Z",
+      "output": "e01"
+    },
+    {
+      "case": "uppercase hex is lowercased",
+      "input": "...ABC",
+      "output": "abc"
+    },
+    {
+      "case": "non-hex characters are stripped before slicing",
+      "input": "z-9",
+      "output": "9"
+    },
+    {
+      "case": "no hex at all yields an empty suffix",
+      "input": "zzzz",
+      "output": ""
+    },
+    {
+      "case": "empty in, empty out",
+      "input": "",
+      "output": ""
+    }
   ],
-
   "assign": [
     {
       "case": "no collision: display is the bare slug, canonical id is always qualified",
-      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
-      "expect": [ { "display": "auth-refactor", "canonicalId": "codex:auth-refactor.7f3" } ]
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
+      "expect": [
+        {
+          "display": "auth-refactor",
+          "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+        }
+      ]
     },
     {
       "case": "claude peers are qualified with their runtime",
-      "peers": [ { "runtime": "claude-code", "rawName": "billing-api", "uuid": "5af69d42-2214-41d9-b13f-9c3177eb60ce" } ],
-      "expect": [ { "display": "billing-api", "canonicalId": "claude-code:billing-api.0ce" } ]
+      "peers": [
+        {
+          "runtime": "claude-code",
+          "rawName": "billing-api",
+          "uuid": "5af69d42-2214-41d9-b13f-9c3177eb60ce"
+        }
+      ],
+      "expect": [
+        {
+          "display": "billing-api",
+          "canonicalId": "claude-code:billing-api.5af69d42-2214-41d9-b13f-9c3177eb60ce"
+        }
+      ]
     },
     {
       "case": "opencode peer, no collision: display is the bare slug",
-      "peers": [ { "runtime": "opencode", "rawName": "nimble-wizard", "uuid": "ses_7f6e5d4c3b2aNimbleWizardQ7" } ],
-      "expect": [ { "display": "nimble-wizard", "canonicalId": "opencode:nimble-wizard.ad7" } ]
+      "peers": [
+        {
+          "runtime": "opencode",
+          "rawName": "nimble-wizard",
+          "uuid": "ses_7f6e5d4c3b2aNimbleWizardQ7"
+        }
+      ],
+      "expect": [
+        {
+          "display": "nimble-wizard",
+          "canonicalId": "opencode:nimble-wizard.ses_7f6e5d4c3b2aNimbleWizardQ7"
+        }
+      ]
     },
     {
       "case": "collision between two opencode sessions with the same slug: both suffixed",
       "peers": [
-        { "runtime": "opencode", "rawName": "swift-otter", "uuid": "ses_8e7d6c5b4a39SwiftOtterAlpha" },
-        { "runtime": "opencode", "rawName": "swift-otter", "uuid": "ses_8e7d6c5b4a39SwiftOtterBeta7" }
+        {
+          "runtime": "opencode",
+          "rawName": "swift-otter",
+          "uuid": "ses_8e7d6c5b4a39SwiftOtterAlpha"
+        },
+        {
+          "runtime": "opencode",
+          "rawName": "swift-otter",
+          "uuid": "ses_8e7d6c5b4a39SwiftOtterBeta7"
+        }
       ],
       "expect": [
-        { "display": "swift-otter.eaa", "canonicalId": "opencode:swift-otter.eaa" },
-        { "display": "swift-otter.ea7", "canonicalId": "opencode:swift-otter.ea7" }
+        {
+          "display": "swift-otter.eaa",
+          "canonicalId": "opencode:swift-otter.ses_8e7d6c5b4a39SwiftOtterAlpha"
+        },
+        {
+          "display": "swift-otter.ea7",
+          "canonicalId": "opencode:swift-otter.ses_8e7d6c5b4a39SwiftOtterBeta7"
+        }
       ]
     },
     {
       "case": "cross-runtime collision: an opencode peer and a codex peer sharing a slug both flip to suffixed",
       "peers": [
-        { "runtime": "opencode", "rawName": "auth-refactor", "uuid": "ses_9f8e7d6c5b4aAuthRefactorX9" },
-        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "01b1c2d3-e4f5-7a6b-90c1-d2e3f4a5b6c7" }
+        {
+          "runtime": "opencode",
+          "rawName": "auth-refactor",
+          "uuid": "ses_9f8e7d6c5b4aAuthRefactorX9"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "01b1c2d3-e4f5-7a6b-90c1-d2e3f4a5b6c7"
+        }
       ],
       "expect": [
-        { "display": "auth-refactor.ac9", "canonicalId": "opencode:auth-refactor.ac9" },
-        { "display": "auth-refactor.6c7", "canonicalId": "codex:auth-refactor.6c7" }
+        {
+          "display": "auth-refactor.ac9",
+          "canonicalId": "opencode:auth-refactor.ses_9f8e7d6c5b4aAuthRefactorX9"
+        },
+        {
+          "display": "auth-refactor.6c7",
+          "canonicalId": "codex:auth-refactor.01b1c2d3-e4f5-7a6b-90c1-d2e3f4a5b6c7"
+        }
       ]
     },
     {
       "case": "collision: every colliding peer is suffixed, and only those",
       "peers": [
-        { "runtime": "codex", "rawName": "Review phase 1 handoff", "uuid": "00000000-0000-0000-0000-000000000aaa" },
-        { "runtime": "codex", "rawName": "Review phase-1 handoff", "uuid": "00000000-0000-0000-0000-000000000bbb" },
-        { "runtime": "codex", "rawName": "Something else", "uuid": "00000000-0000-0000-0000-000000000ccc" }
+        {
+          "runtime": "codex",
+          "rawName": "Review phase 1 handoff",
+          "uuid": "00000000-0000-0000-0000-000000000aaa"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Review phase-1 handoff",
+          "uuid": "00000000-0000-0000-0000-000000000bbb"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Something else",
+          "uuid": "00000000-0000-0000-0000-000000000ccc"
+        }
       ],
       "expect": [
-        { "display": "review-phase-1-handoff.aaa", "canonicalId": "codex:review-phase-1-handoff.aaa" },
-        { "display": "review-phase-1-handoff.bbb", "canonicalId": "codex:review-phase-1-handoff.bbb" },
-        { "display": "something-else", "canonicalId": "codex:something-else.ccc" }
+        {
+          "display": "review-phase-1-handoff.aaa",
+          "canonicalId": "codex:review-phase-1-handoff.00000000-0000-0000-0000-000000000aaa"
+        },
+        {
+          "display": "review-phase-1-handoff.bbb",
+          "canonicalId": "codex:review-phase-1-handoff.00000000-0000-0000-0000-000000000bbb"
+        },
+        {
+          "display": "something-else",
+          "canonicalId": "codex:something-else.00000000-0000-0000-0000-000000000ccc"
+        }
       ]
     },
     {
       "case": "an unnamed thread always carries its suffix, even alone",
-      "peers": [ { "runtime": "codex", "rawName": null, "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
-      "expect": [ { "display": "thread.7f3", "canonicalId": "codex:thread.7f3" } ]
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": null,
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
+      "expect": [
+        {
+          "display": "thread.7f3",
+          "canonicalId": "codex:thread.00000000-0000-0000-0000-0000000007f3"
+        }
+      ]
     },
     {
       "case": "KNOWN DEFECT: a name that slugifies to empty displays bare, unlike an unnamed thread",
-      "peers": [ { "runtime": "codex", "rawName": "???", "uuid": "00000000-0000-0000-0000-000000000def" } ],
-      "expect": [ { "display": "thread", "canonicalId": "codex:thread.def" } ]
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "???",
+          "uuid": "00000000-0000-0000-0000-000000000def"
+        }
+      ],
+      "expect": [
+        {
+          "display": "thread",
+          "canonicalId": "codex:thread.00000000-0000-0000-0000-000000000def"
+        }
+      ]
     },
     {
       "case": "unnamed and slugifies-to-empty collide on 'thread', so both are suffixed",
       "peers": [
-        { "runtime": "codex", "rawName": null, "uuid": "00000000-0000-0000-0000-000000000aaa" },
-        { "runtime": "codex", "rawName": "???", "uuid": "00000000-0000-0000-0000-000000000bbb" }
+        {
+          "runtime": "codex",
+          "rawName": null,
+          "uuid": "00000000-0000-0000-0000-000000000aaa"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "???",
+          "uuid": "00000000-0000-0000-0000-000000000bbb"
+        }
       ],
       "expect": [
-        { "display": "thread.aaa", "canonicalId": "codex:thread.aaa" },
-        { "display": "thread.bbb", "canonicalId": "codex:thread.bbb" }
+        {
+          "display": "thread.aaa",
+          "canonicalId": "codex:thread.00000000-0000-0000-0000-000000000aaa"
+        },
+        {
+          "display": "thread.bbb",
+          "canonicalId": "codex:thread.00000000-0000-0000-0000-000000000bbb"
+        }
       ]
     },
     {
       "case": "KNOWN DEFECT: canonical_id is not unique when slug and suffix both collide",
       "peers": [
-        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "11111111-0000-0000-0000-000000000abc" },
-        { "runtime": "codex", "rawName": "auth-refactor", "uuid": "22222222-0000-0000-0000-000000000abc" }
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "11111111-0000-0000-0000-000000000abc"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "auth-refactor",
+          "uuid": "22222222-0000-0000-0000-000000000abc"
+        }
       ],
       "expect": [
-        { "display": "auth-refactor.abc", "canonicalId": "codex:auth-refactor.abc" },
-        { "display": "auth-refactor.abc", "canonicalId": "codex:auth-refactor.abc" }
+        {
+          "display": "auth-refactor.abc",
+          "canonicalId": "codex:auth-refactor.11111111-0000-0000-0000-000000000abc"
+        },
+        {
+          "display": "auth-refactor.abc",
+          "canonicalId": "codex:auth-refactor.22222222-0000-0000-0000-000000000abc"
+        }
+      ]
+    },
+    {
+      "case": "a peer on another machine carries @machine in both forms",
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3",
+          "machine": "m4pro"
+        }
+      ],
+      "expect": [
+        {
+          "display": "auth-refactor@m4pro",
+          "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3@m4pro"
+        }
+      ]
+    },
+    {
+      "case": "the same slug on two machines does not collide",
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3",
+          "machine": "m4pro"
+        }
+      ],
+      "expect": [
+        {
+          "display": "auth-refactor",
+          "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+        },
+        {
+          "display": "auth-refactor@m4pro",
+          "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3@m4pro"
+        }
       ]
     }
   ],
-
   "resolve": [
     {
       "case": "exact display name",
-      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
       "input": "auth-refactor",
-      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+      }
     },
     {
       "case": "qualified form, accepted even with no collision",
-      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
       "input": "auth-refactor.7f3",
-      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+      }
     },
     {
       "case": "fully qualified canonical id is accepted as input",
-      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
-      "input": "codex:auth-refactor.7f3",
-      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
+      "input": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3",
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+      }
     },
     {
       "case": "case-insensitive, and input is trimmed",
-      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
       "input": "  AUTH-REFACTOR.7F3  ",
-      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+      }
     },
     {
       "case": "unambiguous prefix resolves",
       "peers": [
-        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" },
-        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" }
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Billing sync",
+          "uuid": "00000000-0000-0000-0000-000000000b12"
+        }
       ],
       "input": "auth",
-      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+      }
     },
     {
       "case": "ambiguous prefix is refused, listing every candidate in qualified form",
       "peers": [
-        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" },
-        { "runtime": "codex", "rawName": "Billing report", "uuid": "00000000-0000-0000-0000-000000000b34" }
+        {
+          "runtime": "codex",
+          "rawName": "Billing sync",
+          "uuid": "00000000-0000-0000-0000-000000000b12"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Billing report",
+          "uuid": "00000000-0000-0000-0000-000000000b34"
+        }
       ],
       "input": "billing",
-      "expect": { "ok": false, "reason": "ambiguous", "candidates": ["billing-report.b34", "billing-sync.b12"] }
+      "expect": {
+        "ok": false,
+        "reason": "ambiguous",
+        "candidates": [
+          "billing-sync.b12",
+          "billing-report.b34"
+        ]
+      }
     },
     {
       "case": "unknown name is refused, and candidates list every peer in display form",
       "peers": [
-        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" },
-        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" }
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Billing sync",
+          "uuid": "00000000-0000-0000-0000-000000000b12"
+        }
       ],
       "input": "zzz",
-      "expect": { "ok": false, "reason": "unknown", "candidates": ["auth-refactor", "billing-sync"] }
+      "expect": {
+        "ok": false,
+        "reason": "unknown",
+        "candidates": [
+          "auth-refactor",
+          "billing-sync"
+        ]
+      }
     },
     {
-      "case": "KNOWN DEFECT: colliding canonical ids refuse with two identical candidates",
+      "case": "two peers whose slug AND short suffix collide are each still addressable by canonical id",
       "peers": [
-        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "11111111-0000-0000-0000-000000000abc" },
-        { "runtime": "codex", "rawName": "auth-refactor", "uuid": "22222222-0000-0000-0000-000000000abc" }
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "11111111-0000-0000-0000-000000000abc"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "auth-refactor",
+          "uuid": "22222222-0000-0000-0000-000000000abc"
+        }
       ],
-      "input": "codex:auth-refactor.abc",
-      "expect": { "ok": false, "reason": "ambiguous", "candidates": ["auth-refactor.abc", "auth-refactor.abc"] }
+      "input": "codex:auth-refactor.11111111-0000-0000-0000-000000000abc",
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.11111111-0000-0000-0000-000000000abc"
+      }
     },
     {
       "case": "empty input is a prefix of everything: ambiguous when more than one peer",
       "peers": [
-        { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" },
-        { "runtime": "codex", "rawName": "Billing sync", "uuid": "00000000-0000-0000-0000-000000000b12" }
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Billing sync",
+          "uuid": "00000000-0000-0000-0000-000000000b12"
+        }
       ],
       "input": "",
-      "expect": { "ok": false, "reason": "ambiguous", "candidates": ["auth-refactor.7f3", "billing-sync.b12"] }
+      "expect": {
+        "ok": false,
+        "reason": "ambiguous",
+        "candidates": [
+          "auth-refactor.7f3",
+          "billing-sync.b12"
+        ]
+      }
     },
     {
       "case": "KNOWN DEFECT: empty input resolves to the only peer when there is exactly one",
-      "peers": [ { "runtime": "codex", "rawName": "Auth refactor", "uuid": "00000000-0000-0000-0000-0000000007f3" } ],
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        }
+      ],
       "input": "",
-      "expect": { "ok": true, "canonicalId": "codex:auth-refactor.7f3" }
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3"
+      }
+    },
+    {
+      "case": "a remote peer resolves by its @machine address",
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3",
+          "machine": "m4pro"
+        }
+      ],
+      "input": "auth-refactor@m4pro",
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:auth-refactor.00000000-0000-0000-0000-0000000007f3@m4pro"
+      }
+    },
+    {
+      "case": "a bare address never reaches another machine",
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "Auth refactor",
+          "uuid": "00000000-0000-0000-0000-0000000007f3",
+          "machine": "m4pro"
+        }
+      ],
+      "input": "auth-refactor",
+      "expect": {
+        "ok": false,
+        "reason": "unknown",
+        "candidates": []
+      }
     }
   ]
 }

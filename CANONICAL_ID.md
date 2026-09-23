@@ -22,7 +22,7 @@
 
 ## The pieces
 
-An address is built from two inputs:
+An address is built from three inputs, one of which is usually absent:
 
 | Runtime | Name source | Id source |
 |---|---|---|
@@ -36,6 +36,30 @@ process and dies with it.** Key durable records on the id, never on the address.
 `peers` exposes that id on every peer — `thread_id` for Codex, `session_id` for
 Claude Code and for opencode — so a caller never has to derive it from an
 address.
+
+The third input is the **machine**, and it is absent for every peer on this
+one. See [Machine](#machine).
+
+## Machine
+
+A peer on another machine carries `@<machine>` at the end of its address. A
+peer on this machine carries nothing.
+
+    auth-refactor            a session here
+    auth-refactor@m4pro      a session on another computer
+
+Absent rather than a literal like `localhost`, for two reasons. Every address
+anyone types today keeps working and keeps meaning exactly what it meant. And
+it makes the dangerous direction the explicit one: reaching another computer
+requires saying so.
+
+**A bare address never resolves to a remote peer.** Resolution filters by
+whether the input contains `@` before matching anything, so an address with no
+machine can only match a local session — including during prefix matching,
+which is where it would otherwise slip through. A message meant for a local
+peer must not leave the machine because a local session happened to exit.
+
+The machine name is slugified by the same rule as a peer name.
 
 ## Slugify
 
@@ -103,9 +127,13 @@ Three forms exist. Two are emitted; all three are accepted as input.
 
 | Form | Shape | Emitted |
 |---|---|---|
-| **Display** | `auth-refactor` | by `peers`, when the slug does not collide |
-| **Qualified** | `auth-refactor.7f3` | by `peers`, only on collision |
-| **Canonical** | `codex:auth-refactor.7f3` | as `canonical_id`, always |
+| **Display** | `auth-refactor`, `auth-refactor@m4pro` | by `peers`, when the slug does not collide |
+| **Qualified** | `auth-refactor.7f3`, `auth-refactor.7f3@m4pro` | by `peers`, only on collision |
+| **Canonical** | `codex:auth-refactor.01a0b9b4-a33e-7ab1-80a0-bb715504a0fb` | as `canonical_id`, always |
+
+**The canonical form carries the whole durable id**, not the three-character
+suffix. That is what makes it unique — see [Known defects](#known-defects),
+where its non-uniqueness used to be recorded as a defect preserved on purpose.
 
 The separator is `.` so that an address needs no shell quoting.
 
@@ -116,8 +144,12 @@ It is the form to record in logs and to pass between tools.
 
 A peer is suffixed in its **display** form when either:
 
-- another peer in the same listing has the same slug, or
+- another peer in the same listing has the same slug **on the same machine**, or
 - the peer has no name (`rawName === null`), which is always suffixed.
+
+Collisions are counted per machine. The same slug on two computers is already
+two different addresses, so suffixing both would add noise to distinguish
+things that were never confusable.
 
 Otherwise the display form is the bare slug. Only colliding peers are suffixed;
 peers that do not collide keep their bare names in the same listing.
@@ -204,20 +236,23 @@ that a second implementation matches Tin Can exactly, including where Tin Can is
 wrong. **Do not "correct" them independently** — that produces addresses that
 resolve in one tool and fail silently in the other.
 
-**1. `canonical_id` is not unique.** Two peers whose slugs match *and* whose ids
-share their last three hex characters produce the same `canonical_id`. Tin Can
-then refuses to resolve either, listing two identical candidates — a refusal
-that tells the caller to disambiguate using a string that does not
-disambiguate. The peers are unaddressable until one exits.
+**1. `canonical_id` is not unique. — FIXED in 1.0.0.**
 
-Probability is roughly 1 in 4096 *given* a slug collision — slightly above
-that for opencode ids, whose base62 tail skews the surviving hex (see
-[Suffix](#suffix)) — and slug collisions are not rare: Codex titles threads
-from their first prompt, so two sessions started from similar prompts collide
-readily.
+It used to carry the three-character suffix, so two peers whose slugs matched
+*and* whose ids shared their last three hex characters produced the same
+`canonical_id`. Tin Can then refused to resolve either, listing two identical
+candidates — a refusal that told the caller to disambiguate using a string that
+did not disambiguate. Both peers were unaddressable until one exited. Roughly 1
+in 4096 given a slug collision, and slug collisions are not rare: Codex titles
+threads from their first prompt.
 
-**Consumers must therefore treat `canonical_id` as a display and correlation
-aid, not a primary key.** Key on `thread_id` / `session_id`.
+The canonical form now carries the whole durable id, which makes a collision
+impossible rather than merely unlikely. Both peers stay addressable.
+
+**The short forms still collide**, and still should: `display` and `qualified`
+are for humans, and two sessions genuinely sharing a name are genuinely
+ambiguous. The difference is that there is now an unambiguous form to fall back
+to. `canonical_id` is a usable key.
 
 **2. A name that slugifies to empty is inconsistent with an unnamed peer.**
 Alone in a listing, a peer named `???` displays as `thread` with no suffix,
