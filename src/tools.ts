@@ -155,6 +155,7 @@ export const sendPeerSchema = z
   });
 
 export const messageLogSchema = z.object({
+  all_projects: z.boolean().default(false),
   peer: z.string().optional(),
   thread: z.string().optional(),
   last_n: z.number().int().positive().default(20),
@@ -708,9 +709,35 @@ export function createTools(side: Side, log: MessageLog) {
     },
     async message_log(
       rawArgs: MessageLogArgs,
-    ): Promise<{ records: LogRecord[]; integrity?: LogIntegrity }> {
+    ): Promise<{ records: LogRecord[]; integrity?: LogIntegrity; scope_note?: string }> {
       const args = messageLogSchema.parse(rawArgs);
-      const { records, integrity } = log.readWithIntegrity(args);
+      const { records: all, integrity } = log.readWithIntegrity(args);
+
+      // Scoped by default. The log is machine-global, so without this a
+      // session asking "what have I been told" is handed every conversation
+      // on the machine, including projects it has nothing to do with.
+      //
+      // Either end matching, not just the sender: peers in different projects
+      // messaging each other is much of the point, and such a message belongs
+      // in both scopes.
+      const here = side.selfCwd.replace(/\/+$/, '');
+      const mine = (r: LogRecord): boolean => {
+        if (!('from' in r) || !('to' in r)) return true; // notices, drops, checkpoints
+        const ends = [r.from.cwd, r.to.cwd].map((c) => (c ?? '').replace(/\/+$/, ''));
+        return ends.includes(here);
+      };
+      const records = args.all_projects ? all : all.filter(mine);
+
+      // A session whose cwd does not match what was recorded — a symlinked
+      // path, a moved checkout — would otherwise see an empty log and
+      // conclude nothing had ever been sent. Silence is the one answer this
+      // must not give.
+      const hidden = all.length - records.length;
+      const scope_note =
+        !args.all_projects && hidden > 0
+          ? `Scoped to ${here}; ${hidden} record(s) from other projects on this machine ` +
+            `are not shown. Pass all_projects: true for the whole machine.`
+          : undefined;
       // Present only when something is wrong. A field that is always there
       // and almost always says "fine" is a field the reader stops reading,
       // and this one exists to be noticed on the day it matters.
@@ -718,7 +745,11 @@ export function createTools(side: Side, log: MessageLog) {
       // gating on `ok` alone would compute the notice and then drop it,
       // leaving a caller with a short log and nothing to explain it.
       const worthSaying = !integrity.ok || integrity.rotated !== undefined;
-      return { records, ...(worthSaying ? { integrity } : {}) };
+      return {
+        records,
+        ...(worthSaying ? { integrity } : {}),
+        ...(scope_note !== undefined && { scope_note }),
+      };
     },
   };
 }

@@ -1161,3 +1161,57 @@ describe('outcome replaces delivered', () => {
     expect(r.results.map((x: any) => x.outcome)).toEqual(['accepted', 'failed']);
   });
 });
+
+// One machine-global log meant any session could read every conversation on
+// the machine, including projects it had nothing to do with. Defensible under
+// one OS user; still more than a caller asking "what have I been told" wants,
+// and it is the local half of a problem that stops being local at all once
+// peers are on other machines.
+describe('message_log is scoped to this project', () => {
+  const elsewhere = (id: string) =>
+    log.appendMessage(
+      buildEnvelope({
+        id,
+        from: { runtime: 'codex', name: 'other-a', cwd: '/src/unrelated' },
+        to: { runtime: 'codex', name: 'other-b', cwd: '/src/unrelated' },
+        method: 'thread/queue/add',
+        expect_reply: false,
+        reply_tool: true,
+        text: 'not our business',
+      }),
+      true,
+    );
+
+  test('hides a conversation between two sessions in another project', async () => {
+    elsewhere('msg_elsewhere');
+    const { side } = makeSide();
+    const r = await createTools(side, log).message_log({ last_n: 20 });
+    expect(r.records.map((x) => x.id)).not.toContain('msg_elsewhere');
+  });
+
+  test('keeps a message where either end is this project', async () => {
+    const { side } = makeSide();
+    const tools = createTools(side, log);
+    const sent = await tools.send_peer({ peer: 'auth-refactor', message: 'ours' });
+    const r = await tools.message_log({ last_n: 20 });
+    expect(r.records.map((x) => x.id)).toContain(sent.message_id);
+  });
+
+  test('all_projects returns the whole machine, for when that is what you want', async () => {
+    elsewhere('msg_elsewhere');
+    const { side } = makeSide();
+    const r = await createTools(side, log).message_log({ last_n: 20, all_projects: true });
+    expect(r.records.map((x) => x.id)).toContain('msg_elsewhere');
+  });
+
+  // Silence would be the worst outcome: a session whose cwd does not match
+  // what was recorded — a symlinked path, a moved checkout — would see an
+  // empty log and conclude nothing had ever been sent.
+  test('says so when scoping is what emptied the result', async () => {
+    elsewhere('msg_elsewhere');
+    const { side } = makeSide();
+    const r = await createTools(side, log).message_log({ last_n: 20 });
+    expect(r.records).toHaveLength(0);
+    expect(r.scope_note).toMatch(/all_projects/);
+  });
+});

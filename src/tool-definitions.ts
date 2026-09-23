@@ -190,6 +190,17 @@ export function toolDefinitions(
       inputSchema: {
         type: 'object',
         properties: {
+          // Scoped by default because the log is machine-global: without it a
+          // session asking what it was told is handed other projects' traffic.
+          all_projects: {
+            type: 'boolean',
+            default: false,
+            description:
+              'By default you see only messages where one end is this project (by working ' +
+              'directory). Set true to read every conversation on the machine, including ' +
+              'other projects. If a result is empty, check `scope_note` before concluding ' +
+              'nothing was sent.',
+          },
           peer: { type: 'string', description: 'Only messages to or from this peer name.' },
           thread: {
             type: 'string',
