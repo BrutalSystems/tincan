@@ -92,7 +92,7 @@ describe('peers', () => {
     });
     // The human label must not replace the existing send address.
     const result = await tools(side).send_peer({ peer: r.peers[0]!.name, message: 'hello' });
-    expect(result.delivered).toBe(true);
+    expect(result.outcome).toBe('accepted');
   });
 
   test.each(['', '/'])('labels an unnamed session without a project using its runtime (%j)', async (cwd) => {
@@ -261,7 +261,7 @@ describe('mixed-runtime peer lists', () => {
 
     // the Claude peer still has budget left
     const claudeOk = await t.send_peer({ peer: 'billing-api', message: 'still fine' });
-    expect(claudeOk.delivered).toBe(true);
+    expect(claudeOk.outcome).toBe('accepted');
   });
 });
 
@@ -305,7 +305,7 @@ describe('send_peer', () => {
   test('always populates method and peer_state', async () => {
     const { side } = makeSide();
     const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
-    expect(r).toMatchObject({ delivered: true, method: 'thread/queue/add', peer_state: 'idle' });
+    expect(r).toMatchObject({ outcome: 'accepted', method: 'thread/queue/add', peer_state: 'idle' });
     expect(r.message_id).toMatch(/^msg_/);
   });
 
@@ -320,7 +320,7 @@ describe('send_peer', () => {
     // self-send would otherwise read as "no such peer", which is misleading.
     const { side } = makeSide({ selfName: async () => 'auth-service' });
     const r = await tools(side).send_peer({ peer: 'auth-service', message: 'hi' });
-    expect(r.delivered).toBe(false);
+    expect(r.outcome).toBe('rejected');
     expect(r.refusal).toBe('self_send');
     expect(r.detail?.toLowerCase()).toContain('yourself');
   });
@@ -374,7 +374,7 @@ describe('send_peer', () => {
     const r = await tools(side).send_peer({ peer: 'tincan', message: 'note to self' });
 
     expect(delivered).toHaveLength(0);
-    expect(r.delivered).toBe(false);
+    expect(r.outcome).toBe('rejected');
     expect(r.refusal).toBe('self_send');
   });
 
@@ -391,14 +391,14 @@ describe('send_peer', () => {
 
     const r = await tools(side).send_peer({ peer: 'review', message: 'hi' });
 
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
   });
 
   test('refuses an unknown peer', async () => {
     const { side } = makeSide();
     const r = await tools(side).send_peer({ peer: 'nope', message: 'hi' });
-    expect(r).toMatchObject({ delivered: false, refusal: 'peer_unknown' });
+    expect(r).toMatchObject({ outcome: 'rejected', refusal: 'peer_unknown' });
   });
 
   test('refuses an ambiguous peer and lists the suffixed candidates', async () => {
@@ -411,7 +411,7 @@ describe('send_peer', () => {
       }),
     });
     const r = await tools(side).send_peer({ peer: 'review', message: 'hi' });
-    expect(r).toMatchObject({ delivered: false, refusal: 'peer_ambiguous' });
+    expect(r).toMatchObject({ outcome: 'rejected', refusal: 'peer_ambiguous' });
     expect(r.candidates?.sort()).toEqual(['review-phase-1.aaa', 'review-phase-1.bbb']);
   });
 
@@ -420,14 +420,14 @@ describe('send_peer', () => {
       listPeers: async () => ({ peers: [peer({ state: 'unreachable' })] }),
     });
     const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
-    expect(r).toMatchObject({ delivered: false, refusal: 'peer_unreachable' });
+    expect(r).toMatchObject({ outcome: 'rejected', refusal: 'peer_unreachable' });
     expect(delivered).toEqual([]);
   });
 
   test('refuses an oversize message before the guard even sees a peer', async () => {
     const { side } = makeSide();
     const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'x'.repeat(100_001) });
-    expect(r).toMatchObject({ delivered: false, refusal: 'too_large' });
+    expect(r).toMatchObject({ outcome: 'rejected', refusal: 'too_large' });
   });
 
   test('refuses an identical repeat and records the drop in the log', async () => {
@@ -435,7 +435,7 @@ describe('send_peer', () => {
     const t = tools(side);
     await t.send_peer({ peer: 'auth-refactor', message: 'ping' });
     const r = await t.send_peer({ peer: 'auth-refactor', message: 'ping' });
-    expect(r).toMatchObject({ delivered: false, refusal: 'identical_repeat' });
+    expect(r).toMatchObject({ outcome: 'rejected', refusal: 'identical_repeat' });
     expect(r.detail?.toLowerCase()).toContain('do not resend');
     const dropped = log.read({ last_n: 99 }).filter((x) => x.kind === 'dropped');
     expect(dropped).toHaveLength(1);
@@ -448,7 +448,7 @@ describe('send_peer', () => {
       message: 'hi',
       in_reply_to: 'msg_never_seen',
     });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     const rec = log.read({ last_n: 1 })[0]!;
     expect(rec).toMatchObject({ in_reply_to: 'msg_never_seen' });
   });
@@ -458,7 +458,7 @@ describe('send_peer', () => {
       deliver: async () => ({ delivered: true, method: 'inbox' as const, notice: 'receiver held message' }),
     });
     const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(log.read({ last_n: 99 })[0]).toMatchObject({ notice: 'receiver held message' });
   });
 
@@ -467,9 +467,9 @@ describe('send_peer', () => {
       deliver: async () => ({ delivered: false, method: 'thread/queue/add' as const, error: 'thread not found' }),
     });
     const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
-    expect(r.delivered).toBe(false);
+    expect(r.outcome).toBe('failed');
     expect(r.detail).toContain('thread not found');
-    expect(log.read({ last_n: 1 })[0]).toMatchObject({ delivered: false });
+    expect(log.read({ last_n: 1 })[0]).toMatchObject({ outcome: 'failed' });
   });
 
   test(
@@ -485,7 +485,7 @@ describe('send_peer', () => {
         }),
       });
       const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi' });
-      expect(r.delivered).toBe(false);
+      expect(r.outcome).toBe('failed');
       expect(r.refusal).toBe('peer_unreachable');
       expect(r.peer_state).toBe('unreachable');
       // The transport's own error is still worth surfacing, but the refusal
@@ -557,7 +557,7 @@ describe('opencode delivery, after the move to v1 prompt_async', () => {
 
   test('carries no notice — there is no longer a caveat to give', async () => {
     const r = await send();
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(r.notice).toBeUndefined();
   });
 
@@ -581,7 +581,7 @@ describe('message_log', () => {
     await tools(side).send_peer({ peer: 'auth-refactor', message: 'hi there' });
     const r = await tools(side).message_log({ last_n: 20 });
     expect(r.records).toHaveLength(1);
-    expect(r.records[0]).toMatchObject({ text: 'hi there', direction: 'out', delivered: true });
+    expect(r.records[0]).toMatchObject({ text: 'hi there', direction: 'out', outcome: 'accepted' });
   });
 });
 
@@ -655,7 +655,7 @@ describe('idempotency_key', () => {
       message: 'rebase onto main',
       idempotency_key: 'turn-41-send-1',
     });
-    expect(first.delivered).toBe(true);
+    expect(first.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
 
     const second = await tools.send_peer({
@@ -664,7 +664,7 @@ describe('idempotency_key', () => {
       idempotency_key: 'turn-41-send-1',
     });
 
-    expect(second.delivered).toBe(false);
+    expect(second.outcome).toBe('rejected');
     expect(second.refusal).toBe('duplicate_send');
     // The whole point: the caller can tell "already sent" from "failed", and
     // can go read the original rather than guessing.
@@ -702,8 +702,8 @@ describe('idempotency_key', () => {
     const a = await tools.send_peer({ peer: 'auth-refactor', message: 'first' });
     const b = await tools.send_peer({ peer: 'auth-refactor', message: 'second' });
 
-    expect(a.delivered).toBe(true);
-    expect(b.delivered).toBe(true);
+    expect(a.outcome).toBe('accepted');
+    expect(b.outcome).toBe('accepted');
     expect(a.message_id).not.toBe(b.message_id);
     expect(delivered).toHaveLength(2);
   });
@@ -721,7 +721,7 @@ describe('idempotency_key', () => {
       message: 'rebase onto main',
       idempotency_key: 'turn-41-send-1',
     });
-    expect(first.delivered).toBe(false);
+    expect(first.outcome).toBe('failed');
     expect(first.refusal).not.toBe('duplicate_send');
 
     const { side: working, delivered: sent } = makeSide();
@@ -731,7 +731,7 @@ describe('idempotency_key', () => {
       message: 'rebase onto main',
       idempotency_key: 'turn-41-send-1',
     });
-    expect(second.delivered).toBe(true);
+    expect(second.outcome).toBe('accepted');
     expect(sent).toHaveLength(1);
     expect(delivered).toHaveLength(0);
   });
@@ -748,7 +748,7 @@ describe('pinning a peer to the session that was listed', () => {
     const { side, delivered } = makeSide();
     const tools = createTools(side, log);
     const r = await tools.send_peer({ peer: 'auth-refactor', message: 'ping', expect_id: ID });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
   });
 
@@ -764,7 +764,7 @@ describe('pinning a peer to the session that was listed', () => {
 
     const r = await tools.send_peer({ peer: 'auth-refactor', message: 'ping', expect_id: ID });
 
-    expect(r.delivered).toBe(false);
+    expect(r.outcome).toBe('rejected');
     expect(r.refusal).toBe('peer_changed');
     // Both ids, so the caller can tell which session it meant and which one is
     // there now, rather than being told only that something went wrong.
@@ -781,7 +781,7 @@ describe('pinning a peer to the session that was listed', () => {
     });
     const tools = createTools(side, log);
     const r = await tools.send_peer({ peer: 'auth-refactor', message: 'ping' });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
   });
 
@@ -855,7 +855,7 @@ describe('fan-out', () => {
 
     expect(delivered).toHaveLength(2);
     expect(r.requested).toBe(2);
-    expect(r.delivered).toBe(2);
+    expect(r.accepted).toBe(2);
     expect(r.results).toHaveLength(2);
     expect(r.broadcast_id).toMatch(/^bc_/);
     expect(new Set(r.results.map((x: any) => x.message_id)).size).toBe(2);
@@ -894,7 +894,7 @@ describe('fan-out', () => {
       message: 'x',
     });
 
-    expect(r.delivered).toBe(0);
+    expect(r.accepted).toBe(0);
     expect(r.refusal).toBe('peer_unknown');
     expect(r.detail).toContain('docs-passed');
     expect(delivered).toHaveLength(0);
@@ -933,9 +933,9 @@ describe('fan-out', () => {
     });
 
     expect(r.requested).toBe(3);
-    expect(r.delivered).toBe(2);
-    expect(r.results.filter((x: any) => !x.delivered)).toHaveLength(1);
-    expect(r.results.find((x: any) => !x.delivered).refusal).toBe('peer_unreachable');
+    expect(r.accepted).toBe(2);
+    expect(r.results.filter((x: any) => x.outcome !== 'accepted')).toHaveLength(1);
+    expect(r.results.find((x: any) => x.outcome !== 'accepted').refusal).toBe('peer_unreachable');
   });
 
   test('peer and peers together, or neither, is a schema error', async () => {
@@ -948,7 +948,7 @@ describe('fan-out', () => {
   test('the single-peer result shape is untouched', async () => {
     const { side } = fleet();
     const r: any = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(r).not.toHaveProperty('results');
     expect(r).not.toHaveProperty('broadcast_id');
   });
@@ -1019,7 +1019,7 @@ describe('a reply must go to whoever sent the message', () => {
       in_reply_to: 'msg_theirs',
     });
 
-    expect(r.delivered).toBe(false);
+    expect(r.outcome).toBe('rejected');
     expect(r.refusal).toBe('reply_misrouted');
     expect(r.detail).toContain('auth-refactor');
     expect(delivered).toHaveLength(0);
@@ -1033,7 +1033,7 @@ describe('a reply must go to whoever sent the message', () => {
       message: 'ACK',
       in_reply_to: 'msg_theirs',
     });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
   });
 
@@ -1047,7 +1047,7 @@ describe('a reply must go to whoever sent the message', () => {
       message: 'ACK',
       in_reply_to: 'msg_theirs',
     });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
   });
 
@@ -1060,7 +1060,7 @@ describe('a reply must go to whoever sent the message', () => {
       message: 'ACK',
       in_reply_to: 'msg_from_before_the_upgrade',
     });
-    expect(r.delivered).toBe(true);
+    expect(r.outcome).toBe('accepted');
     expect(delivered).toHaveLength(1);
   });
 
@@ -1079,7 +1079,7 @@ describe('a reply must go to whoever sent the message', () => {
       message: 'ACK and FYI',
       in_reply_to: 'msg_theirs',
     });
-    expect(r.delivered).toBe(2);
+    expect(r.accepted).toBe(2);
     expect(delivered).toHaveLength(2);
   });
 
@@ -1100,5 +1100,64 @@ describe('a reply must go to whoever sent the message', () => {
     expect(r.detail).toMatch(/do not send it to a different/i);
     // The full listing as `candidates` is what invited the wrong pick.
     expect(r.candidates ?? []).not.toContain('docs-pass');
+  });
+});
+
+// One boolean answered four different questions. `outcome` names which of
+// them happened, because the caller's correct next move differs: rejected
+// means you did something wrong and should fix it, failed means the peer or
+// transport did and retrying later may work.
+describe('outcome replaces delivered', () => {
+  test('accepted when the harness takes it', async () => {
+    const { side } = makeSide();
+    const r = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
+    expect(r.outcome).toBe('accepted');
+    expect(r).not.toHaveProperty('delivered');
+  });
+
+  test('rejected when we refuse before sending', async () => {
+    const { side, delivered } = makeSide();
+    const tools = createTools(side, log);
+    const unknown = await tools.send_peer({ peer: 'nobody-here', message: 'x' });
+    expect(unknown.outcome).toBe('rejected');
+    expect(unknown.refusal).toBe('peer_unknown');
+
+    await tools.send_peer({ peer: 'auth-refactor', message: 'same' });
+    const repeat = await tools.send_peer({ peer: 'auth-refactor', message: 'same' });
+    expect(repeat.outcome).toBe('rejected');
+    expect(repeat.refusal).toBe('identical_repeat');
+    expect(delivered).toHaveLength(1);
+  });
+
+  test('failed when we tried and the transport did not take it', async () => {
+    const { side } = makeSide({ deliver: async () => ({ delivered: false, error: 'socket closed' }) });
+    const r = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
+    expect(r.outcome).toBe('failed');
+    expect(r.refusal).toBe('delivery_failed');
+  });
+
+  test('a fan-out counts instead of overloading one field', async () => {
+    let n = 0;
+    const { side } = makeSide({
+      listPeers: async () => ({
+        peers: [
+          peer(),
+          peer({ rawName: 'Docs pass', uuid: '00000000-0000-0000-0000-000000000abc', threadId: '00000000-0000-0000-0000-000000000abc' }),
+        ],
+      }),
+      deliver: async () => {
+        n += 1;
+        return n === 2 ? { delivered: false, error: 'gone' } : { delivered: true, method: 'thread/queue/add' as const };
+      },
+    });
+    const r: any = await createTools(side, log).send_peer({
+      peers: ['auth-refactor', 'docs-pass'],
+      message: 'x',
+    });
+
+    expect(r.requested).toBe(2);
+    expect(r.accepted).toBe(1);
+    expect(r).not.toHaveProperty('delivered');
+    expect(r.results.map((x: any) => x.outcome)).toEqual(['accepted', 'failed']);
   });
 });

@@ -32,6 +32,16 @@ export interface MessageRecord {
   /** Shared by every delivery of one fan-out. */
   broadcast_id?: string;
   /**
+   * Computed at read time, never written.
+   *
+   * A send is logged BEFORE it is attempted, so a crash in between leaves a
+   * message record with no outcome record beside it. That used to read
+   * identically to a delivery that failed — reporting a guess as a fact.
+   * `indeterminate` says what is actually known: it was written out, and
+   * nothing ever observed what became of it.
+   */
+  outcome?: 'accepted' | 'failed' | 'indeterminate';
+  /**
    * Computed at read time for messages with `expect_reply`, never written.
    * Absent on every other message: a record that never asked for an answer
    * should not report one way or the other.
@@ -328,10 +338,34 @@ export class MessageLog {
       .filter((r) => r.kind !== 'outcome' && r.kind !== 'checkpoint')
       .map((r) => {
         const o = isMessage(r) ? outcomes.get(r.id) : undefined;
-        const folded =
-          o === undefined
-            ? r
-            : { ...r, delivered: o.delivered, ...(o.detail !== undefined && { notice: o.detail }) };
+        let folded: LogRecord;
+        if (!isMessage(r)) {
+          folded = r;
+        } else {
+          // `delivered` is still WRITTEN — the persisted format is history and
+          // is not worth migrating — but it is not returned. It was always
+          // false at write time and only became meaningful once an outcome
+          // record was folded onto it, which is precisely the confusion
+          // `outcome` exists to end.
+          const { delivered: legacy, ...rest } = r;
+          const outcome =
+            o !== undefined
+              ? o.delivered
+                ? ('accepted' as const)
+                : ('failed' as const)
+              : // No outcome record. On a current log that means the process
+                // died between writing and delivering. A very old record that
+                // carries a true `delivered` and no outcome is taken at its
+                // word rather than reported as unknown.
+                legacy === true
+                ? ('accepted' as const)
+                : ('indeterminate' as const);
+          folded = {
+            ...rest,
+            outcome,
+            ...(o?.detail !== undefined && { notice: o.detail }),
+          } as LogRecord;
+        }
         if (!isMessage(r) || !r.expect_reply) return folded;
         return { ...folded, answered: answered.has(r.id) };
       });

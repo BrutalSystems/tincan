@@ -186,10 +186,21 @@ export type Refusal =
   | GuardReason
   | 'delivery_failed';
 
+/**
+ * What happened to a send, at the coarseness a caller acts on.
+ *
+ * `rejected` means Tin Can refused before sending — the caller did something
+ * that needs fixing, and retrying unchanged will fail the same way.
+ * `failed` means it was attempted and the peer or transport did not take it;
+ * nothing the caller did is wrong, and later may work. That distinction was
+ * the one `delivered: false` destroyed.
+ */
+export type Outcome = 'accepted' | 'rejected' | 'failed';
+
 /** One recipient's outcome within a fan-out. */
 export interface FanOutResult {
   peer: string;
-  delivered: boolean;
+  outcome: Outcome;
   message_id?: string;
   method?: DeliveryMethod;
   refusal?: Refusal;
@@ -198,16 +209,11 @@ export interface FanOutResult {
 }
 
 export interface SendPeerResult {
-  /**
-   * `boolean` for a single recipient — unchanged — and a COUNT of successful
-   * deliveries when `peers` was used. The type differing between the two
-   * shapes is the ugly part of this design; always returning the array form
-   * would be cleaner on paper and would break every existing caller for the
-   * common case.
-   */
-  delivered: boolean | number;
-  /** Fan-out only. */
+  /** Absent for a fan-out, which reports per recipient plus counts instead. */
+  outcome?: Outcome;
+  /** Fan-out only: how many were addressed, and how many the harness took. */
   requested?: number;
+  accepted?: number;
   broadcast_id?: string;
   results?: FanOutResult[];
   method?: DeliveryMethod;
@@ -405,7 +411,6 @@ export function createTools(side: Side, log: MessageLog) {
       // second place for the resolution and guard rules to drift.
       const addresses = args.peers ?? [args.peer as string];
       const fanOut = args.peers !== undefined;
-      const none = fanOut ? 0 : false;
 
       // Before resolution, deliberately. A retry under the same key must still
       // answer "already sent" when the peer has exited in the meantime —
@@ -416,7 +421,9 @@ export function createTools(side: Side, log: MessageLog) {
         if (prior !== undefined) {
           const sameCall = prior.peerArg === addresses.join(', ') && prior.text === args.message;
           return {
-            delivered: none,
+            outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: 'duplicate_send',
             message_id: prior.messageId,
             detail: sameCall
@@ -462,7 +469,9 @@ export function createTools(side: Side, log: MessageLog) {
                   `${resolved.candidates.join(', ')}.`
                 : '';
             return {
-              delivered: none,
+              outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
               refusal: 'self_send',
               ...(resolved.candidates.length > 0 && { candidates: resolved.candidates }),
               detail:
@@ -478,7 +487,9 @@ export function createTools(side: Side, log: MessageLog) {
           // only correct move.
           const replying = args.in_reply_to !== undefined;
           return {
-            delivered: none,
+            outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(replying ? {} : { candidates: resolved.candidates }),
             refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
             detail:
@@ -520,7 +531,9 @@ export function createTools(side: Side, log: MessageLog) {
           });
           if (!matches) {
             return {
-              delivered: none,
+              outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
               refusal: 'reply_misrouted',
               detail:
                 `${args.in_reply_to} was sent by ${original.from.name}` +
@@ -541,7 +554,9 @@ export function createTools(side: Side, log: MessageLog) {
         const actual = 'thread_id' in durable ? durable.thread_id : durable.session_id;
         if (actual !== args.expect_id) {
           return {
-            delivered: none,
+            outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: 'peer_changed',
             peer_state: only.side.state,
             detail:
@@ -555,7 +570,8 @@ export function createTools(side: Side, log: MessageLog) {
       const gone = targets.find((t) => t.side.state === 'unreachable');
       if (gone !== undefined) {
         return {
-          delivered: none,
+          outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
           refusal: 'peer_unreachable',
           peer_state: 'unreachable',
           detail:
@@ -573,7 +589,9 @@ export function createTools(side: Side, log: MessageLog) {
           const id = newMessageId();
           log.appendDropped(id, verdict.reason);
           return {
-            delivered: none,
+            outcome: 'rejected',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: verdict.reason,
             peer_state: t.side.state,
             message_id: id,
@@ -644,7 +662,7 @@ export function createTools(side: Side, log: MessageLog) {
         const vanished = !outcome.delivered && outcome.unreachable === true;
         results.push({
           peer: target.display,
-          delivered: outcome.delivered,
+          outcome: outcome.delivered ? 'accepted' : 'failed',
           message_id: envelope.id,
           ...(outcome.method !== undefined && { method: outcome.method }),
           ...(outcome.notice !== undefined && { notice: outcome.notice }),
@@ -658,7 +676,7 @@ export function createTools(side: Side, log: MessageLog) {
         });
       }
 
-      const landed = results.filter((r) => r.delivered);
+      const landed = results.filter((r) => r.outcome === 'accepted');
       if (args.idempotency_key !== undefined && landed.length > 0) {
         idempotency.record(args.idempotency_key, {
           messageId: landed[0]!.message_id!,
@@ -670,8 +688,8 @@ export function createTools(side: Side, log: MessageLog) {
 
       if (fanOut) {
         return {
-          delivered: landed.length,
           requested: targets.length,
+          accepted: landed.length,
           ...(broadcastId !== undefined && { broadcast_id: broadcastId }),
           results,
         };
@@ -680,7 +698,7 @@ export function createTools(side: Side, log: MessageLog) {
       // Byte-identical to what a single-peer caller has always received.
       const only = results[0]!;
       return {
-        delivered: only.delivered,
+        outcome: only.outcome,
         ...(only.method !== undefined && { method: only.method }),
         peer_state: only.refusal === 'peer_unreachable' ? 'unreachable' : targets[0]!.side.state,
         message_id: only.message_id,

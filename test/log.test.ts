@@ -49,7 +49,7 @@ describe('append and read', () => {
     expect(rec).toMatchObject({
       id: 'msg_a',
       direction: 'out',
-      delivered: true,
+      outcome: 'accepted',
       method: 'codex-queue',
       text: 'text of msg_a',
     });
@@ -126,7 +126,7 @@ describe('outcome folding', () => {
     log.appendOutcome('msg_a', true);
     const records = log.read({ last_n: 10 });
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ id: 'msg_a', delivered: true });
+    expect(records[0]).toMatchObject({ id: 'msg_a', outcome: 'accepted' });
   });
 
   test('attaches an outcome detail to the message as a notice', () => {
@@ -136,16 +136,24 @@ describe('outcome folding', () => {
     expect(rec).toMatchObject({ notice: 'receiver held message' });
   });
 
-  test('keeps a failed send visible as undelivered', () => {
+  test('keeps a failed send visible as failed', () => {
     log.appendMessage(env('msg_a'), false);
     log.appendOutcome('msg_a', false, 'thread not found');
     const [rec] = log.read({ last_n: 10 });
-    expect(rec).toMatchObject({ delivered: false, notice: 'thread not found' });
+    expect(rec).toMatchObject({ outcome: 'failed', notice: 'thread not found' });
   });
 
-  test('leaves a message with no outcome undelivered, as a crash mid-send would', () => {
+  // Not 'failed'. Nothing observed what happened to this send, and saying it
+  // failed would be reporting a guess as a fact.
+  test('leaves a message with no outcome as indeterminate, which is what a crash mid-send leaves', () => {
     log.appendMessage(env('msg_a'), false);
-    expect(log.read({ last_n: 10 })[0]).toMatchObject({ id: 'msg_a', delivered: false });
+    expect(log.read({ last_n: 10 })[0]).toMatchObject({ id: 'msg_a', outcome: 'indeterminate' });
+  });
+
+  test('does not return the vestigial `delivered` field', () => {
+    log.appendMessage(env('msg_a'), false);
+    log.appendOutcome('msg_a', true);
+    expect(log.read({ last_n: 10 })[0]).not.toHaveProperty('delivered');
   });
 });
 
@@ -451,5 +459,35 @@ describe('rotation', () => {
     fill(l, 60);
     const afterSecond = readFileSync(archivePath(), 'utf8').trim().split('\n').length;
     expect(afterSecond).toBeGreaterThan(afterFirst);
+  });
+});
+
+// A send is logged BEFORE it is attempted, so a crash in between leaves a
+// message record with no outcome record. That read identically to a delivery
+// that failed — reporting a guess as a fact. "We do not know" is the honest
+// answer, and it is the one Ferry's own crash probe arrived at independently.
+describe('outcome on a log record', () => {
+  test('accepted once the outcome record lands', () => {
+    log.appendMessage(env('msg_1'), false);
+    log.appendOutcome('msg_1', true);
+    expect(log.read({ last_n: 5 }).find((r) => r.id === 'msg_1')).toMatchObject({
+      outcome: 'accepted',
+    });
+  });
+
+  test('failed when the outcome says so', () => {
+    log.appendMessage(env('msg_2'), false);
+    log.appendOutcome('msg_2', false, 'socket closed');
+    expect(log.read({ last_n: 5 }).find((r) => r.id === 'msg_2')).toMatchObject({
+      outcome: 'failed',
+    });
+  });
+
+  test('indeterminate when the process died between writing and delivering', () => {
+    log.appendMessage(env('msg_3'), false);
+    // No outcome record: nothing ever observed what happened to it.
+    expect(log.read({ last_n: 5 }).find((r) => r.id === 'msg_3')).toMatchObject({
+      outcome: 'indeterminate',
+    });
   });
 });

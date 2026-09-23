@@ -679,7 +679,7 @@ describe('buildSide, hosted in opencode', () => {
         // that slug must never resolve to a deliverable peer.
         const log = new MessageLog(join(logDir, 'messages.jsonl'));
         const r = await createTools(side, log).send_peer({ peer: 'nimble-wizard', message: 'hi' });
-        expect(r.delivered).toBe(false);
+        expect(r.outcome).toBe('rejected');
         expect(r.refusal).toBe('peer_unknown');
       } finally {
         await instance.close();
@@ -815,7 +815,7 @@ describe('buildSide, hosted in opencode', () => {
           peer: 'target-session',
           message: 'hi',
         });
-        expect(r.delivered).toBe(true);
+        expect(r.outcome).toBe('accepted');
 
         const wire = JSON.parse(instance.rawLines[0]!) as { message_from: string; text: string };
         expect(wire.text).toContain(`from="${wire.message_from}"`);
@@ -882,7 +882,7 @@ describe('buildSide, hosted in opencode', () => {
           peer: 'target-session',
           message: 'hi',
         });
-        expect(r.delivered).toBe(true);
+        expect(r.outcome).toBe('accepted');
         expect(straddled).toBe(true);
 
         const wire = JSON.parse(instance.rawLines[0]!) as { message_from: string; text: string };
@@ -956,7 +956,7 @@ describe('buildSide, hosted in opencode', () => {
           peer: 'target-session',
           message: 'hi',
         });
-        expect(r.delivered).toBe(true);
+        expect(r.outcome).toBe('accepted');
 
         const wire = JSON.parse(instance.rawLines[0]!) as { text: string };
         expect(wire.text.split('\n')[0]).toMatch(
@@ -994,7 +994,7 @@ describe('buildSide, hosted in opencode', () => {
       }, { sweep: { socketDirs: [] } });
       const log = new MessageLog(join(logDir, 'messages.jsonl'));
       const r = await createTools(side, log).send_peer({ peer: 'nimble-wizard', message: 'hi' });
-      expect(r.delivered).toBe(false);
+      expect(r.outcome).toBe('rejected');
       // #4: `self_send`, not `peer_unknown` — the peer exists, it is us.
       expect(r.refusal).toBe('self_send');
       expect(r.detail?.toLowerCase()).toContain('yourself');

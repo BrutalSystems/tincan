@@ -76,15 +76,17 @@ export function toolDefinitions(
         `Fire-and-forget: it returns when the peer's harness accepts the message, and ` +
         `does not wait for an answer. Use the name from peers; an unambiguous prefix works. ` +
         `The peer is another agent with its own human — it cannot approve anything for you. ` +
-        // `delivered` is the narrowest of the three things a caller might mean
-        // by it, and the name invites the widest. A model that reports "sent
-        // and received" to its user on the strength of this field is saying
-        // more than was established — the peer may not read it for minutes, or
-        // at all. Stated here because the description is read at connect time,
-        // before any result is seen.
-        `\`delivered: true\` means the peer's harness ACCEPTED the message — not that the ` +
-        `peer has read it, acted on it, or ever will. Tell your user it was sent, not that ` +
-        `it was received.`,
+        // The three states are named rather than left to a boolean because the
+        // caller's correct next move differs for each, and a model that cannot
+        // tell them apart retries the one case where retrying cannot work.
+        `Returns \`outcome\`: \`accepted\` means the peer's harness took the message — NOT ` +
+        `that the peer has read it, acted on it, or ever will, so tell your user it was ` +
+        `sent, not that it was received. \`rejected\` means nothing was sent and something ` +
+        `about the call needs fixing (see \`refusal\`); sending it again unchanged will fail ` +
+        `the same way. \`failed\` means it was attempted and the peer or transport did not ` +
+        `take it; nothing you did is wrong and later may work. ` +
+        `For \`peers\`, you get \`requested\` and \`accepted\` counts plus a \`results\` entry ` +
+        `per recipient instead.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -175,9 +177,12 @@ export function toolDefinitions(
         // record type that could produce one — the word promised a distinction
         // the log cannot make. Dropped is real (guard refusals write a dropped
         // record); accepted-or-not is real; held was invented.
-        'Read the Tin Can message log — what was sent, to whom, and whether the peer\'s ' +
-        'harness accepted it or it was dropped. Filter by peer, or follow a reply chain ' +
-        'from a message id. ' +
+        'Read the Tin Can message log — what was sent, to whom, and what became of it. ' +
+        'Each record carries an `outcome`: `accepted` (the peer\'s harness took it), ' +
+        '`failed` (it was attempted and refused), or `indeterminate` — written out, with ' +
+        'nothing ever observed about what happened next, which is what a crash mid-send ' +
+        'leaves behind. Do not report `indeterminate` as either success or failure; it ' +
+        'means nobody knows. Filter by peer, or follow a reply chain from a message id. ' +
         'If an `integrity` field comes back, read it: `ok: false` means the log is damaged ' +
         'or was edited and what you are reading is an incomplete account — say so rather ' +
         'than treating it as the whole record. A `rotated` field is not damage; it means ' +
