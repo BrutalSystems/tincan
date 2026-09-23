@@ -1,6 +1,6 @@
 # Tin Can — Address Format
 
-> **Normative for `@brutalsystems/tincan` 1.0.0.**
+> **Normative for `@brutalsystems/tincan` 1.0.1.**
 >
 > This describes what Tin Can does today, precisely enough for another tool to
 > produce addresses Tin Can will resolve. It is a write-down of shipped
