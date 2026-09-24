@@ -69,7 +69,8 @@ From a Claude Code session, find who is running:
 }
 ```
 
-Send one a question — an unambiguous prefix is enough:
+Send one a question — an unambiguous prefix is enough (it is a convenience for
+typing, not an addressing guarantee; see [Peer names](#peer-names)):
 
 ```jsonc
 // send_peer { "peer": "auth", "message": "Does verifyToken tolerate clock skew?" }
@@ -560,6 +561,12 @@ both get suffixed, exactly as two same-runtime peers would.
   prefix resolves (`auth` works if it is the only match).
 - On a collision only, the suffixed form `auth-refactor.63a` is shown and
   required. Ambiguity is refused with every candidate listed — never guessed.
+- **A short name is for a human typing.** Prefix matching has a sharp edge: once
+  a session named exactly `muster` exits, `muster` is nobody's name and matches
+  its neighbour `muster-b1` instead — delivered, and reported as sent. When your
+  code already holds a session's durable id, address it by `canonical_id`, which
+  is matched exactly and refuses rather than landing on a stranger. See
+  [CANONICAL_ID.md](./CANONICAL_ID.md), known defect 4.
 - A peer on another machine carries `@<machine>`: `auth-refactor@m4pro`. A peer
   on this one carries nothing, so every address in use keeps meaning what it
   meant. Collisions are counted per machine.

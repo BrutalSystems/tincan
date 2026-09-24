@@ -217,8 +217,9 @@ with its own name.
 - **Case-insensitive** throughout. `AUTH-REFACTOR.7F3` resolves.
 - **Input is trimmed.** Surrounding whitespace is ignored.
 - **There is no minimum prefix length.** A one-character prefix resolves if it
-  is unambiguous. The empty string is a prefix of everything — see
-  [known defects](#known-defects).
+  is unambiguous. The empty string is a prefix of everything, and a complete
+  name can be a prefix of a longer complete name — see
+  [known defects](#known-defects), 3 and 4.
 - **No tie-breaking.** Ambiguity is always refused, never guessed.
 
 ### Refusal shape
@@ -264,6 +265,45 @@ inconsistency only shows when each is alone.
 string is a prefix of every slug, `resolve("")` against a single-peer listing
 returns that peer rather than refusing. With two or more peers it is refused as
 ambiguous, as expected.
+
+**4. A full name that is a prefix of a longer full name resolves to the longer
+one once the exactly-named session is gone.** While a session named `muster` is
+listed, `muster` is an exact hit and pass 2 is never reached. The moment it
+exits, `muster` is nobody's name and becomes merely a prefix of its neighbour
+`muster-b1` — the only match, so it resolves, and the message is delivered to a
+session the caller did not mean and reported as sent. Observed live between two
+sessions; the send was a reply, so `reply_misrouted` caught it, but a new
+message would have gone through.
+
+This is not an exotic collision. It happens whenever a short name and a longer
+one built on it coexist — `muster` / `muster-b1`, `ferry` / `ferry-9b`.
+
+**It is kept because it cannot be fixed from the listing alone.** The hazard is
+indistinguishable from the behaviour directly above it in this document: `auth`
+→ `auth-refactor` and `muster` → `muster-b1` are the same shape, the same single
+match, and in both cases the input is nobody's current name. The only fact that
+separates them is that a session named exactly `muster` *existed and has gone*,
+and a peer listing cannot carry that fact, because the session's absence is the
+whole premise. Any rule that refuses the second refuses the first: removing the
+prefix pass is verifiable in one edit, and it fails
+`resolve > unambiguous prefix resolves` alongside the defect's own case.
+
+**The form that cannot misroute is `canonical_id`.** Pass 2 matches against the
+slug and the qualified form, never against `canonicalId`, so a canonical id can
+never prefix-match a stranger — it resolves to the session it names or refuses
+as unknown:
+
+```
+muster gone , resolve("muster")                        -> OK, muster-b1
+muster gone , resolve("claude-code:muster.18ddaa21-…") -> REFUSED unknown
+```
+
+A loud refusal is the outcome a caller wants here. **When you hold a session's
+durable id, address it by `canonical_id` rather than by its bare name** — a
+short name is for a human typing, not for a program that already knows exactly
+which session it means. `expect_id` does not substitute: it is compared after
+resolution and only ever rejects, so it guards the send without selecting the
+recipient.
 
 ## Changing this format
 
