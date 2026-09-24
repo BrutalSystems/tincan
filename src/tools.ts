@@ -693,7 +693,11 @@ export function createTools(side: Side, log: MessageLog) {
             runtime: target.side.runtime,
             name: target.display,
             cwd: target.side.cwd,
-            ...(target.side.threadId !== undefined && { thread_id: target.side.threadId }),
+            // Ask which key this runtime's durable id uses, rather than
+            // hardcoding Codex's. `thread_id` alone meant a Claude Code or
+            // opencode recipient was recorded by display name only — the name
+            // that goes stale, and the one thing `expect_id` refuses to trust.
+            ...durableIdOf(target.side),
           },
           method: methodFor(target.side.runtime),
           expect_reply: args.expect_reply,

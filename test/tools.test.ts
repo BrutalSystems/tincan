@@ -991,6 +991,42 @@ describe('the sender identifies itself durably', () => {
   });
 });
 
+// The `to` side carried a durable id only for Codex, because the envelope
+// hardcoded `thread_id` instead of asking `durableIdOf` which key the
+// recipient's runtime uses. Measured on a live log: Codex recipients had one on
+// 202 of 202 records, Claude Code on 0 of 312 and opencode on 0 of 48 — so 64%
+// of sends recorded who they went to by display name alone, which is the name
+// that goes stale (#23) and the misdelivery `expect_id` exists to prevent.
+describe('the recipient is identified durably', () => {
+  const claudePeer = () =>
+    peer({
+      runtime: 'claude-code',
+      rawName: 'billing-api',
+      uuid: '5af69d42-2214-41d9-b13f-9c3177eb60ce',
+      threadId: undefined,
+    });
+
+  test('writes a Claude Code recipient session_id into the log record', async () => {
+    const { side } = makeSide({
+      peerRuntimes: ['claude-code'],
+      listPeers: async () => ({ peers: [claudePeer()] }),
+    });
+    const r = await tools(side).send_peer({ peer: 'billing-api', message: 'x' });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.to.session_id).toBe('5af69d42-2214-41d9-b13f-9c3177eb60ce');
+  });
+
+  test('still writes a Codex recipient thread_id, under the key that runtime uses', async () => {
+    const { side } = makeSide();
+    const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'x' });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.to.thread_id).toBe('00000000-0000-0000-0000-0000000007f3');
+    expect(rec.to.session_id).toBeUndefined();
+  });
+});
+
 // The stray ACK, reproduced. A reply carried in_reply_to for a message the
 // recipient never sent, and Tin Can delivered it anyway — in_reply_to was an
 // unvalidated string. The machine-global log already holds the original

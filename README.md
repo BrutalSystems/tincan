@@ -689,7 +689,8 @@ Three things worth knowing before you rely on them, none of them bugs:
 ```json
 {"id":"msg_...","at":"2026-09-19T11:58:44.955Z","direction":"out",
  "from":{"runtime":"codex","name":"tincan","cwd":"/src/tincan"},
- "to":{"runtime":"claude-code","name":"billing-api","cwd":"/src/billing"},
+ "to":{"runtime":"claude-code","name":"billing-api","cwd":"/src/billing",
+       "session_id":"5af69d42-2214-41d9-b13f-9c3177eb60ce"},
  "text":"...","method":"inbox","delivered":false,"expect_reply":true,"delivery":"queue"}
 {"id":"msg_...","at":"...","kind":"outcome","delivered":true}
 ```
