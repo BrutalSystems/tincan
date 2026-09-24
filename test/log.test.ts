@@ -200,6 +200,64 @@ describe('record chaining', () => {
     expect(records.length).toBe(2);
   });
 
+  /**
+   * A record that chained onto an earlier record which is STILL PRESENT — the
+   * shape a stale head leaves behind. Built by letting the real chaining code
+   * run twice from the same head rather than by hand-assembling hashes: the
+   * file is snapshotted, one record is appended, the snapshot is restored, a
+   * second record is appended from the same head, and the two are concatenated.
+   */
+  const withStaleHead = (): void => {
+    const path = join(dir, 'nested', 'messages.jsonl');
+    log.appendMessage(env('msg_a'), true);
+    const snapshot = readFileSync(path, 'utf8');
+    log.appendMessage(env('msg_b'), true);
+    const withB = readFileSync(path, 'utf8');
+    writeFileSync(path, snapshot);
+    log.appendMessage(env('msg_c'), true);
+    const cLine = readFileSync(path, 'utf8').slice(snapshot.length);
+    writeFileSync(path, withB + cLine);
+  };
+
+  // MEASURED, not hypothetical: on a ten-session machine, 79 of 79 chain
+  // breaks were this — a writer holding a head it read earlier — and ZERO were
+  // two writers racing. Reporting them as damage made `message_log`'s empty
+  // result unfalsifiable for a peer, which went and read the raw file to tell
+  // "nothing was sent" from "the record is among the damage". See #34, #37.
+  test('a stale head is interleaving, not damage: nothing is missing from the file', () => {
+    withStaleHead();
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+
+    expect(integrity.interleaved).toBe(1);
+    expect(integrity.broken).toBe(0);
+    expect(integrity.tampered).toBe(0);
+    expect(integrity.ok).toBe(true);
+  });
+
+  // The whole point of separating the two: `broken` has to keep meaning
+  // "something is wrong", or the detection #17 was built for is lost.
+  test('a record removed from the middle is still damage, not interleaving', () => {
+    log.appendMessage(env('msg_a'), true);
+    log.appendMessage(env('msg_b'), true);
+    log.appendMessage(env('msg_c'), true);
+    const kept = lines().filter((_, i) => i !== 1);
+    writeFileSync(join(dir, 'nested', 'messages.jsonl'), kept.join('\n') + '\n');
+
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity.broken).toBe(1);
+    expect(integrity.interleaved).toBe(0);
+    expect(integrity.ok).toBe(false);
+  });
+
+  // The defect a peer hit: the detail asserted the log "is incomplete or was
+  // edited" whenever anything at all was counted, while `tampered` read 0 in
+  // the same object. It has to stop claiming editing it cannot evidence.
+  test('says nothing alarming about a log whose only anomaly is interleaving', () => {
+    withStaleHead();
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity.detail).toBeUndefined();
+  });
+
   test('detects a record removed from the middle', () => {
     log.appendMessage(env('msg_a'), true);
     log.appendMessage(env('msg_b'), true);

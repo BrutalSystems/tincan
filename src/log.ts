@@ -154,8 +154,23 @@ export interface LogIntegrity {
   unparseable: number;
   /** Records whose contents no longer hash to the value they carry. */
   tampered: number;
-  /** Records whose `prev` does not name the record before them. */
+  /**
+   * Records whose `prev` names a record that is NOT in this file — something
+   * that was written is gone, or the chain was rewritten. This is damage.
+   */
   broken: number;
+  /**
+   * Records whose `prev` names an earlier record that IS still here: the
+   * writer chained onto a head it had read before another session appended.
+   * Nothing is missing, and this is normal for a machine-global log with one
+   * writer per live session.
+   *
+   * Counted apart from `broken` because it is not a fault and must not make
+   * `ok` false. Measured on a ten-session machine: 79 of 79 breaks were this
+   * and none were damage, while the report called all 79 damage — and a chain
+   * that cries wolf gets ignored, which costs the detection it exists for.
+   */
+  interleaved: number;
   /** Records predating chaining. Expected on an upgraded install, not a fault. */
   unchained: number;
   /**
@@ -372,7 +387,12 @@ export class MessageLog {
   }
 
   private allWithIntegrity(): { records: LogRecord[]; integrity: LogIntegrity } {
-    const tally = { unparseable: 0, tampered: 0, broken: 0, unchained: 0 };
+    const tally = { unparseable: 0, tampered: 0, broken: 0, interleaved: 0, unchained: 0 };
+    // Every hash seen so far, so a `prev` that does not name the PREVIOUS
+    // record can be told apart from one that names nothing at all. The first
+    // is a stale head and the file is complete; the second means a record is
+    // gone. Bounded by rotation, which caps the live file.
+    const seen = new Set<string>();
     let rotated: LogIntegrity['rotated'];
     if (!existsSync(this.path)) return { records: [], integrity: summarise(tally) };
 
@@ -408,8 +428,14 @@ export class MessageLog {
       if (recordHash(rec as unknown as Record<string, unknown>) !== rec.hash) {
         tally.tampered++;
       } else if (!resync && expected !== undefined && rec.prev !== expected) {
-        tally.broken++;
+        // The distinction this whole field exists for. Naming a record that is
+        // still in the file means another session appended between this
+        // writer's head read and its write — interleaving, with nothing lost.
+        // Naming one that is not here means something is missing.
+        if (typeof rec.prev === 'string' && seen.has(rec.prev)) tally.interleaved++;
+        else tally.broken++;
       }
+      seen.add(rec.hash);
       if (rec.kind === 'checkpoint') {
         rotated = { count: rec.rotated, into: rec.into, at: rec.at };
         // The record after this one chains from the archive, not from anything
@@ -587,6 +613,7 @@ function summarise(t: {
   unparseable: number;
   tampered: number;
   broken: number;
+  interleaved: number;
   unchained: number;
 }, rotated?: LogIntegrity['rotated']): LogIntegrity {
   const faults: string[] = [];
@@ -594,7 +621,14 @@ function summarise(t: {
     faults.push(`${t.unparseable} line(s) could not be parsed (a truncated or half-written write)`);
   }
   if (t.tampered > 0) faults.push(`${t.tampered} record(s) no longer match their own hash`);
-  if (t.broken > 0) faults.push(`${t.broken} record(s) do not follow the record before them`);
+  if (t.broken > 0) {
+    faults.push(`${t.broken} record(s) name a previous record that is not in this log`);
+  }
+  // `interleaved` is deliberately NOT a fault. It was one, and the report then
+  // told a reader the log "is incomplete or was edited" while `tampered` read
+  // 0 in the same object — so the reader could not tell an empty result from a
+  // lost one, and went to the raw file to find out. That is the work the chain
+  // exists to remove.
   const ok = faults.length === 0;
   return {
     ok,
@@ -606,7 +640,14 @@ function summarise(t: {
           detail:
             `Log integrity: ${faults.join('; ')}. Records are still returned, but the log is ` +
             `incomplete or was edited — treat it as a partial account of what happened. The ` +
-            `chain detects damage, not a deliberate rewrite by this user.`,
+            `chain detects damage, not a deliberate rewrite by this user.` +
+            // Said only alongside a real fault, so the reader counting records
+            // does not attribute the interleaved ones to the damage.
+            (t.interleaved > 0
+              ? ` Separately, ${t.interleaved} record(s) chained onto an earlier record that ` +
+                `is still present: that is concurrent sessions appending to one log, not ` +
+                `damage, and nothing is missing on account of it.`
+              : ''),
         }),
   };
 }

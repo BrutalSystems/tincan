@@ -722,13 +722,28 @@ when the chain does not hold:
 
 ```json
 {"records":[…],
- "integrity":{"ok":false,"unparseable":1,"tampered":0,"broken":0,"unchained":0,
+ "integrity":{"ok":false,"unparseable":1,"tampered":0,"broken":0,"interleaved":0,
+              "unchained":0,
               "detail":"Log integrity: 1 line(s) could not be parsed …"}}
 ```
 
 The field is **absent when the log is healthy**, so its presence is the signal.
 Records are still returned either way — a damaged log must not become an empty
 one.
+
+**Interleaving is not damage, and is counted apart from it.** The log is
+machine-global: every live session's Tin Can appends to it, so a writer can
+chain onto a head that was current when it read it and stale by the time it
+wrote. The result is a record whose `prev` names an earlier record that is
+still right there in the file. Nothing is missing.
+
+`broken` therefore means what it says — a record names a predecessor that **is
+not in this log** — while `interleaved` counts the harmless case, and does not
+make `ok` false. Measured on a ten-session machine before the split: 79 of 79
+chain breaks were interleaving and none were damage, while the report called
+all 79 damage and told the reader the log "was edited" with `tampered` reading
+0 in the same object. A chain that cries wolf gets ignored, which costs exactly
+the detection it was built for.
 
 **What this is and is not.** The chain lives in the same file as the data, so
 anything that can rewrite the log can recompute it. This is integrity against
