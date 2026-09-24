@@ -409,6 +409,74 @@ describe('record chaining', () => {
     });
   });
 
+  /**
+   * #23. The log records what a session SENT. That a receiver can see what it
+   * was sent is not something Tin Can does — it is a coincidence of the log
+   * being machine-global: the sender's record sits in the same file the
+   * receiver reads. Ferry ends that, because the sender's record stays on the
+   * sender's disk.
+   *
+   * The rule, settled before the code (see the issue): exactly one record per
+   * delivery, written by the process that performs the final LOCAL delivery.
+   * Today that is always the sender, so nothing changes and no existing query
+   * shifts shape. When the sender is on another machine, the process handing
+   * the message to the local harness writes `in`. The two cases are disjoint —
+   * final local delivery happens once — so there is nothing to deduplicate.
+   *
+   * `appendIncoming` is that producer. Nothing calls it yet, exactly as
+   * `machine` on EnvelopeParty ships unpopulated: the shape exists so the
+   * remote delivery path fills a field rather than changing a format under
+   * everyone already parsing it.
+   */
+  describe('inbound records (#23)', () => {
+    const incoming = () =>
+      buildEnvelope({
+        id: 'msg_in1',
+        from: { runtime: 'claude-code', name: 'ferry', session_id: 'sid-remote', machine: 'homemac' },
+        to: { runtime: 'claude-code', name: 'billing-api', session_id: 'sid-mine' },
+        method: 'inbox',
+        reply_tool: true,
+        expect_reply: false,
+        text: 'from another machine',
+      });
+
+    test('records an arrival as `in`, distinguishable from anything we sent', () => {
+      log.appendMessage(env('msg_out1'), true);
+      log.appendIncoming(incoming());
+
+      const [out, inbound] = parsed();
+      expect(out!.direction).toBe('out');
+      expect(inbound!.direction).toBe('in');
+      expect(inbound!.id).toBe('msg_in1');
+    });
+
+    test('an inbound record is chained and verifies like any other', () => {
+      log.appendIncoming(incoming());
+      log.appendMessage(env('msg_out1'), true);
+
+      const { integrity } = log.readWithIntegrity({ last_n: 10 });
+      expect(integrity).toMatchObject({ ok: true, broken: 0, tampered: 0, unchained: 0 });
+    });
+
+    /**
+     * "About me" has to be one question with one answer on both sides of a
+     * machine boundary. Locally it resolves to the sender's `out` record in
+     * the shared file; remotely, to our own `in` record. Same key either way —
+     * `to`'s durable id, which is what `missed` already matches on.
+     */
+    test('is addressed to us by the same durable id an outgoing record uses', () => {
+      const rec = log.appendIncoming(incoming());
+      expect(rec.to.session_id).toBe('sid-mine');
+      expect(rec.from.machine).toBe('homemac');
+    });
+
+    test('does not disturb existing reads, which never asked about direction', () => {
+      log.appendMessage(env('msg_out1'), true);
+      log.appendIncoming(incoming());
+      expect(log.read({ last_n: 10 })).toHaveLength(2);
+    });
+  });
+
   // The whole point of separating the two: `broken` has to keep meaning
   // "something is wrong", or the detection #17 was built for is lost.
   test('a record removed from the middle is still damage, not interleaving', () => {

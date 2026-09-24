@@ -19,7 +19,35 @@ import type { Envelope } from './envelope.js';
 export interface MessageRecord {
   id: string;
   at: string;
-  direction: 'out';
+  /**
+   * Which side of the exchange wrote this record (#23).
+   *
+   * `out` is what Tin Can has always written, and on one machine it is enough
+   * for BOTH sides: the log is machine-global, so a receiver learns what it
+   * was sent by reading the sender's record out of the same file. That is a
+   * coincidence of shared storage, not something Tin Can does — and it ends
+   * the moment a peer is on another machine, where the sender's record stays
+   * on the sender's disk and a receiver reading its own log would find no
+   * evidence it had ever been sent anything.
+   *
+   * The rule, settled before this field moved (see #23):
+   *
+   *   Exactly one record per delivery, written by the process that performs
+   *   the final LOCAL delivery.
+   *
+   * Today that process is always the sending Tin Can — it opens the receiving
+   * harness's inbox itself — so every record is `out` and nothing about the
+   * same-machine case changes. When a message originates elsewhere, the
+   * process handing it to the local harness on the sender's behalf writes
+   * `in`. The two cases are disjoint, because final local delivery happens
+   * exactly once per message, so there is nothing to deduplicate and no
+   * existing query changes shape.
+   *
+   * Not an offline queue: this records what was delivered, at the moment it
+   * was delivered. Nothing is held for an absent session and no retry is
+   * introduced.
+   */
+  direction: 'out' | 'in';
   from: Envelope['from'];
   to: Envelope['to'];
   text: string;
@@ -388,6 +416,45 @@ export class MessageLog {
       ...(e.answers === true && { answers: true }),
       ...(e.broadcast_id !== undefined && { broadcast_id: e.broadcast_id }),
       ...(delivery !== undefined && { delivery }),
+    };
+    this.append(rec);
+    return rec;
+  }
+
+  /**
+   * Record a message that arrived here from elsewhere.
+   *
+   * The producer for `direction: 'in'`. **Nothing calls this yet**, which is
+   * deliberate and the same sequencing as `machine` on `EnvelopeParty`: the
+   * shape ships unpopulated so the remote delivery path fills a field rather
+   * than changing a format under everyone already parsing it.
+   *
+   * Whoever builds that path calls this at the point it hands the message to
+   * the local harness — the moment that makes it the final local deliverer,
+   * and therefore the one process responsible for the single record. Calling
+   * it anywhere a sender on THIS machine would also write a record would
+   * double-count the local case while fixing the remote one, which is the
+   * trade #23 exists to avoid.
+   *
+   * No `delivered` argument: this is written after a delivery happened, not
+   * before one is attempted. An outgoing record is logged first and reconciled
+   * by a later outcome record precisely because its fate is unknown at the
+   * time; an arrival has already arrived.
+   */
+  appendIncoming(e: Envelope): MessageRecord {
+    const rec: MessageRecord = {
+      id: e.id,
+      at: e.at,
+      direction: 'in',
+      from: e.from,
+      to: e.to,
+      text: e.text,
+      method: e.method,
+      delivered: true,
+      expect_reply: e.expect_reply,
+      ...(e.in_reply_to !== undefined && { in_reply_to: e.in_reply_to }),
+      ...(e.answers === true && { answers: true }),
+      ...(e.broadcast_id !== undefined && { broadcast_id: e.broadcast_id }),
     };
     this.append(rec);
     return rec;
