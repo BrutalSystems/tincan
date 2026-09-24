@@ -131,14 +131,24 @@ export interface Side {
   ): Promise<DeliveryOutcome>;
 }
 
+/**
+ * The widest fan-out `send_peer` accepts.
+ *
+ * Capped deliberately. Fan-out makes it trivially easy to exhaust a peer's
+ * budget — Codex and opencode allow 3 sends/minute — and a width limit is
+ * cheap insurance that also says what this is for: a machine's worth of
+ * sessions, not a mailing list.
+ *
+ * A constant rather than a literal because the number is stated twice: zod
+ * ENFORCES it here, and `tool-definitions.ts` ADVERTISES it as `maxItems` to
+ * the model. Those were separate literals, and nothing made them agree.
+ */
+export const MAX_FANOUT = 8;
+
 export const sendPeerSchema = z
   .object({
     peer: z.string().optional(),
-    // Capped deliberately. Fan-out makes it trivially easy to exhaust a peer's
-    // budget — Codex and opencode allow 3 sends/minute — and a width limit is
-    // cheap insurance that also says what this is for: a machine's worth of
-    // sessions, not a mailing list.
-    peers: z.array(z.string()).min(1).max(8).optional(),
+    peers: z.array(z.string()).min(1).max(MAX_FANOUT).optional(),
     message: z.string().min(1),
     in_reply_to: z.string().optional(),
     expect_reply: z.boolean().default(false),

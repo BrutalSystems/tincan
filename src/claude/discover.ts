@@ -18,7 +18,17 @@ import { execFileSync } from 'node:child_process';
 import net from 'node:net';
 import type { InboxAuth } from './client.js';
 
-export type PeerState = 'idle' | 'busy' | 'unreachable';
+/**
+ * Every state `peers` can report, in the order the tool description lists them.
+ *
+ * An array rather than a bare union because the vocabulary is stated twice:
+ * here, and in the `peers` description the model reads at connect time. That
+ * description used to spell the three out by hand, so adding a state — #32
+ * proposes `unknown` — would have left the model told about three of four.
+ */
+export const PEER_STATES = ['idle', 'busy', 'unreachable'] as const;
+
+export type PeerState = (typeof PEER_STATES)[number];
 
 export interface ClaudeSession {
   pid: number;

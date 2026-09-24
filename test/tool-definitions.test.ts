@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import { toolDefinitions } from '../src/tool-definitions.js';
-import { runtimeSupportsUrgent } from '../src/tools.js';
-import type { RuntimeName } from '../src/types.js';
+import { MAX_FANOUT, runtimeSupportsUrgent, sendPeerSchema } from '../src/tools.js';
+import { PEER_STATES } from '../src/claude/discover.js';
+import type { RuntimeName } from '../src/naming.js';
 
 const defs = toolDefinitions(['codex'], 'codex', 'included');
 const byName = (n: string) => defs.find((d) => d.name === n)!;
@@ -25,9 +26,22 @@ describe('toolDefinitions', () => {
     expect(Object.keys(schema.properties)).toContain('peers');
   });
 
-  test('caps fan-out width in the schema the model reads', () => {
+  // The advertised cap and the enforced cap were two unrelated literals in two
+  // files — `maxItems` here, `.max(8)` in `sendPeerSchema` — and nothing made
+  // them agree. Raising one alone is silent in both directions: advertise more
+  // than zod takes and the model sends a call that is refused for a reason the
+  // schema said was fine; advertise less and a width that works is never
+  // offered. The enforced side is MEASURED by running the schema rather than
+  // read off a literal, so this fails if either half moves without the other.
+  test('advertises exactly the fan-out width sendPeerSchema enforces', () => {
     const props = byName('send_peer').inputSchema.properties as Record<string, { maxItems?: number }>;
-    expect(props.peers?.maxItems).toBe(8);
+    expect(props.peers?.maxItems).toBe(MAX_FANOUT);
+
+    const names = (n: number) => Array.from({ length: n }, (_, i) => `peer-${i}`);
+    expect(sendPeerSchema.safeParse({ peers: names(MAX_FANOUT), message: 'x' }).success).toBe(true);
+    expect(sendPeerSchema.safeParse({ peers: names(MAX_FANOUT + 1), message: 'x' }).success).toBe(
+      false,
+    );
   });
 
   test('defaults expect_reply and urgent to false', () => {
@@ -60,6 +74,17 @@ describe('toolDefinitions', () => {
     // The two wordings that would replace it if anything were steerable.
     expect(urgent).not.toContain('instead of queuing behind it');
     expect(urgent).not.toContain('Only takes effect for');
+  });
+
+  // The state vocabulary was a literal in the description, written out by hand
+  // beside a union type it had no link to. Parsed back out of the prose and
+  // compared to the union, so a state added to `PEER_STATES` — #32 proposes
+  // exactly that — cannot be left undescribed, and a hand-edited list that
+  // drops one cannot survive.
+  test('names exactly the peer states the code can return', () => {
+    const list = /state \(([^)]+)\)/.exec(byName('peers').description)?.[1];
+    expect(list).toBeDefined();
+    expect(list?.split(' | ')).toEqual([...PEER_STATES]);
   });
 
   test('takes no arguments for peers', () => {

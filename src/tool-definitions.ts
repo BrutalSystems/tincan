@@ -1,6 +1,13 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
+import { PEER_STATES } from './claude/discover.js';
 import { LABEL, type RuntimeName } from './naming.js';
-import { labelList, NATIVE_PEER_PATH, runtimeSupportsUrgent, type OwnKindScope } from './tools.js';
+import {
+  labelList,
+  MAX_FANOUT,
+  NATIVE_PEER_PATH,
+  runtimeSupportsUrgent,
+  type OwnKindScope,
+} from './tools.js';
 import { IDEMPOTENCY_WINDOW_MS } from './idempotency.js';
 
 export interface ToolDefinition {
@@ -59,7 +66,7 @@ export function toolDefinitions(
       name: 'peers',
       description:
         `List the live ${peer} sessions on this machine that you can message. ` +
-        `Returns each peer's name, state (idle | busy | unreachable), working directory, ` +
+        `Returns each peer's name, state (${PEER_STATES.join(' | ')}), working directory, ` +
         `and a durable id (thread_id for Codex, session_id for Claude Code and opencode). ` +
         `Show display_label to the user: unnamed sessions use project · short ID. ` +
         `When display_label differs from name, also show the full durable ID for copying. ` +
@@ -104,7 +111,7 @@ export function toolDefinitions(
             type: 'array',
             items: { type: 'string' },
             minItems: 1,
-            maxItems: 8,
+            maxItems: MAX_FANOUT,
             description:
               'Several recipients, in one call. Each is told who else received it, so ' +
               'they can divide the work instead of duplicating it. If any name cannot ' +
