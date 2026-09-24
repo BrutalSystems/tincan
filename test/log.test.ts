@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MessageLog, messagesPath, GENESIS } from '../src/log.js';
+import { MessageLog, messagesPath, GENESIS, recordHash } from '../src/log.js';
 import { buildEnvelope } from '../src/envelope.js';
 
 let dir: string;
@@ -219,13 +219,50 @@ describe('record chaining', () => {
     writeFileSync(path, withB + cLine);
   };
 
+  /**
+   * Records in the pre-1.8.0 shape: no `writer`, chained linearly across every
+   * session on the machine. Hand-assembled because no code path writes them
+   * any more — `withStaleHead` now produces same-writer records, which is a
+   * different thing. An upgraded install still holds these, so the
+   * verification path they exercise is real and has to keep working.
+   *
+   * `links[i]` is the index this record's `prev` should name, or null for
+   * GENESIS.
+   */
+  const writeLegacy = (links: (number | null)[]): void => {
+    const path = join(dir, 'nested', 'messages.jsonl');
+    mkdirSync(join(dir, 'nested'), { recursive: true });
+    const recs: Record<string, unknown>[] = [];
+    links.forEach((link, i) => {
+      const rec: Record<string, unknown> = {
+        id: `msg_legacy_${i}`,
+        at: new Date(1700000000000 + i * 1000).toISOString(),
+        direction: 'out',
+        from: { runtime: 'claude-code', name: 'billing-api' },
+        to: { runtime: 'codex', name: 'auth-refactor' },
+        text: `legacy ${i}`,
+        method: 'thread/queue/add',
+        delivered: true,
+        expect_reply: false,
+        prev: link === null ? GENESIS : (recs[link]!.hash as string),
+      };
+      rec.hash = recordHash(rec);
+      recs.push(rec);
+    });
+    writeFileSync(path, recs.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  };
+
   // MEASURED, not hypothetical: on a ten-session machine, 79 of 79 chain
   // breaks were this — a writer holding a head it read earlier — and ZERO were
   // two writers racing. Reporting them as damage made `message_log`'s empty
   // result unfalsifiable for a peer, which went and read the raw file to tell
   // "nothing was sent" from "the record is among the damage". See #34, #37.
-  test('a stale head is interleaving, not damage: nothing is missing from the file', () => {
-    withStaleHead();
+  //
+  // Kept for LEGACY records only. Post-1.8.0 writers cannot produce this shape
+  // — see the per-writer block above, where the same scenario reports nothing
+  // at all because the two sessions are no longer in one sequence.
+  test('legacy: a stale head is interleaving, not damage', () => {
+    writeLegacy([null, 0, 0]); // two records both naming the first
     const { integrity } = log.readWithIntegrity({ last_n: 10 });
 
     expect(integrity.interleaved).toBe(1);
@@ -245,32 +282,131 @@ describe('record chaining', () => {
    * nobody names is outside the chain's protection entirely. So this asks the
    * question that decides #34: if that record is lost, does anything notice?
    */
-  test('MEASURED HOLE: a record lost from an interleaved region is invisible', () => {
-    withStaleHead(); // msg_a, then msg_b and msg_c both chained to msg_a
+  /**
+   * The hole ec4626f measured, now confined to history.
+   *
+   * Under one linear chain the interleaved record was named by nothing, so
+   * deleting it was undetectable. Per-writer chaining closes that for records
+   * written from 1.8.0 on — see 'a record lost from an interleaved region is
+   * now detected' above, which is the same deletion, caught.
+   *
+   * It cannot be closed for records already on disk: their `prev` links were
+   * written linearly and no rewrite can restore a reference that was never
+   * made. Kept as a test so that stays a known, bounded property of old
+   * history rather than a surprise.
+   */
+  test('legacy: a lost record from an interleaved region is still invisible', () => {
+    writeLegacy([null, 0, 0]);
     const path = join(dir, 'nested', 'messages.jsonl');
     const before = lines();
-    expect(before).toHaveLength(3);
+    writeFileSync(path, [before[0]!, before[2]!].join('\n') + '\n'); // drop the middle
 
-    // Drop msg_b — the interleaved record, the one no other record names.
-    writeFileSync(path, [before[0]!, before[2]!].join('\n') + '\n');
-
-    // A clean bill of health for a file a record was deleted from. Not
-    // reported as interleaving, not reported as damage: indistinguishable
-    // from a log that never held msg_b at all. Compare the test below, where
-    // the same deletion from a LINEAR region is caught — the difference is
-    // entirely whether anything named the missing record.
     const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity).toMatchObject({ ok: true, broken: 0, interleaved: 0, tampered: 0 });
+  });
+
+  /**
+   * #34, option 3. Two Tin Can processes append to one machine-global file, so
+   * a single linear chain is the wrong shape: it asks each writer to name a
+   * record it may never have seen. Keyed per writer, a record names only its
+   * OWN writer's previous record, and concurrent appends stop being an
+   * anomaly to classify — they cannot collide by construction.
+   */
+  describe('per-writer chains (#34)', () => {
+    const twoWriters = () => {
+      const path = join(dir, 'nested', 'messages.jsonl');
+      return {
+        path,
+        a: new MessageLog(path, { writer: 'w-aaa' }),
+        b: new MessageLog(path, { writer: 'w-bbb' }),
+      };
+    };
+
+    test("a writer chains onto its own previous record, not the file's last line", () => {
+      const { a, b } = twoWriters();
+      a.appendMessage(env('msg_a1'), true);
+      b.appendMessage(env('msg_b1'), true);
+      a.appendMessage(env('msg_a2'), true);
+
+      const [a1, b1, a2] = parsed();
+      expect(a1!.prev).toBe(GENESIS);
+      expect(b1!.prev).toBe(GENESIS); // b's first, not "after a1"
+      expect(a2!.prev).toBe(a1!.hash); // a's own previous, skipping b1
+    });
+
+    test('interleaved writers are not an anomaly: nothing to report', () => {
+      const { a, b } = twoWriters();
+      a.appendMessage(env('msg_a1'), true);
+      b.appendMessage(env('msg_b1'), true);
+      a.appendMessage(env('msg_a2'), true);
+      b.appendMessage(env('msg_b2'), true);
+
+      const { integrity } = a.readWithIntegrity({ last_n: 10 });
+      expect(integrity).toMatchObject({ ok: true, broken: 0, interleaved: 0, tampered: 0 });
+    });
+
+    /**
+     * The hole ec4626f measured, closed. a2 names a1, so removing a1 breaks
+     * a's chain and is caught even though another writer's record sits
+     * between them — which is exactly what the single chain could not do.
+     */
+    test('a record lost from an interleaved region is now detected', () => {
+      const { path, a, b } = twoWriters();
+      a.appendMessage(env('msg_a1'), true);
+      b.appendMessage(env('msg_b1'), true);
+      a.appendMessage(env('msg_a2'), true);
+
+      const before = lines();
+      writeFileSync(path, [before[1]!, before[2]!].join('\n') + '\n'); // drop a1
+
+      const { integrity } = a.readWithIntegrity({ last_n: 10 });
+      expect(integrity.broken).toBe(1);
+      expect(integrity.ok).toBe(false);
+    });
+
+    test('tampering is still caught, per writer', () => {
+      const { path, a, b } = twoWriters();
+      a.appendMessage(env('msg_a1'), true);
+      b.appendMessage(env('msg_b1'), true);
+
+      const recs = parsed();
+      recs[0]!.text = 'altered';
+      writeFileSync(path, recs.map((r) => JSON.stringify(r)).join('\n') + '\n');
+
+      const { integrity } = a.readWithIntegrity({ last_n: 10 });
+      expect(integrity.tampered).toBe(1);
+      expect(integrity.ok).toBe(false);
+    });
+  });
+
+  /**
+   * The upgrade path, which is what every existing install actually does:
+   * a file of legacy linear records, then a 1.8.0 writer appending after them.
+   *
+   * The new writer starts at GENESIS rather than chaining onto the legacy
+   * tail, so the two sequences are verified independently and neither is
+   * blamed for the other. Reported as clean — an upgrade must not look like
+   * damage, which is the failure #37 showed is expensive: a chain that cries
+   * wolf gets ignored.
+   */
+  test('a legacy file gains a 1.8.0 writer without either looking damaged', () => {
+    writeLegacy([null, 0, 1]);
+    const fresh = new MessageLog(join(dir, 'nested', 'messages.jsonl'), { writer: 'w-new' });
+    fresh.appendMessage(env('msg_new'), true);
+
+    const recs = parsed();
+    expect(recs).toHaveLength(4);
+    expect(recs[3]!.writer).toBe('w-new');
+    expect(recs[3]!.prev).toBe(GENESIS);
+
+    const { integrity } = fresh.readWithIntegrity({ last_n: 10 });
     expect(integrity).toMatchObject({
       ok: true,
       broken: 0,
       interleaved: 0,
       tampered: 0,
-      unparseable: 0,
+      unchained: 0,
     });
-
-    // Pinned so the fix announces itself: whichever option #34 takes, this
-    // assertion must change, and a silent pass would mean it did not.
-    expect(log.readWithIntegrity({ last_n: 10 }).records).toHaveLength(2);
   });
 
   // The whole point of separating the two: `broken` has to keep meaning
@@ -348,14 +484,44 @@ describe('record chaining', () => {
     expect(records.map((r) => r.id)).toEqual(['msg_old', 'msg_new']);
   });
 
-  test('continues the chain across a restart, reading the head off disk', () => {
+  /**
+   * Changed by #34, and the behaviour it guards is what changed.
+   *
+   * It used to assert that a reopened log chains onto the FILE's last record,
+   * which was the 0.16.0 fix for a cached stale head. Per writer, a new
+   * process is a new writer and legitimately starts its own sequence — so the
+   * assertion is that this is not mistaken for damage, which is the property
+   * the original test actually existed to protect.
+   *
+   * The cost is honest and worth stating: every writer's chain ends in a
+   * record nothing names, so each restart leaves another unprotected tail.
+   * A hash chain never protects its own last record; per-writer chaining means
+   * there are more of them. Closing that needs a writer identity stable across
+   * restarts, which is the same identity #23 wants for "who wrote this".
+   */
+  test('a restart starts its own sequence and is not reported as damage', () => {
     log.appendMessage(env('msg_a'), true);
     const reopened = new MessageLog(join(dir, 'nested', 'messages.jsonl'));
     reopened.appendMessage(env('msg_b'), true);
 
     const [a, b] = parsed();
-    expect(b!.prev).toBe(a!.hash);
+    expect(b!.prev).toBe(GENESIS);
+    expect(b!.writer).not.toBe(a!.writer);
     expect(reopened.readWithIntegrity({ last_n: 10 }).integrity.ok).toBe(true);
+  });
+
+  /**
+   * The same writer reopened DOES continue its sequence, which is what makes
+   * the cached head safe: it is resolved from the file once, not assumed.
+   */
+  test('the same writer reopened continues its own chain', () => {
+    const path = join(dir, 'nested', 'messages.jsonl');
+    new MessageLog(path, { writer: 'w-same' }).appendMessage(env('msg_a'), true);
+    new MessageLog(path, { writer: 'w-same' }).appendMessage(env('msg_b'), true);
+
+    const [a, b] = parsed();
+    expect(b!.prev).toBe(a!.hash);
+    expect(log.readWithIntegrity({ last_n: 10 }).integrity.ok).toBe(true);
   });
 
   test('a signature added later does not invalidate the chain, but a claimed key id does', () => {

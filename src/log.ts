@@ -171,7 +171,29 @@ export interface OutcomeRecord {
  * after it. That migration is the whole cost this empty slot avoids.
  */
 export interface ChainFields {
-  /** Hash of the previous record, or `GENESIS` for the first of a chain. */
+  /**
+   * Which append-sequence this record belongs to (#34).
+   *
+   * The log is machine-global and every live session's Tin Can appends to it,
+   * so a single linear chain is the wrong shape: it asks each writer to name a
+   * record it may never have seen, and two writers that both name the same
+   * predecessor leave one of them named by nothing — outside the chain's
+   * protection, so its deletion is undetectable. Measured in ec4626f.
+   *
+   * Keyed per writer, a record names only its OWN writer's previous record.
+   * Concurrent appends stop being an anomaly to classify: they cannot collide.
+   *
+   * This is a per-PROCESS identity, deliberately not the session's durable id.
+   * The question the chain asks is "which sequence is this part of", and the
+   * answer is the process that wrote it — available synchronously, always
+   * defined, and unchanged by a session that cannot resolve its own id. Who a
+   * message is FROM is a different question, already answered by `from`.
+   *
+   * Absent on records written before 1.8.0, which are verified as one legacy
+   * linear sequence. See `allWithIntegrity`.
+   */
+  writer?: string;
+  /** Hash of the previous record BY THE SAME WRITER, or `GENESIS` for its first. */
   prev?: string;
   /** sha256 over this record with `hash` and `sig` removed. */
   hash?: string;
@@ -304,6 +326,13 @@ export const ROTATE_MAX_BYTES = 5 * 1024 * 1024;
 export const ARCHIVE_READ_MAX_BYTES = 1024 * 1024;
 
 export interface LogOptions {
+  /**
+   * This process's chain key (#34). Defaults to a fresh random id, which is
+   * what production wants: one Tin Can process is one writer, and a new
+   * process legitimately starts a new sequence. Tests pass a fixed value to
+   * model two processes appending to one file.
+   */
+  writer?: string;
   /** Rotate once the live file exceeds this. 0 disables rotation entirely. */
   maxBytes?: number;
   /**
@@ -318,6 +347,17 @@ export interface LogOptions {
 export class MessageLog {
   private readonly maxBytes: number;
   private readonly archiveMaxBytes: number;
+  private readonly writer: string;
+  /**
+   * Our own chain head, cached for the life of the process.
+   *
+   * 0.16.0 removed head caching because the cached value was the FILE's last
+   * line, which another session could invalidate at any moment. Per writer
+   * that hazard is gone by construction: nobody else appends to our sequence,
+   * so once we know our own last hash it cannot go stale. Undefined means not
+   * yet resolved, which costs one scan on the first append of the process.
+   */
+  private head: string | undefined;
 
   constructor(
     private readonly path: string,
@@ -325,6 +365,7 @@ export class MessageLog {
   ) {
     this.maxBytes = opts.maxBytes ?? ROTATE_MAX_BYTES;
     this.archiveMaxBytes = opts.archiveMaxBytes ?? ARCHIVE_READ_MAX_BYTES;
+    this.writer = opts.writer ?? randomUUID().replace(/-/g, '').slice(0, 16);
   }
 
   /** Where rotated records go: messages.jsonl -> messages.archive.jsonl. */
@@ -613,7 +654,25 @@ export class MessageLog {
     if (!existsSync(this.path)) return { records: [], integrity: summarise(tally) };
 
     const out: LogRecord[] = [];
-    let expected: string | undefined; // hash the next record should name in `prev`
+    /**
+     * The hash each writer's NEXT record should name in `prev` (#34).
+     *
+     * Before per-writer chaining this was a single `expected`, which is what
+     * made concurrent appends look like anomalies: a record naming its own
+     * writer's predecessor was judged against whatever happened to be the
+     * previous LINE. Keyed by writer, records from other sessions simply are
+     * not in the sequence being checked.
+     *
+     * Records written before 1.8.0 carry no `writer` and were chained
+     * linearly across all sessions. They are contiguous at the head of any
+     * upgraded file, so verifying them under one shared key reproduces the old
+     * check exactly — including its interleaved/broken distinction, which only
+     * they still need.
+     */
+    const expectedBy = new Map<string, string>();
+    const LEGACY = '\u0000legacy';
+    /** Set once this file stops beginning where the log began. */
+    let boundaryPassed = false;
     // After damage we cannot know what the next record's `prev` ought to be,
     // so the following link is not judged. One fault counted once: blaming
     // the innocent record after a truncated line for a second break would
@@ -630,6 +689,11 @@ export class MessageLog {
         // log — but no longer in silence, which was the defect.
         tally.unparseable++;
         resync = true;
+        boundaryPassed = true;
+        // Whose chain lost a record is unknowable from a line that did not
+        // parse, so no sequence is judged across it. One fault counted once,
+        // the same trade the single chain made.
+        expectedBy.clear();
         continue;
       }
       out.push(rec);
@@ -637,10 +701,36 @@ export class MessageLog {
       if (typeof rec.hash !== 'string') {
         // Predates chaining. Expected on any install with history.
         tally.unchained++;
-        expected = undefined;
+        expectedBy.clear();
+        boundaryPassed = true;
         resync = true;
         continue;
       }
+      const key = typeof rec.writer === 'string' ? rec.writer : LEGACY;
+      /**
+       * A writer's FIRST record in this file must name GENESIS — unless the
+       * file no longer begins where the log did.
+       *
+       * Without this, per-writer chaining would have a hole of its own: the
+       * first record seen from a writer was never judged, so deleting that
+       * writer's earlier records left its survivor naming a hash nothing
+       * could check. That is the same shape as the defect this replaces, and
+       * it is why the deletion test below has to pass rather than merely the
+       * interleaving one.
+       *
+       * After a rotation, damage, or a pre-chaining tail, a writer's earliest
+       * surviving record legitimately continues from something no longer
+       * here, so nothing is claimed about it.
+       */
+      // A checkpoint's own `prev` names the last record moved to the archive,
+      // which is the one link that is SUPPOSED to point outside this file. It
+      // marks the boundary before it is judged, so it is never mistaken for a
+      // writer's first record failing to start at GENESIS.
+      if (rec.kind === 'checkpoint') boundaryPassed = true;
+      const expected =
+        rec.kind === 'checkpoint'
+          ? undefined
+          : (expectedBy.get(key) ?? (boundaryPassed ? undefined : GENESIS));
       if (recordHash(rec as unknown as Record<string, unknown>) !== rec.hash) {
         tally.tampered++;
       } else if (!resync && expected !== undefined && rec.prev !== expected) {
@@ -648,7 +738,12 @@ export class MessageLog {
         // still in the file means another session appended between this
         // writer's head read and its write — interleaving, with nothing lost.
         // Naming one that is not here means something is missing.
-        if (typeof rec.prev === 'string' && seen.has(rec.prev)) tally.interleaved++;
+        // Interleaving is a LEGACY shape only. A post-1.8.0 writer names its
+        // own previous record, and nobody else can append to its sequence, so
+        // a mismatch there is not two sessions racing — it is a fork in one
+        // writer's chain, which is damage however benign it looks.
+        if (key === LEGACY && typeof rec.prev === 'string' && seen.has(rec.prev))
+          tally.interleaved++;
         else tally.broken++;
       }
       seen.add(rec.hash);
@@ -659,12 +754,15 @@ export class MessageLog {
         // "we cannot know what comes next" case `resync` already exists for —
         // the difference being that this one is deliberate.
         resync = true;
-        expected = undefined;
+        boundaryPassed = true;
+        // Every writer continues from the archive, so no sequence can be
+        // judged across the boundary.
+        expectedBy.clear();
         continue;
       }
 
       resync = false;
-      expected = rec.hash;
+      expectedBy.set(key, rec.hash);
     }
 
     return { records: out, integrity: summarise(tally, rotated) };
@@ -723,24 +821,44 @@ export class MessageLog {
    * real limit of an unlocked multi-writer log, and it is far rarer than the
    * stale-cache case this removes.
    */
+  /**
+   * The hash of OUR writer's last record, or GENESIS if we have not written.
+   *
+   * Resolved once per process by scanning for our own records, then held —
+   * see `head`. A fresh random writer finds nothing and starts at GENESIS,
+   * which is the production path and reads the file exactly once. Passing a
+   * writer that already has history (a test, or a future stable identity)
+   * costs that one scan and is then equally cheap.
+   *
+   * Scanning rather than reading a bounded tail because our last record may
+   * sit arbitrarily far back: every other live session has been appending
+   * since. That is the cost per-writer chaining trades for never chaining onto
+   * a record we did not write.
+   */
   private headHash(): string {
-    const last = this.lastLine();
-    if (last === undefined) return GENESIS;
-    try {
-      const rec = JSON.parse(last) as LogRecord;
-      // A legacy tail has no hash to chain onto, so a new chain starts here
-      // rather than the records before it being retrofitted.
-      return typeof rec.hash === 'string' ? rec.hash : GENESIS;
-    } catch {
-      return GENESIS;
+    if (this.head !== undefined) return this.head;
+    this.head = GENESIS;
+    if (!existsSync(this.path)) return this.head;
+    for (const line of readFileSync(this.path, 'utf8').split('\n')) {
+      if (line.trim() === '') continue;
+      try {
+        const rec = JSON.parse(line) as LogRecord;
+        if (rec.writer === this.writer && typeof rec.hash === 'string') this.head = rec.hash;
+      } catch {
+        // A truncated line is not ours to judge here; allWithIntegrity counts it.
+      }
     }
+    return this.head;
   }
 
   private append(rec: LogRecord): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    const chained: LogRecord = { ...rec, prev: this.headHash() };
+    const chained: LogRecord = { ...rec, writer: this.writer, prev: this.headHash() };
     chained.hash = recordHash(chained as unknown as Record<string, unknown>);
     appendFileSync(this.path, JSON.stringify(chained) + '\n', 'utf8');
+    // Ours now, and nobody else can append to our sequence, so this cannot go
+    // stale the way the file-wide head could.
+    this.head = chained.hash;
     this.rotateIfNeeded();
   }
 
