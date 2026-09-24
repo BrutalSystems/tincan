@@ -1,6 +1,11 @@
 import { describe, test, expect } from 'vitest';
 import { toolDefinitions } from '../src/tool-definitions.js';
-import { MAX_FANOUT, runtimeSupportsUrgent, sendPeerSchema } from '../src/tools.js';
+import {
+  MAX_FANOUT,
+  messageLogSchema,
+  runtimeSupportsUrgent,
+  sendPeerSchema,
+} from '../src/tools.js';
 import { PEER_STATES } from '../src/claude/discover.js';
 import type { RuntimeName } from '../src/naming.js';
 
@@ -146,9 +151,12 @@ describe('toolDefinitions', () => {
     expect(byName('send_peer').description.toLowerCase()).toMatch(/does not wait|not block|fire-and-forget/);
   });
 
-  test('defaults message_log to the last 20 records', () => {
+  // Same shape as the fan-out cap: the advertised default and the applied
+  // default were separate literals. Measured by parsing an empty query, so
+  // this is what a caller omitting `last_n` actually gets.
+  test('advertises exactly the message_log default it applies', () => {
     const props = byName('message_log').inputSchema.properties as Record<string, { default?: unknown }>;
-    expect(props.last_n?.default).toBe(20);
+    expect(props.last_n?.default).toBe(messageLogSchema.parse({}).last_n);
   });
 });
 

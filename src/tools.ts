@@ -164,11 +164,19 @@ export const sendPeerSchema = z
     message: '`expect_id` pins a single session, so it cannot be used with `peers`.',
   });
 
+/**
+ * How many records `message_log` returns when the caller does not say.
+ *
+ * Stated twice like {@link MAX_FANOUT}: applied here by zod, and advertised as
+ * the parameter's `default` in the schema the model reads.
+ */
+export const DEFAULT_LAST_N = 20;
+
 export const messageLogSchema = z.object({
   all_projects: z.boolean().default(false),
   peer: z.string().optional(),
   thread: z.string().optional(),
-  last_n: z.number().int().positive().default(20),
+  last_n: z.number().int().positive().default(DEFAULT_LAST_N),
 });
 
 export type SendPeerArgs = z.input<typeof sendPeerSchema>;

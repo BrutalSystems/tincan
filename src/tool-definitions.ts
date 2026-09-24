@@ -2,6 +2,7 @@
 import { PEER_STATES } from './claude/discover.js';
 import { LABEL, type RuntimeName } from './naming.js';
 import {
+  DEFAULT_LAST_N,
   labelList,
   MAX_FANOUT,
   NATIVE_PEER_PATH,
@@ -213,7 +214,11 @@ export function toolDefinitions(
             type: 'string',
             description: 'A message id; follows the in_reply_to chain from it.',
           },
-          last_n: { type: 'number', default: 20, description: 'How many records to return.' },
+          last_n: {
+            type: 'number',
+            default: DEFAULT_LAST_N,
+            description: 'How many records to return.',
+          },
         },
       },
     },
