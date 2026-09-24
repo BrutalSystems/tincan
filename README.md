@@ -60,11 +60,11 @@ From a Claude Code session, find who is running:
 {
   "peers": [
     { "name": "auth-refactor",  "state": "idle", "cwd": "/src/api",
-      "canonical_id": "codex:auth-refactor.63a",
-      "thread_id": "019b63ce-…" },
+      "canonical_id": "codex:auth-refactor.019b63ce-a33e-7ab1-80a0-bb7155040963a",
+      "thread_id": "019b63ce-a33e-7ab1-80a0-bb7155040963a" },
     { "name": "billing-sync",   "state": "busy", "cwd": "/src/billing",
-      "canonical_id": "codex:billing-sync.601",
-      "thread_id": "019b7f21-…" }
+      "canonical_id": "codex:billing-sync.019b7f21-4c8d-7e52-9f13-2a6b88c17601",
+      "thread_id": "019b7f21-4c8d-7e52-9f13-2a6b88c17601" }
   ]
 }
 ```
@@ -560,13 +560,19 @@ both get suffixed, exactly as two same-runtime peers would.
   prefix resolves (`auth` works if it is the only match).
 - On a collision only, the suffixed form `auth-refactor.63a` is shown and
   required. Ambiguity is refused with every candidate listed — never guessed.
+- A peer on another machine carries `@<machine>`: `auth-refactor@m4pro`. A peer
+  on this one carries nothing, so every address in use keeps meaning what it
+  meant. Collisions are counted per machine.
 - Unnamed Codex threads have a `display_label` such as `billing-v2 · 963a`:
   the working directory's final component plus the last four ID characters.
   If the directory is unavailable, the runtime is used (e.g. `codex · 963a`).
   Listings show the full `thread_id` alongside these labels for copying.
   Their message address (`name`) remains `thread.63a`; use `name` with `send_peer`,
   not `display_label`. Named sessions use their existing address as the label.
-- Canonical id, used in the log and envelope: `codex:auth-refactor.63a`.
+- Canonical id, used in the log and envelope:
+  `codex:auth-refactor.019b63ce-a33e-7ab1-80a0-bb7155040963a`. It carries the
+  **whole** durable id, not the three-character suffix — that is what makes it
+  unique, and a usable key. See [CANONICAL_ID.md](./CANONICAL_ID.md).
 
 The suffix is the **last** three hex characters of the uuid. Codex thread ids are
 UUIDv7, so every live thread on a machine shares the same leading characters and
