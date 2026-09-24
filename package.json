@@ -1,6 +1,6 @@
 {
   "name": "@brutalsystems/tincan",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Peer messaging between a live Claude Code session and a live Codex session on the same machine. One MCP server, run inside each.",
   "keywords": [
     "mcp",
