@@ -269,7 +269,10 @@ describe('send_peer', () => {
     await tools(side).send_peer({ peer: 'auth-refactor', message: 'why does verifyToken skew?' });
     expect(delivered[0]!.text).toContain('<peer_message from="billing-api"');
     expect(delivered[0]!.text).toContain('why does verifyToken skew?');
-    expect(delivered[0]!.text).toContain('</peer_message>');
+    // The text leads and the metadata self-closes, so the sender's words are
+    // the first thing in the envelope — and the first thing a Claude Code
+    // recipient previews on its collapsed line.
+    expect(delivered[0]!.text.split('\n')[0]).toBe('why does verifyToken skew?');
   });
 
   test(

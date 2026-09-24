@@ -963,11 +963,14 @@ describe('buildSide, hosted in opencode', () => {
         expect(r.outcome).toBe('accepted');
 
         const wire = JSON.parse(instance.rawLines[0]!) as { text: string };
-        expect(wire.text.split('\n')[0]).toMatch(
+        const meta = wire.text.split('\n').find((l) => l.startsWith('<peer_message '));
+        expect(meta).toMatch(
           // The sender id is part of the framing now, so its charset is
           // pinned here too — that is the whole point of this assertion.
-          /^<peer_message from="[a-z0-9-]+" runtime="opencode" session_id="[A-Za-z0-9_.:-]*" id="msg_[0-9a-f]+">$/,
+          /^<peer_message from="[a-z0-9-]+" runtime="opencode" session_id="[A-Za-z0-9_.:-]*" id="msg_[0-9a-f]+" \/>$/,
         );
+        // One tag, so the hostile slug did not open a second one.
+        expect(wire.text.match(/<peer_message/g)).toHaveLength(1);
       } finally {
         await instance.close();
         rmSync(logDir, { recursive: true, force: true });

@@ -170,6 +170,15 @@ which makes it the load-bearing safety control here rather than a
 belt-and-braces addition. Do not shorten it, do not make it conditional on
 runtime.
 
+Since the sender's text leads and `<peer_message>` self-closes after it — for
+Claude Code's one-line preview, see README, "What a peer receives" — that
+marking is no longer a container the text sits inside. What holds it up instead
+is `defangFraming` in `src/envelope.ts`: both directions of `<peer_message>` and
+`<cross-session-message>` are escaped in the sender's text, so a crafted message
+can neither close Tin Can's framing early nor open a second set of its own. That
+escape is the fence now. Removing it reopens the hole on this path first,
+because opencode adds no provenance framing of its own to fall back on.
+
 **`message_id` must match `^msg_`.** This is server-enforced, not a convention:
 opencode returns a 400 `InvalidRequestError` — *"Expected a string starting
 with \"msg_\""* — otherwise. Tin Can's ids already carry the prefix; if that
