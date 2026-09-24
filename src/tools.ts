@@ -436,7 +436,6 @@ export function createTools(side: Side, log: MessageLog) {
           const sameCall = prior.peerArg === addresses.join(', ') && prior.text === args.message;
           return {
             outcome: 'rejected',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: 'duplicate_send',
             message_id: prior.messageId,
@@ -535,8 +534,7 @@ export function createTools(side: Side, log: MessageLog) {
                 : '';
             return {
               outcome: 'rejected',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
-            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+              ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
               refusal: 'self_send',
               ...(resolved.candidates.length > 0 && { candidates: resolved.candidates }),
               detail:
@@ -553,7 +551,6 @@ export function createTools(side: Side, log: MessageLog) {
           const replying = args.in_reply_to !== undefined;
           return {
             outcome: 'rejected',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(replying ? {} : { candidates: resolved.candidates }),
             // Ambiguity is a caller mistake with every candidate present and
@@ -612,8 +609,7 @@ export function createTools(side: Side, log: MessageLog) {
           if (!matches) {
             return {
               outcome: 'rejected',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
-            ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+              ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
               refusal: 'reply_misrouted',
               detail:
                 `${args.in_reply_to} was sent by ${original.from.name}` +
@@ -635,7 +631,6 @@ export function createTools(side: Side, log: MessageLog) {
         if (actual !== args.expect_id) {
           return {
             outcome: 'rejected',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: 'peer_changed',
             // The session the caller meant is gone — someone tried to reach
@@ -674,7 +669,6 @@ export function createTools(side: Side, log: MessageLog) {
           log.appendDropped(id, verdict.reason);
           return {
             outcome: 'rejected',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: verdict.reason,
             peer_state: t.side.state,
