@@ -1044,7 +1044,10 @@ describe('buildSide, hosted in opencode', () => {
         expect(meta).toMatch(
           // The sender id is part of the framing now, so its charset is
           // pinned here too — that is the whole point of this assertion.
-          /^<peer_message from="[a-z0-9-]+" runtime="opencode" session_id="[A-Za-z0-9_.:-]*" id="msg_[0-9a-f]+" \/>$/,
+          // canonical_id is built from the same slug and the same id, so it is
+          // held to a charset here as well rather than left as the one way the
+          // hostile value could re-enter the tag intact.
+          /^<peer_message from="[a-z0-9-]+" runtime="opencode" session_id="[A-Za-z0-9_.:-]*" canonical_id="[A-Za-z0-9_.:@-]*" id="msg_[0-9a-f]+" \/>$/,
         );
         // One tag, so the hostile slug did not open a second one.
         expect(wire.text.match(/<peer_message/g)).toHaveLength(1);

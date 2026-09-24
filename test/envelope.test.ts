@@ -46,6 +46,96 @@ describe('renderEnvelope', () => {
     expect(metaLine(rendered)).not.toContain('from="operator');
   });
 
+  /**
+   * The address a reply should actually use, handed over rather than derived.
+   *
+   * Until now the tag carried the pieces — runtime, name, durable id — and left
+   * the recipient to assemble them. That recipe is fragile in one direction and
+   * impossible in another. Fragile locally: it only works while the name in
+   * `from=` is already slug-shaped, which was not guaranteed until #40. And
+   * impossible across a machine boundary, which is what Ferry brings: a bare
+   * name is defined to mean THIS machine (`wantsMachine` in resolvePeer), so a
+   * remote sender's name either refuses as unknown or lands on a local peer
+   * that merely shares its prefix. canonical_id carries the machine and is
+   * matched exactly, so it is the one form correct on both sides. Refs #39.
+   */
+  test('carries the canonical id, so a reply has an address that cannot prefix-match a stranger', () => {
+    const e = buildEnvelope({
+      ...base(),
+      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/b', session_id: 'sid-99' },
+    });
+    expect(metaLine(renderEnvelope(e))).toContain('canonical_id="claude-code:billing-api.sid-99"');
+  });
+
+  test('uses the Codex thread id for the canonical id, the same key peers reports it under', () => {
+    const e = buildEnvelope({
+      ...base(),
+      from: { runtime: 'codex', name: 'auth-refactor', cwd: '/src/a', thread_id: 'th-42' },
+    });
+    expect(metaLine(renderEnvelope(e))).toContain('canonical_id="codex:auth-refactor.th-42"');
+  });
+
+  test('qualifies the canonical id with @machine, which is the whole point across a Ferry boundary', () => {
+    const e = buildEnvelope({
+      ...base(),
+      from: {
+        runtime: 'claude-code',
+        name: 'ferry',
+        cwd: '/src/f',
+        session_id: 'sid-7',
+        machine: 'Home Mac',
+      },
+    });
+    // Slugified like every other machine component, so the address the
+    // recipient reads back is the address resolvePeer accepts.
+    expect(metaLine(renderEnvelope(e))).toContain('canonical_id="claude-code:ferry.sid-7@home-mac"');
+  });
+
+  test('omits the canonical id when the sender has no durable id, rather than emitting a half one', () => {
+    const e = buildEnvelope({
+      ...base(),
+      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/b' },
+    });
+    expect(metaLine(renderEnvelope(e))).not.toContain('canonical_id=');
+  });
+
+  /**
+   * The gap #39 actually identified: the tail said what to put in
+   * `in_reply_to` and never what to put in `peer`, so the only address in
+   * front of the reader was the bare `from=` name — the one that prefix-matches
+   * a stranger. Carrying canonical_id in the tag fixes nothing on its own if
+   * the instruction still points nowhere.
+   */
+  test('the reply instruction names the canonical id as the address to answer', () => {
+    const e = buildEnvelope({
+      ...base(),
+      expect_reply: false,
+      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/b', session_id: 'sid-99' },
+    });
+    const rendered = renderEnvelope(e);
+    expect(rendered).toContain('peer="claude-code:billing-api.sid-99"');
+  });
+
+  test('falls back to naming no address when there is no canonical id to name', () => {
+    const e = buildEnvelope({
+      ...base(),
+      expect_reply: false,
+      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/b' },
+    });
+    const rendered = renderEnvelope(e);
+    expect(rendered).toContain('in_reply_to="msg_01J8TEST"');
+    expect(rendered).not.toContain('peer="');
+  });
+
+  test('still punctuates the waiting-on-an-answer line when there is no address to add', () => {
+    const e = buildEnvelope({
+      ...base(),
+      expect_reply: true,
+      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/b' },
+    });
+    expect(renderEnvelope(e)).toContain('and answers=true.');
+  });
+
   test('names the sending runtime, which the receiving harness may otherwise guess wrong', () => {
     // Claude Code frames any inbound peer message as "another Claude session".
     // A Codex sender must say so in the one line Tin Can controls.
@@ -204,7 +294,12 @@ describe('a hostile sender id cannot break the framing', () => {
       },
     };
     const rendered = renderEnvelope(e);
-    expect(metaLine(rendered)).toMatch(/^<peer_message from="[a-z0-9-]+" runtime="claude-code" session_id="[A-Za-z0-9_.:-]*" id="msg_[A-Za-z0-9]+"/);
+    // canonical_id is built FROM the same hostile id, so it is held to the same
+    // character class rather than exempted — the attribute that carries the id
+    // onward must not reintroduce what sanitising the id removed.
+    expect(metaLine(rendered)).toMatch(
+      /^<peer_message from="[a-z0-9-]+" runtime="claude-code" session_id="[A-Za-z0-9_.:-]*" canonical_id="[A-Za-z0-9_.:@-]*" id="msg_[A-Za-z0-9]+"/,
+    );
     expect(rendered.match(/<peer_message/g)).toHaveLength(1);
   });
 
