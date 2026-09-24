@@ -194,7 +194,11 @@ export function toolDefinitions(
         'If an `integrity` field comes back, read it: `ok: false` means the log is damaged ' +
         'or was edited and what you are reading is an incomplete account — say so rather ' +
         'than treating it as the whole record. A `rotated` field is not damage; it means ' +
-        'older history was deliberately archived and names where it went. Neither is ' +
+        'older history was deliberately archived and names where it went — and the ' +
+        'archive IS searched when a query comes up short, so rotation does not hide ' +
+        'history from you. If `rotated.complete` is false, only part of the archive was ' +
+        'read and something absent from your result may simply be further back; do not ' +
+        'report it as never sent. Neither is ' +
         '`interleaved`, which counts records written by concurrent sessions appending to ' +
         'this one machine-global log: nothing is missing on account of it, and it never ' +
         'makes `ok` false. An empty result with `ok: true` means nothing was sent — it is ' +

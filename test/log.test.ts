@@ -550,3 +550,102 @@ describe('outcome on a log record', () => {
     });
   });
 });
+
+// #35. Rotation moves the WHOLE live file into the archive, so the moment a
+// log rotates every record written before that point stops being reachable
+// through `message_log` — the tool a model would actually use to look. The
+// archive is intact and complete; it is simply not reachable.
+//
+// The trade this preserves: the live file is verified eagerly, the archive is
+// read only when a query comes up short, and never hashed. Otherwise the read
+// cost rotation was introduced to bound comes straight back, growing with an
+// archive that only ever gets larger.
+describe('reading past a rotation', () => {
+  const small = () => new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000 });
+  const fill = (log: MessageLog, n: number) => {
+    for (let i = 0; i < n; i += 1) log.appendMessage(env(`msg_${String(i).padStart(4, '0')}`), true);
+  };
+  const ids = (rs: ReturnType<MessageLog['read']>) => rs.map((r) => r.id);
+
+  test('reaches records written before the rotation', () => {
+    const l = small();
+    fill(l, 60);
+    expect(l.readWithIntegrity({ last_n: 999 }).integrity.rotated).toBeDefined();
+
+    const got = ids(l.read({ last_n: 60 }));
+    expect(got).toContain('msg_0000');
+    expect(got).toContain('msg_0059');
+    expect(got.length).toBe(60);
+  });
+
+  test('keeps them in order, oldest first, across the seam', () => {
+    const l = small();
+    fill(l, 60);
+    const got = ids(l.read({ last_n: 60 }));
+    expect(got).toEqual([...got].sort());
+  });
+
+  test('a filter reaches across the seam too', () => {
+    const l = small();
+    fill(l, 60);
+    l.appendMessage(env('msg_late', { to: 'someone-else' }), true);
+    expect(ids(l.read({ last_n: 999, peer: 'auth-refactor' }))).toContain('msg_0000');
+  });
+
+  test('does not read the archive when the live file already satisfies the query', () => {
+    const l = small();
+    fill(l, 60);
+    writeFileSync(join(dir, 'messages.archive.jsonl'), 'not even json\n');
+
+    // Unaffected: the live file has enough, so the archive is never opened.
+    const got = ids(l.read({ last_n: 2 }));
+    expect(got.length).toBe(2);
+    expect(l.readWithIntegrity({ last_n: 2 }).integrity.unparseable).toBe(0);
+  });
+
+  // The deliberate half of the trade, stated as a test so it is a decision
+  // rather than a surprise: archived records are returned but NOT verified.
+  test('does not hash the archive, so its records are returned unverified', () => {
+    const l = small();
+    fill(l, 60);
+    const archived = readFileSync(join(dir, 'messages.archive.jsonl'), 'utf8')
+      .split('\n')
+      .filter((x) => x.trim() !== '');
+    archived[0] = archived[0]!.replace('text of msg_0000', 'text of TAMPERED');
+    writeFileSync(join(dir, 'messages.archive.jsonl'), archived.join('\n') + '\n');
+
+    const { integrity } = l.readWithIntegrity({ last_n: 999 });
+    expect(integrity.tampered).toBe(0);
+    expect(integrity.ok).toBe(true);
+  });
+});
+
+// The cap is what stops a growing archive handing back the unbounded read that
+// rotation was introduced to prevent. When it bites, the result is partial —
+// and has to SAY it is partial, or a model reads "not in the result" as "never
+// sent", which is the exact confusion #35 and #37 are both about.
+describe('the archive read is capped, and says when the cap bit', () => {
+  const tiny = () =>
+    new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000, archiveMaxBytes: 2_000 });
+
+  test('reports complete: false and does not claim the missing records are absent', () => {
+    const l = tiny();
+    for (let i = 0; i < 60; i += 1) l.appendMessage(env(`msg_${String(i).padStart(4, '0')}`), true);
+
+    const { records, integrity } = l.readWithIntegrity({ last_n: 999 });
+    expect(integrity.rotated?.searched).toBe(true);
+    expect(integrity.rotated?.complete).toBe(false);
+    // Some history came back, but not all of it — which is the honest outcome.
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.map((r) => r.id)).not.toContain('msg_0000');
+  });
+
+  test('reports complete: true when the whole archive fits under the cap', () => {
+    const l = new MessageLog(join(dir, 'messages.jsonl'), { maxBytes: 4_000 });
+    for (let i = 0; i < 60; i += 1) l.appendMessage(env(`msg_${String(i).padStart(4, '0')}`), true);
+
+    const { integrity } = l.readWithIntegrity({ last_n: 999 });
+    expect(integrity.rotated?.searched).toBe(true);
+    expect(integrity.rotated?.complete).toBe(true);
+  });
+});

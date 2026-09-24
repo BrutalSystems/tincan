@@ -178,7 +178,24 @@ export interface LogIntegrity {
    * caller seeing fewer records than it expected deserves to know why, rather
    * than concluding the log lost them.
    */
-  rotated?: { count: number; into: string; at: string };
+  rotated?: {
+    count: number;
+    into: string;
+    at: string;
+    /**
+     * This query came up short of `last_n`, so the archive was read as well
+     * and the records returned span the rotation. Absent means the live file
+     * answered on its own and the archive was never opened.
+     */
+    searched?: boolean;
+    /**
+     * The whole archive was read, so a record that is not in the result is not
+     * in the log. False means only the archive's tail was read — what is
+     * missing may simply be further back. A model must not report "nothing was
+     * sent" from a `false` here.
+     */
+    complete?: boolean;
+  };
   /** Said plainly, because a model reads this and has to decide what to do. */
   detail?: string;
 }
@@ -224,19 +241,38 @@ export function messagesPath(env: NodeJS.ProcessEnv, home: string = homedir()): 
 /** Defaults chosen to bound the read cost without discarding useful history. */
 export const ROTATE_MAX_BYTES = 5 * 1024 * 1024;
 
+/**
+ * How much of the archive's tail a short query may read (#35).
+ *
+ * The archive only grows, so reading it whole would hand back the unbounded
+ * read that rotation exists to prevent. A cap below `ROTATE_MAX_BYTES` keeps
+ * the worst case smaller than one pre-rotation live file, and covers thousands
+ * of records — far past any `last_n` a caller asks for.
+ */
+export const ARCHIVE_READ_MAX_BYTES = 1024 * 1024;
+
 export interface LogOptions {
   /** Rotate once the live file exceeds this. 0 disables rotation entirely. */
   maxBytes?: number;
+  /**
+   * How much of the archive's tail a short query may read. Defaults to
+   * {@link ARCHIVE_READ_MAX_BYTES}; a test sets it small to exercise the
+   * partial-read path, which is otherwise only reachable with a megabyte of
+   * history.
+   */
+  archiveMaxBytes?: number;
 }
 
 export class MessageLog {
   private readonly maxBytes: number;
+  private readonly archiveMaxBytes: number;
 
   constructor(
     private readonly path: string,
     opts: LogOptions = {},
   ) {
     this.maxBytes = opts.maxBytes ?? ROTATE_MAX_BYTES;
+    this.archiveMaxBytes = opts.archiveMaxBytes ?? ARCHIVE_READ_MAX_BYTES;
   }
 
   /** Where rotated records go: messages.jsonl -> messages.archive.jsonl. */
@@ -308,8 +344,41 @@ export class MessageLog {
     return this.readWithIntegrity(query).records;
   }
 
+  /**
+   * Read the log, reaching into the archive only when the live file cannot
+   * answer.
+   *
+   * Rotation moves the WHOLE live file into the archive (see `rotateIfNeeded`
+   * for why it cannot keep a tail), so without this every record written
+   * before the last rotation was unreachable through `message_log` — intact on
+   * disk, and invisible to the tool a model would use to look. #35.
+   *
+   * The cost this must not pay back: rotation exists to bound the read, and
+   * the archive only ever grows. So the live file is verified eagerly and in
+   * full, while the archive is opened only when a query comes up short, read
+   * from the tail under a byte cap, and **never hashed**. Archived records are
+   * therefore returned unverified — a deliberate trade, and the reason
+   * `rotated.complete` exists to say when "not found" is conclusive.
+   */
   readWithIntegrity(query: ReadQuery): { records: LogRecord[]; integrity: LogIntegrity } {
     const { records: raw, integrity } = this.allWithIntegrity();
+    const live = this.select(raw, query);
+    if (live.length >= query.last_n || integrity.rotated === undefined) {
+      return { records: live, integrity };
+    }
+
+    const older = this.archiveTail();
+    if (older.records.length === 0) return { records: live, integrity };
+    return {
+      records: this.select([...older.records, ...raw], query),
+      integrity: {
+        ...integrity,
+        rotated: { ...integrity.rotated, searched: true, complete: older.complete },
+      },
+    };
+  }
+
+  private select(raw: LogRecord[], query: ReadQuery): LogRecord[] {
     let records = this.fold(raw);
 
     if (query.thread !== undefined) {
@@ -330,7 +399,56 @@ export class MessageLog {
       );
     }
 
-    return { records: records.slice(-query.last_n), integrity };
+    return records.slice(-query.last_n);
+  }
+
+  /**
+   * Records from the tail of the archive, parsed but not verified.
+   *
+   * Bounded by bytes rather than by `last_n`: a filtered query may need to look
+   * much further back than an unfiltered one, and the cap is what keeps a
+   * growing archive from reintroducing the unbounded read. A line that does
+   * not parse is skipped rather than counted — `unparseable` describes the
+   * live file, which IS verified, and folding unverified damage into that
+   * number would make the live file look worse than it is.
+   */
+  private archiveTail(): { records: LogRecord[]; complete: boolean } {
+    const path = this.archivePath;
+    if (!existsSync(path)) return { records: [], complete: true };
+
+    let text: string;
+    let complete: boolean;
+    try {
+      const size = statSync(path).size;
+      complete = size <= this.archiveMaxBytes;
+      if (complete) {
+        text = readFileSync(path, 'utf8');
+      } else {
+        const fd = openSync(path, 'r');
+        try {
+          const buf = Buffer.alloc(this.archiveMaxBytes);
+          const read = readSync(fd, buf, 0, this.archiveMaxBytes, size - this.archiveMaxBytes);
+          // The first line is almost certainly cut in half by the seek, so it
+          // is dropped rather than parsed into a half record.
+          text = buf.subarray(0, read).toString('utf8').split('\n').slice(1).join('\n');
+        } finally {
+          closeSync(fd);
+        }
+      }
+    } catch {
+      return { records: [], complete: false };
+    }
+
+    const records: LogRecord[] = [];
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue;
+      try {
+        records.push(JSON.parse(line) as LogRecord);
+      } catch {
+        complete = false;
+      }
+    }
+    return { records, complete };
   }
 
   /** Applies outcome records to their message and drops them from the result. */

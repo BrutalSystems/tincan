@@ -745,6 +745,26 @@ all 79 damage and told the reader the log "was edited" with `tampered` reading
 0 in the same object. A chain that cries wolf gets ignored, which costs exactly
 the detection it was built for.
 
+### History survives a rotation, and stays reachable
+
+The live log rotates once it passes 5 MiB. The **whole** file moves into
+`messages.archive.jsonl` and a new one starts with a checkpoint record, because
+keeping a tail would mean reading the live file and writing part of it back —
+and on a machine-global log with one writer per session, an append landing
+between that read and the rename is destroyed. Losing a message is not a price
+worth paying to keep recent history in one file.
+
+`message_log` reads across the seam. When a query cannot be satisfied from the
+live file alone, the archive's tail is read too, so a rotation does not make
+yesterday's conversation invisible. Two things stay true by design:
+
+- **The archive is never hashed.** Rotation exists to bound the read, and the
+  archive only grows. Archived records come back unverified; the live file is
+  still verified eagerly and in full.
+- **The archive read is capped.** If the cap bites, `rotated.complete` is
+  `false` — meaning a record missing from your result may simply be further
+  back, and "not found" is not "never sent".
+
 **What this is and is not.** The chain lives in the same file as the data, so
 anything that can rewrite the log can recompute it. This is integrity against
 truncation, corruption and careless edits — not security against a deliberate
