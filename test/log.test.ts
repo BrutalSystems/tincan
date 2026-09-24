@@ -234,6 +234,45 @@ describe('record chaining', () => {
     expect(integrity.ok).toBe(true);
   });
 
+  /**
+   * #34, the question option 2 left open. `interleaved` was split from `broken`
+   * so a stale head stops crying wolf, and that was right — 79 of 79 measured
+   * breaks were benign. But interleaving leaves a record that NOTHING chains
+   * onto: when two writers both chain to A, the first of them is named by no
+   * `prev` anywhere in the file.
+   *
+   * A hash chain protects a record by having the next one name it. A record
+   * nobody names is outside the chain's protection entirely. So this asks the
+   * question that decides #34: if that record is lost, does anything notice?
+   */
+  test('MEASURED HOLE: a record lost from an interleaved region is invisible', () => {
+    withStaleHead(); // msg_a, then msg_b and msg_c both chained to msg_a
+    const path = join(dir, 'nested', 'messages.jsonl');
+    const before = lines();
+    expect(before).toHaveLength(3);
+
+    // Drop msg_b — the interleaved record, the one no other record names.
+    writeFileSync(path, [before[0]!, before[2]!].join('\n') + '\n');
+
+    // A clean bill of health for a file a record was deleted from. Not
+    // reported as interleaving, not reported as damage: indistinguishable
+    // from a log that never held msg_b at all. Compare the test below, where
+    // the same deletion from a LINEAR region is caught — the difference is
+    // entirely whether anything named the missing record.
+    const { integrity } = log.readWithIntegrity({ last_n: 10 });
+    expect(integrity).toMatchObject({
+      ok: true,
+      broken: 0,
+      interleaved: 0,
+      tampered: 0,
+      unparseable: 0,
+    });
+
+    // Pinned so the fix announces itself: whichever option #34 takes, this
+    // assertion must change, and a silent pass would mean it did not.
+    expect(log.readWithIntegrity({ last_n: 10 }).records).toHaveLength(2);
+  });
+
   // The whole point of separating the two: `broken` has to keep meaning
   // "something is wrong", or the detection #17 was built for is lost.
   test('a record removed from the middle is still damage, not interleaving', () => {
