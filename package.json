@@ -46,11 +46,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck:plugin": "tsc -p tsconfig.plugin.json",
+    "typecheck:test": "tsc -p tsconfig.test.json",
     "sync-version": "node scripts/sync-version.mjs",
     "check-version": "node scripts/sync-version.mjs --check",
     "version": "node scripts/sync-version.mjs && git add test/fixtures/canonical-id.json plugins/opencode/package.json plugins/opencode/tincan-lib/types.ts CANONICAL_ID.md",
     "postversion": "git push origin HEAD --follow-tags",
-    "prepublishOnly": "npm run build && npm run typecheck:plugin && npm test"
+    "prepublishOnly": "npm run build && npm run typecheck:plugin && npm run typecheck:test && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

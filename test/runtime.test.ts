@@ -808,7 +808,11 @@ describe('buildSide, hosted in opencode', () => {
             cwd: '/src/x',
             env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
           },
-          { resolveSelfSession: async () => answers[i++ % answers.length]! }, { sweep: { socketDirs: [] } });
+          {
+            resolveSelfSession: async () => answers[i++ % answers.length]!,
+            sweep: { socketDirs: [] },
+          },
+        );
 
         const log = new MessageLog(join(logDir, 'messages.jsonl'));
         const r = await createTools(side, log).send_peer({
@@ -865,8 +869,7 @@ describe('buildSide, hosted in opencode', () => {
             cwd: '/src/x',
             env: { TINCAN_HOME: home, OPENCODE_PID: '41233' },
           },
-          { resolveSelfSession: async () => 'ses_self' },
-          { sweep: { socketDirs: [] } },
+          { resolveSelfSession: async () => 'ses_self', sweep: { socketDirs: [] } },
         );
 
         const log = new MessageLog(join(logDir, 'messages.jsonl'));

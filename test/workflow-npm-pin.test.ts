@@ -36,11 +36,13 @@ describe('the npm pin', () => {
   });
 
   test('the pin satisfies the trusted-publishing floor of 11.5.1', () => {
-    const pin = npmPin('.github/workflows/publish.yml');
-    const [major, minor, patch] = (pin ?? '0.0.0').split('.').map(Number);
-    const floor = [11, 5, 1];
-    const rank = major * 1e6 + minor * 1e3 + patch;
-    expect(rank).toBeGreaterThanOrEqual(floor[0] * 1e6 + floor[1] * 1e3 + floor[2]);
+    const rank = (v: string): number => {
+      const [major = 0, minor = 0, patch = 0] = v.split('.').map(Number);
+      return major * 1e6 + minor * 1e3 + patch;
+    };
+    expect(rank(npmPin('.github/workflows/publish.yml') ?? '0.0.0')).toBeGreaterThanOrEqual(
+      rank('11.5.1'),
+    );
   });
 
   /**

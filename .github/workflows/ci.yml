@@ -50,6 +50,15 @@ jobs:
       - name: Typecheck the opencode plugin
         run: npm run typecheck:plugin
 
+      # `tsconfig.json` builds src only, so the suite was never typechecked.
+      # Nothing caught a fixture using a delivery method the program cannot
+      # produce, an envelope missing a required field, or — the one that cost
+      # real isolation — a test seam passed as a fourth argument to a
+      # three-argument function, silently dropped, leaving two tests sweeping
+      # whatever sessions happened to be running on the machine.
+      - name: Typecheck the test suite
+        run: npm run typecheck:test
+
       - name: Test
         run: npm test
 

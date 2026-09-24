@@ -13,7 +13,8 @@ const env = (id: string, opts: { to?: string; in_reply_to?: string } = {}) =>
     id,
     from: { runtime: 'claude-code', name: 'billing-api', cwd: '/src/billing' },
     to: { runtime: 'codex', name: opts.to ?? 'auth-refactor', thread_id: '019b-0000' },
-    method: 'codex-queue',
+    method: 'thread/queue/add',
+    reply_tool: true,
     expect_reply: false,
     ...(opts.in_reply_to !== undefined && { in_reply_to: opts.in_reply_to }),
     text: `text of ${id}`,
@@ -50,7 +51,7 @@ describe('append and read', () => {
       id: 'msg_a',
       direction: 'out',
       outcome: 'accepted',
-      method: 'codex-queue',
+      method: 'thread/queue/add',
       text: 'text of msg_a',
     });
   });
@@ -442,7 +443,7 @@ describe('rotation', () => {
     const l = small();
     fill(l, 60);
     const lines = readFileSync(join(dir, 'messages.jsonl'), 'utf8').trim().split('\n');
-    const cp = JSON.parse(lines[0]);
+    const cp = JSON.parse(lines[0]!);
     expect(cp.kind).toBe('checkpoint');
     cp.rotated = 1;
     lines[0] = JSON.stringify(cp);

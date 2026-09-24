@@ -716,7 +716,7 @@ describe('idempotency_key', () => {
     // the caller's correct behaviour — retry under the same key — is exactly
     // what stops working.
     const { side, delivered } = makeSide({
-      deliver: async () => ({ delivered: false, error: 'socket closed' }),
+      deliver: async () => ({ delivered: false, error: 'socket closed', method: 'thread/queue/add' as const }),
     });
     const tools = createTools(side, log);
     const first = await tools.send_peer({
@@ -1133,7 +1133,7 @@ describe('outcome replaces delivered', () => {
   });
 
   test('failed when we tried and the transport did not take it', async () => {
-    const { side } = makeSide({ deliver: async () => ({ delivered: false, error: 'socket closed' }) });
+    const { side } = makeSide({ deliver: async () => ({ delivered: false, error: 'socket closed', method: 'thread/queue/add' as const }) });
     const r = await createTools(side, log).send_peer({ peer: 'auth-refactor', message: 'x' });
     expect(r.outcome).toBe('failed');
     expect(r.refusal).toBe('delivery_failed');
@@ -1150,7 +1150,7 @@ describe('outcome replaces delivered', () => {
       }),
       deliver: async () => {
         n += 1;
-        return n === 2 ? { delivered: false, error: 'gone' } : { delivered: true, method: 'thread/queue/add' as const };
+        return n === 2 ? { delivered: false, error: 'gone', method: 'thread/queue/add' as const } : { delivered: true, method: 'thread/queue/add' as const };
       },
     });
     const r: any = await createTools(side, log).send_peer({
