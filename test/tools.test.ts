@@ -991,6 +991,133 @@ describe('the sender identifies itself durably', () => {
   });
 });
 
+// #24 catch-up. A refused send can be left for the recipient to collect when
+// it returns, but only when the sender said so: `replay_for_minutes` sets the
+// shelf life, and absent it nothing is replayed, which is what Tin Can already
+// did. Replay also needs to know WHO the message was for, and an `unsent`
+// record has only the address as typed — so the durable id comes from
+// `expect_id` where the caller gave one, and from the resolved peer where
+// there was one. Neither available means not replayable, deliberately: a name
+// match would hand a restarted session its predecessor's mail.
+describe('a refused send can be left for the recipient, when the sender says so', () => {
+  const ghostSide = () =>
+    makeSide({ listPeers: async () => ({ peers: [] }) });
+
+  test('records the shelf life and the intended recipient from expect_id', async () => {
+    const { side } = ghostSide();
+    const before = Date.now();
+    const r = await tools(side).send_peer({
+      peer: 'gone-session',
+      message: 'the key rotated',
+      expect_id: '5af69d42-2214-41d9-b13f-9c3177eb60ce',
+      replay_for_minutes: 30,
+    });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.kind).toBe('unsent');
+    expect(rec.to_id).toBe('5af69d42-2214-41d9-b13f-9c3177eb60ce');
+    const until = Date.parse(rec.replay_until);
+    expect(until).toBeGreaterThanOrEqual(before + 30 * 60_000);
+    expect(until).toBeLessThanOrEqual(Date.now() + 30 * 60_000);
+  });
+
+  test('takes the durable id from the resolved peer when one was reached for', async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [{ ...peer(), state: 'unreachable' as const }] }),
+    });
+    const r = await tools(side).send_peer({
+      peer: 'auth-refactor',
+      message: 'x',
+      replay_for_minutes: 30,
+    });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.reason).toBe('peer_unreachable');
+    expect(rec.to_id).toBe('00000000-0000-0000-0000-0000000007f3');
+  });
+
+  test('records nothing replayable when the sender set no shelf life', async () => {
+    const { side } = ghostSide();
+    const r = await tools(side).send_peer({
+      peer: 'gone-session',
+      message: 'x',
+      expect_id: '5af69d42-2214-41d9-b13f-9c3177eb60ce',
+    });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.kind).toBe('unsent');
+    expect(rec.replay_until).toBeUndefined();
+  });
+
+  test('says so when a shelf life was set but nothing identifies the recipient', async () => {
+    const { side } = ghostSide();
+    const r = await tools(side).send_peer({
+      peer: 'gone-session',
+      message: 'x',
+      replay_for_minutes: 30,
+    });
+
+    const rec: any = log.read({ last_n: 5 }).find((x) => x.id === r.message_id);
+    expect(rec.to_id).toBeUndefined();
+    expect(rec.replay_until).toBeUndefined();
+    // Silent no-ops are the failure mode here: the sender believes the message
+    // is waiting for someone, and it is not.
+    expect(r.detail).toContain('expect_id');
+  });
+});
+
+// The other half of #24: a returning session asks what it missed. Nothing can
+// be pushed to it, so this is a filter on the log it can already read.
+describe('message_log missed: what was left for this session', () => {
+  const MINE = 'aaaaaaaa-0000-0000-0000-00000000mine';
+  const from = { runtime: 'codex' as const, name: 'auth-refactor', cwd: '/src/auth' };
+  const mineSide = (over: Partial<Side> = {}) =>
+    makeSide({ selfDurableId: async () => ({ session_id: MINE }), ...over });
+
+  const leave = (toId: string, minutesFromNow: number, text: string) =>
+    log.appendUnsent(newId(), from, 'billing-api', 'peer_unknown', text, {
+      until: new Date(Date.now() + minutesFromNow * 60_000).toISOString(),
+      toId,
+    });
+
+  let n = 0;
+  const newId = () => `msg_${(n++).toString().padStart(24, '0')}`;
+
+  test('returns an attempt left for this session and still in date', async () => {
+    leave(MINE, 30, 'the key rotated');
+    const { side } = mineSide();
+    const r = await tools(side).message_log({ missed: true });
+    expect(r.records).toHaveLength(1);
+    expect(r.records[0]).toMatchObject({ kind: 'unsent', text: 'the key rotated' });
+  });
+
+  test('does not return one whose shelf life has passed', async () => {
+    leave(MINE, -1, 'rebase onto main');
+    const { side } = mineSide();
+    expect((await tools(side).message_log({ missed: true })).records).toEqual([]);
+  });
+
+  test('does not return one left for a different session', async () => {
+    leave('bbbbbbbb-0000-0000-0000-000000theirs', 30, 'not for you');
+    const { side } = mineSide();
+    expect((await tools(side).message_log({ missed: true })).records).toEqual([]);
+  });
+
+  test('does not return an attempt nobody asked to have replayed', async () => {
+    log.appendUnsent(newId(), from, 'billing-api', 'peer_unknown', 'no shelf life');
+    const { side } = mineSide();
+    expect((await tools(side).message_log({ missed: true })).records).toEqual([]);
+  });
+
+  test('says why rather than returning a bare empty list when we have no durable id', async () => {
+    leave(MINE, 30, 'the key rotated');
+    const { side } = makeSide({ selfDurableId: async () => undefined });
+    const r = await tools(side).message_log({ missed: true });
+    expect(r.records).toEqual([]);
+    expect(r.scope_note).toMatch(/durable id/i);
+  });
+});
+
 // The `to` side carried a durable id only for Codex, because the envelope
 // hardcoded `thread_id` instead of asking `durableIdOf` which key the
 // recipient's runtime uses. Measured on a live log: Codex recipients had one on

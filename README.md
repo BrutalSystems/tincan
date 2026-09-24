@@ -97,8 +97,8 @@ session's next turn. Both directions are recorded in one log.
 | Tool | What it does |
 |---|---|
 | `peers` | Lists the live sessions you can reach (see [Which peers you see](#which-peers-you-see)): name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code and opencode. |
-| `send_peer` | Sends text to one peer, or to several at once. `{peer?, peers?, message, in_reply_to?, expect_reply?, answers?, urgent?, expect_id?, idempotency_key?}` — exactly one of `peer` and `peers`. |
-| `message_log` | Reads back `~/.tincan/messages.jsonl`, filtered by peer or by reply chain. |
+| `send_peer` | Sends text to one peer, or to several at once. `{peer?, peers?, message, in_reply_to?, expect_reply?, answers?, urgent?, expect_id?, idempotency_key?, replay_for_minutes?}` — exactly one of `peer` and `peers`. `replay_for_minutes` leaves a refused send for the recipient to collect when it returns, and needs `expect_id` to say who it was for. |
+| `message_log` | Reads back `~/.tincan/messages.jsonl`, filtered by peer or by reply chain. `missed: true` returns only the attempts left for this session that are still in date. |
 
 `send_peer` returns an `outcome`: `accepted` (the peer's harness took the
 message — not that the peer has read it), `rejected` (nothing was sent and the
@@ -130,6 +130,42 @@ Two optional parameters guard the two ways a send goes wrong on its way out:
   session, the send is refused rather than delivered to a stranger. Pass it
   whenever you listed peers and then did something else first. It pins a single
   session, so it cannot be combined with `peers`.
+
+### Leaving a message for a session that is not there
+
+A send to a session that is down is refused, and by default that is the end of
+it — Tin Can has no queue and no retry, and the returning session never learns
+anything was tried. `replay_for_minutes` is the opt-in that changes that:
+
+```jsonc
+// send_peer { "peer": "billing-sync", "expect_id": "019b7f21-…",
+//             "message": "the staging key rotated", "replay_for_minutes": 60 }
+```
+
+The attempt is held for that long, and the session it was meant for collects it
+by calling `message_log` with `missed: true`. Nothing else replays it; nothing
+is pushed.
+
+Three things about it are deliberate:
+
+- **The sender decides, and the default is nothing.** Only the sender knows
+  whether a message is still worth acting on an hour later. "Rebase onto main"
+  is not; "the key rotated" is. So there is no machine-wide window to guess
+  with, and a send that says nothing is replayed to nobody — exactly as before
+  this existed.
+- **It needs `expect_id`.** Replay is matched on the durable id, never on the
+  name, because a restarted session answers to its predecessor's name and would
+  collect its predecessor's mail. A send addressed only by a name that no longer
+  resolves is still recorded, and the refusal says plainly that it will not be
+  replayed.
+- **Nothing is marked as consumed.** Reading `missed` twice returns the same
+  records; the shelf life is what bounds them. Holding read state would make
+  this an offline queue, which is the thing Tin Can does not do.
+
+The attempt itself is recorded either way. Even with no `replay_for_minutes`, a
+returning session can see in `message_log` that someone tried to reach it and
+could not — and go ask them, which is the right move when the message is too old
+to trust.
 
 ## Which peers you see
 

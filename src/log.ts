@@ -92,6 +92,24 @@ export interface UnsentRecord {
   /** The `refusal` returned to the caller, so the two accounts agree. */
   reason: string;
   text: string;
+  /**
+   * #24: when this attempt stops being worth replaying to the session it was
+   * for. Absolute rather than a duration so a reader need not recompute it
+   * from `at`. Absent means never replay, which is what Tin Can did before
+   * this existed and remains the default.
+   */
+  replay_until?: string;
+  /**
+   * The durable id of the session this was MEANT for, by value — not under
+   * `session_id` or `thread_id`, because when the peer could not be resolved
+   * there is no runtime to say which key applies, and matching only ever
+   * compares the value.
+   *
+   * Written together with `replay_until` or not at all: a shelf life with
+   * nobody to deliver to cannot be acted on, and a recipient with no shelf
+   * life was never offered for replay.
+   */
+  to_id?: string;
 }
 
 export interface DroppedRecord {
@@ -258,6 +276,14 @@ export interface ReadQuery {
   peer?: string;
   thread?: string;
   last_n: number;
+  /**
+   * #24: only attempts left for this session and still in date.
+   *
+   * Applied inside `select`, before `last_n` slices, so a caller asking for
+   * the 20 most recent MISSED records gets twenty of those rather than
+   * whatever survives filtering the 20 most recent records of any kind.
+   */
+  missed?: { toId: string; now: number };
 }
 
 export function messagesPath(env: NodeJS.ProcessEnv, home: string = homedir()): string {
@@ -351,6 +377,8 @@ export class MessageLog {
     toAddress: string,
     reason: string,
     text: string,
+    /** #24. Both or neither; see {@link UnsentRecord.to_id}. */
+    replay?: { until: string; toId: string },
   ): UnsentRecord {
     const rec: UnsentRecord = {
       id,
@@ -360,6 +388,7 @@ export class MessageLog {
       to_address: toAddress,
       reason,
       text,
+      ...(replay !== undefined && { replay_until: replay.until, to_id: replay.toId }),
     };
     this.append(rec);
     return rec;
@@ -452,6 +481,19 @@ export class MessageLog {
           return r.to_address.toLowerCase() === peer || r.from.name.toLowerCase() === peer;
         }
         return false;
+      });
+    }
+
+    if (query.missed !== undefined) {
+      const { toId, now } = query.missed;
+      records = records.filter((r) => {
+        if (r.kind !== 'unsent') return false;
+        // Both fields or nothing: an attempt with no shelf life was never
+        // offered for replay, and one with no recipient cannot be matched to
+        // a session without trusting a name.
+        if (r.replay_until === undefined || r.to_id === undefined) return false;
+        if (r.to_id !== toId) return false;
+        return Date.parse(r.replay_until) > now;
       });
     }
 

@@ -5,6 +5,7 @@ import {
   DEFAULT_LAST_N,
   labelList,
   MAX_FANOUT,
+  MAX_REPLAY_MINUTES,
   NATIVE_PEER_PATH,
   runtimeSupportsUrgent,
   type OwnKindScope,
@@ -177,6 +178,23 @@ export function toolDefinitions(
               `${Math.round(IDEMPOTENCY_WINDOW_MS / 60_000)} minutes, and forgotten if ` +
               `Tin Can restarts.`,
           },
+          // Stated as opt-in, with its precondition, because both halves are
+          // silent when wrong: nothing is replayed by default, and a duration
+          // without expect_id records an attempt that will never be collected.
+          replay_for_minutes: {
+            type: 'integer',
+            minimum: 1,
+            maximum: MAX_REPLAY_MINUTES,
+            description:
+              `If the peer cannot be reached, leave this message for it to collect when ` +
+              `it comes back, for this many minutes. Nothing is replayed unless you ask: ` +
+              `without this, a send to a session that is down is recorded and never ` +
+              `offered again. Set it to how long the message stays worth acting on — an ` +
+              `instruction like "rebase onto main" is worthless an hour later, so prefer ` +
+              `a short value. Requires expect_id, which is what says WHICH session it was ` +
+              `for; a name alone is not enough, because a restarted session answers to ` +
+              `its predecessor's name. At most ${MAX_REPLAY_MINUTES}.`,
+          },
         },
         required: ['message'],
       },
@@ -233,6 +251,18 @@ export function toolDefinitions(
             type: 'number',
             default: DEFAULT_LAST_N,
             description: 'How many records to return.',
+          },
+          // The only way a returning session learns it missed anything:
+          // nothing can be pushed to a session at startup, so it has to ask.
+          missed: {
+            type: 'boolean',
+            default: false,
+            description:
+              'Messages someone tried to send you while you were not reachable, that they ' +
+              'asked to have held for you and that are still in date. Worth calling if ' +
+              'this session was restarted or resumed and may have been unreachable for a ' +
+              'while. Returns nothing unless a sender explicitly left something, so an ' +
+              'empty result means nobody did — not that nobody tried.',
           },
         },
       },

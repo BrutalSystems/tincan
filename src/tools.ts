@@ -147,6 +147,17 @@ export interface Side {
  */
 export const MAX_FANOUT = 8;
 
+/**
+ * The longest shelf life `replay_for_minutes` will accept, in minutes (#24).
+ *
+ * Capped for the reason {@link MAX_FANOUT} is: a bound that also states what
+ * the feature is for. An instruction to an agent goes stale fast — a day is
+ * already generous — and an uncapped duration would let "leave this for them"
+ * mean "forever", which is the harm catch-up was scoped to avoid, readmitted
+ * through the opt-in door.
+ */
+export const MAX_REPLAY_MINUTES = 24 * 60;
+
 export const sendPeerSchema = z
   .object({
     peer: z.string().optional(),
@@ -158,6 +169,7 @@ export const sendPeerSchema = z
     urgent: z.boolean().default(false),
     idempotency_key: z.string().min(1).optional(),
     expect_id: z.string().min(1).optional(),
+    replay_for_minutes: z.number().int().positive().max(MAX_REPLAY_MINUTES).optional(),
   })
   .refine((d) => (d.peer === undefined) !== (d.peers === undefined), {
     message: 'Give exactly one of `peer` (one recipient) or `peers` (several).',
@@ -179,6 +191,7 @@ export const messageLogSchema = z.object({
   peer: z.string().optional(),
   thread: z.string().optional(),
   last_n: z.number().int().positive().default(DEFAULT_LAST_N),
+  missed: z.boolean().default(false),
 });
 
 export type SendPeerArgs = z.input<typeof sendPeerSchema>;
@@ -491,14 +504,44 @@ export function createTools(side: Side, log: MessageLog) {
        * would put a message in their backlog that nobody was prevented from
        * sending.
        */
-      const recordUnsent = (address: string, reason: Refusal): string => {
+      /**
+       * Who this attempt was MEANT for, by durable id, where that is knowable.
+       *
+       * `expect_id` first: it is the caller's own statement of who they meant,
+       * and it is the only identity available on the path that matters most —
+       * `peer_unknown`, where nothing resolved because the session is gone.
+       * A resolved peer answers for the other two refusals.
+       *
+       * Undefined means the send named a peer only by a name that no longer
+       * resolves, which is exactly the identity `expect_id` exists to distrust.
+       * Such an attempt is recorded but never replayed.
+       */
+      const intendedId = (resolvedFor?: SidePeer): string | undefined => {
+        if (args.expect_id !== undefined) return args.expect_id;
+        if (resolvedFor === undefined) return undefined;
+        const durable = durableIdOf(resolvedFor);
+        return 'thread_id' in durable ? durable.thread_id : durable.session_id;
+      };
+
+      const recordUnsent = (address: string, reason: Refusal, resolvedFor?: SidePeer): string => {
         const id = newMessageId();
+        const toId = intendedId(resolvedFor);
+        // Both or neither: a shelf life with nobody to deliver to cannot be
+        // acted on, and it would read as a promise the log cannot keep.
+        const replay =
+          args.replay_for_minutes !== undefined && toId !== undefined
+            ? {
+                until: new Date(Date.now() + args.replay_for_minutes * 60_000).toISOString(),
+                toId,
+              }
+            : undefined;
         log.appendUnsent(
           id,
           { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd, ...(selfId ?? {}) },
           address,
           reason,
           args.message,
+          replay,
         );
         return id;
       };
@@ -567,7 +610,15 @@ export function createTools(side: Side, log: MessageLog) {
                       `of redirecting the reply.`
                     : diagnostic !== undefined
                       ? ` ${diagnostic}`
-                      : ` Call peers to see what is reachable.`)
+                      : ` Call peers to see what is reachable.`) +
+                  // A shelf life with no way to say who it was for is a silent
+                  // no-op: the sender believes the message is waiting for
+                  // someone, and nothing will ever be replayed.
+                  (args.replay_for_minutes !== undefined && args.expect_id === undefined
+                    ? ` It will NOT be replayed: replay_for_minutes needs expect_id to say ` +
+                      `which session the message was for, and the name "${address}" no longer ` +
+                      `resolves to one.`
+                    : '')
                 : `"${address}" matches more than one peer. Use the suffixed form.` +
                   (fanOut ? ` Nothing was sent to anyone.` : ''),
           };
@@ -623,7 +674,7 @@ export function createTools(side: Side, log: MessageLog) {
             refusal: 'peer_changed',
             // The session the caller meant is gone — someone tried to reach
             // it and could not, which is the case #24 is about.
-            message_id: recordUnsent(only.display, 'peer_changed'),
+            message_id: recordUnsent(only.display, 'peer_changed', only.side),
             peer_state: only.side.state,
             detail:
               `"${addresses[0]}" now resolves to session ${actual}, not ${args.expect_id} — ` +
@@ -639,7 +690,7 @@ export function createTools(side: Side, log: MessageLog) {
           outcome: 'rejected',
           ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
           refusal: 'peer_unreachable',
-          message_id: recordUnsent(gone.display, 'peer_unreachable'),
+          message_id: recordUnsent(gone.display, 'peer_unreachable', gone.side),
           peer_state: 'unreachable',
           detail:
             `${gone.display} is not accepting input (gone, ephemeral, or a subagent thread).` +
@@ -781,7 +832,41 @@ export function createTools(side: Side, log: MessageLog) {
       rawArgs: MessageLogArgs,
     ): Promise<{ records: LogRecord[]; integrity?: LogIntegrity; scope_note?: string }> {
       const args = messageLogSchema.parse(rawArgs);
-      const { records: all, integrity } = log.readWithIntegrity(args);
+
+      // #24. Matching is by durable id alone: a session that cannot name its
+      // own is not handed a backlog matched on anything weaker, because the
+      // weaker thing is the display name, and a restarted session answering to
+      // its predecessor's name would collect its predecessor's mail.
+      let missed: { toId: string; now: number } | undefined;
+      if (args.missed) {
+        const durable = await side.selfDurableId?.(await side.resolveSelf());
+        const toId =
+          durable === undefined
+            ? undefined
+            : 'thread_id' in durable
+              ? durable.thread_id
+              : durable.session_id;
+        if (toId === undefined) {
+          return {
+            records: [],
+            scope_note:
+              `This session cannot resolve its own durable id, so nothing can be matched ` +
+              `to it. Attempts left for it are in the log but are not shown here rather ` +
+              `than matched on a display name, which is what goes stale across a restart.`,
+          };
+        }
+        missed = { toId, now: Date.now() };
+      }
+
+      // `missed` is dropped from the spread deliberately: it is a boolean here
+      // and a resolved {toId, now} in ReadQuery, and spreading `false` into a
+      // field the reader tests with `!== undefined` turns every ordinary read
+      // into a filter that matches nothing.
+      const { missed: _asked, ...query } = args;
+      const { records: all, integrity } = log.readWithIntegrity({
+        ...query,
+        ...(missed !== undefined && { missed }),
+      });
 
       // Scoped by default. The log is machine-global, so without this a
       // session asking "what have I been told" is handed every conversation
