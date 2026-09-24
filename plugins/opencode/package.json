@@ -1,6 +1,6 @@
 {
   "name": "@brutalsystems/tincan-opencode",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "opencode plugin for Tin Can — the receive half, so an opencode session can be messaged by a live Claude Code, Codex or opencode peer.",
   "keywords": [
     "opencode",
