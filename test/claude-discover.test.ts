@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeInbox, type FakeInbox } from './fakes.js';
@@ -190,6 +191,58 @@ describe('several registry dirs', () => {
 
     expect(listing.sessions).toHaveLength(1);
     expect(listing.sessions[0]?.rawName).toBe('live-one');
+  });
+
+  test('the tiebreak still picks the live one on a machine that is not on UTC', async () => {
+    // The test above proves the tiebreak with a placeholder that matches by
+    // construction. This one uses the two REAL formats, which do not.
+    //
+    // Claude Code writes procStart into its registry in UTC — verified against
+    // a live record, where `procStart` was "Thu Sep 24 08:36:26 2026" for a
+    // process `ps` reports as starting 04:36:26 EDT. `ps -o lstart=` prints
+    // LOCAL time, so on any machine that is not on UTC the comparison could
+    // never be true, every real collision fell through to `ambiguous`, and a
+    // live session was dropped from the listing entirely.
+    //
+    // TZ is forced rather than read so this fails on a UTC CI runner too,
+    // where the bug does not reproduce on its own.
+    const sock = await fakeInbox();
+    open.push(sock);
+    const priorTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      // process.pid is genuinely live, so the real procStartOf has something
+      // to read, and this is the format Claude Code would have recorded for it.
+      const asClaudeCodeRecordsIt = execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], {
+        encoding: 'utf8',
+        env: { ...process.env, TZ: 'UTC' },
+      }).trim();
+
+      write(a, process.pid, {
+        messagingSocketPath: sock.path,
+        procStart: 'Mon Sep 21 10:00:00 2026',
+        name: 'stale-one',
+        sessionId: 'dead-session',
+      });
+      write(b, process.pid, {
+        messagingSocketPath: sock.path,
+        procStart: asClaudeCodeRecordsIt,
+        name: 'live-one',
+        sessionId: 'live-session',
+      });
+
+      const listing = await listClaudeSessions({
+        registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+        selfPid: 1,
+      });
+
+      expect(listing.diagnostic).toBeUndefined();
+      expect(listing.sessions).toHaveLength(1);
+      expect(listing.sessions[0]?.rawName).toBe('live-one');
+    } finally {
+      if (priorTz === undefined) delete process.env.TZ;
+      else process.env.TZ = priorTz;
+    }
   });
 
   test('the same pid in two dirs, neither matching: both dropped, with a diagnostic', async () => {

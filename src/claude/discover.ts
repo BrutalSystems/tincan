@@ -79,12 +79,21 @@ export interface ClaudeListing {
   diagnostic?: string;
 }
 
-/** `ps -o lstart=` prints exactly the format the registry records store. */
+/**
+ * `ps -o lstart=` prints exactly the format the registry records store — but
+ * in the caller's LOCAL timezone, and Claude Code writes the record in UTC.
+ * Without TZ forced, the two strings can only be equal on a machine already on
+ * UTC; everywhere else the comparison in listClaudeSessions was never true, so
+ * every real pid collision fell through to `ambiguous` and dropped a live
+ * session from the listing. That failed safe and lost the peer, which is the
+ * one thing the tiebreak exists to avoid.
+ */
 function procStartOf(pid: number): string | undefined {
   try {
     const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, TZ: 'UTC' },
     });
     const trimmed = out.trim();
     return trimmed === '' ? undefined : trimmed;
