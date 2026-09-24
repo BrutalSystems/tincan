@@ -902,8 +902,15 @@ describe('fan-out', () => {
     expect(r.detail).toContain('docs-passed');
     expect(delivered).toHaveLength(0);
     // Assert the log too: a result that says nothing was sent is not evidence
-    // that nothing was sent.
-    expect(log.read({ last_n: 999 }).length).toBe(before);
+    // that nothing was sent. No MESSAGE record may appear — and since #23 the
+    // one new record is the attempt itself, naming the address that could not
+    // be resolved and nobody else. The reachable two were never tried, so
+    // recording an attempt against them would invent one.
+    const after = log.read({ last_n: 999 });
+    expect(after.filter((r) => r.kind === undefined)).toHaveLength(before);
+    const unsent = after.filter((r) => r.kind === 'unsent');
+    expect(unsent).toHaveLength(1);
+    expect(unsent[0]).toMatchObject({ to_address: 'docs-passed', reason: 'peer_unknown' });
   });
 
   test('one unreachable peer refuses the whole call: it was knowable before sending', async () => {
@@ -1216,5 +1223,63 @@ describe('message_log is scoped to this project', () => {
     const r = await createTools(side, log).message_log({ last_n: 20 });
     expect(r.records).toHaveLength(0);
     expect(r.scope_note).toMatch(/all_projects/);
+  });
+});
+
+// #23/#24. A send that is refused before delivery wrote NOTHING to the log:
+// `peer_unknown`, `peer_unreachable` and `peer_changed` all return before
+// `appendMessage`, and only guard refusals wrote anything at all. So a session
+// that was down while someone tried to reach it found no evidence anyone had
+// — not because it had caught up, but because nothing was ever written.
+//
+// That is the prerequisite #24 turns on: a returning session cannot read a
+// backlog that was never recorded. It is worth having on its own, because
+// "someone tried to reach me and could not" was invisible to everyone except
+// the sender's own turn.
+describe('an attempt that never became a send is still recorded', () => {
+  test('records a send to an unreachable peer, with who it was for and why it failed', async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ state: 'unreachable' })] }),
+    });
+    const r = await tools(side).send_peer({ peer: 'auth-refactor', message: 'are you there?' });
+    expect(r.outcome).toBe('rejected');
+    expect(r.refusal).toBe('peer_unreachable');
+
+    const [rec] = log.read({ last_n: 10 });
+    expect(rec).toMatchObject({
+      kind: 'unsent',
+      reason: 'peer_unreachable',
+      to_address: 'auth-refactor',
+      text: 'are you there?',
+    });
+  });
+
+  test('records a send to a name that resolves to nobody', async () => {
+    const { side } = makeSide({ listPeers: async () => ({ peers: [] }) });
+    const r = await tools(side).send_peer({ peer: 'ghost', message: 'hello?' });
+    expect(r.refusal).toBe('peer_unknown');
+    expect(log.read({ last_n: 10 })[0]).toMatchObject({ kind: 'unsent', to_address: 'ghost' });
+  });
+
+  // The point of recording it is being able to FIND it. The peer filter only
+  // matched messages, so an attempt to a peer was invisible to the one query a
+  // returning session would run.
+  test('the peer filter finds attempts, not just delivered messages', async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ state: 'unreachable' })] }),
+    });
+    await tools(side).send_peer({ peer: 'auth-refactor', message: 'are you there?' });
+    const found = log.read({ last_n: 10, peer: 'auth-refactor' });
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ kind: 'unsent' });
+  });
+
+  // A self-send is a caller mistake, not a missed message. Recording it would
+  // put noise in the one place a returning session looks.
+  test('does not record a self-send', async () => {
+    const { side } = makeSide({ selfName: async () => 'auth-service' });
+    const r = await tools(side).send_peer({ peer: 'auth-service', message: 'hi me' });
+    expect(r.refusal).toBe('self_send');
+    expect(log.read({ last_n: 10 })).toHaveLength(0);
   });
 });

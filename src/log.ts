@@ -69,6 +69,31 @@ export interface NoticeRecord {
   detail: string;
 }
 
+/**
+ * A send that was refused before it became a message: the address resolved to
+ * nobody, the session was not accepting input, or it had been replaced by a
+ * different session answering to the same name.
+ *
+ * Written because the alternative was writing nothing (#23, #24). Every one of
+ * those refusals returned before `appendMessage`, so a session that was down
+ * while a peer tried to reach it found no evidence anyone had — and could not
+ * tell "nobody wrote" from "I was not here to receive it". That is precisely
+ * the question `message_log` is asked.
+ *
+ * `to_address` is the address AS TYPED, not a resolved peer: there may be no
+ * peer to name, which is the point of the record.
+ */
+export interface UnsentRecord {
+  id: string;
+  at: string;
+  kind: 'unsent';
+  from: Envelope['from'];
+  to_address: string;
+  /** The `refusal` returned to the caller, so the two accounts agree. */
+  reason: string;
+  text: string;
+}
+
 export interface DroppedRecord {
   id: string;
   at: string;
@@ -140,6 +165,7 @@ export type LogRecord = (
   | MessageRecord
   | NoticeRecord
   | DroppedRecord
+  | UnsentRecord
   | OutcomeRecord
   | CheckpointRecord
 ) &
@@ -318,6 +344,27 @@ export class MessageLog {
     return rec;
   }
 
+  /** See {@link UnsentRecord}: a refusal that happened before there was a message. */
+  appendUnsent(
+    id: string,
+    from: Envelope['from'],
+    toAddress: string,
+    reason: string,
+    text: string,
+  ): UnsentRecord {
+    const rec: UnsentRecord = {
+      id,
+      at: new Date().toISOString(),
+      kind: 'unsent',
+      from,
+      to_address: toAddress,
+      reason,
+      text,
+    };
+    this.append(rec);
+    return rec;
+  }
+
   appendDropped(id: string, reason: string): DroppedRecord {
     const rec: DroppedRecord = { id, at: new Date().toISOString(), kind: 'dropped', reason };
     this.append(rec);
@@ -394,9 +441,18 @@ export class MessageLog {
 
     if (query.peer !== undefined) {
       const peer = query.peer.toLowerCase();
-      records = records.filter(
-        (r) => isMessage(r) && (r.to.name.toLowerCase() === peer || r.from.name.toLowerCase() === peer),
-      );
+      records = records.filter((r) => {
+        if (isMessage(r)) {
+          return r.to.name.toLowerCase() === peer || r.from.name.toLowerCase() === peer;
+        }
+        // An attempt that never became a message is exactly what a returning
+        // session is looking for, and it was invisible to this filter — which
+        // would have made the record pointless to write.
+        if (r.kind === 'unsent') {
+          return r.to_address.toLowerCase() === peer || r.from.name.toLowerCase() === peer;
+        }
+        return false;
+      });
     }
 
     return records.slice(-query.last_n);

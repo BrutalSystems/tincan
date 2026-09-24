@@ -190,7 +190,11 @@ export function toolDefinitions(
         '`failed` (it was attempted and refused), or `indeterminate` — written out, with ' +
         'nothing ever observed about what happened next, which is what a crash mid-send ' +
         'leaves behind. Do not report `indeterminate` as either success or failure; it ' +
-        'means nobody knows. Filter by peer, or follow a reply chain from a message id. ' +
+        'means nobody knows. A record with `kind: "unsent"` is a send that never became a ' +
+        'message — the peer was unknown, unreachable, or had been replaced by another ' +
+        'session of the same name — and carries `to_address` and `reason`. It is how you ' +
+        'find that someone tried to reach a session while it was down. ' +
+        'Filter by peer, or follow a reply chain from a message id. ' +
         'If an `integrity` field comes back, read it: `ok: false` means the log is damaged ' +
         'or was edited and what you are reading is an incomplete account — say so rather ' +
         'than treating it as the whole record. A `rotated` field is not damage; it means ' +

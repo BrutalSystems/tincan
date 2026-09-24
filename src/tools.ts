@@ -470,6 +470,27 @@ export function createTools(side: Side, log: MessageLog) {
       // about who we are.
       const selfId = (await side.selfDurableId?.(self)) ?? undefined;
 
+      /**
+       * Record a send that never became a message (#23, #24).
+       *
+       * Only for the address that actually caused the refusal. On a fan-out
+       * nothing goes to anyone, but the other recipients were reachable and
+       * were not tried — writing "someone tried to reach you" against them
+       * would put a message in their backlog that nobody was prevented from
+       * sending.
+       */
+      const recordUnsent = (address: string, reason: Refusal): string => {
+        const id = newMessageId();
+        log.appendUnsent(
+          id,
+          { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd, ...(selfId ?? {}) },
+          address,
+          reason,
+          args.message,
+        );
+        return id;
+      };
+
       // Every address is resolved before anything is delivered, and ANY
       // failure refuses the whole call.
       //
@@ -514,6 +535,13 @@ export function createTools(side: Side, log: MessageLog) {
           ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(replying ? {} : { candidates: resolved.candidates }),
+            // Ambiguity is a caller mistake with every candidate present and
+            // listed; nobody was unreachable, so there is no attempt to
+            // record. `unknown` is the one that may mean "that session is
+            // gone", which is exactly what a returning session looks for.
+            ...(resolved.reason === 'unknown'
+              ? { message_id: recordUnsent(address, 'peer_unknown') }
+              : {}),
             refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
             detail:
               resolved.reason === 'unknown'
@@ -581,6 +609,9 @@ export function createTools(side: Side, log: MessageLog) {
           ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             refusal: 'peer_changed',
+            // The session the caller meant is gone — someone tried to reach
+            // it and could not, which is the case #24 is about.
+            message_id: recordUnsent(only.display, 'peer_changed'),
             peer_state: only.side.state,
             detail:
               `"${addresses[0]}" now resolves to session ${actual}, not ${args.expect_id} — ` +
@@ -596,6 +627,7 @@ export function createTools(side: Side, log: MessageLog) {
           outcome: 'rejected',
           ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
           refusal: 'peer_unreachable',
+          message_id: recordUnsent(gone.display, 'peer_unreachable'),
           peer_state: 'unreachable',
           detail:
             `${gone.display} is not accepting input (gone, ephemeral, or a subagent thread).` +
