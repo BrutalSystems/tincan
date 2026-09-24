@@ -84,6 +84,22 @@ export function detectRuntime(env: NodeJS.ProcessEnv): RuntimeName {
   return 'codex';
 }
 
+/**
+ * Slugified, for the same two reasons `opencodeSelfName` and `codexSelfNameOf`
+ * slugify — this arm was simply the one that did not, and that was issue #40.
+ *
+ * It is what a peer types back into `send_peer`. The peer listing slugifies
+ * every name it shows (`assignNames`), so an unslugified self-name advertises
+ * an address `resolvePeer` then refuses: a session named `Auth Refactor` put
+ * `from="Auth Refactor"` in the envelope while being addressable only as
+ * `auth-refactor`. The two never met, and the sender could not see it.
+ *
+ * It also reaches the `<peer_message from="...">` tag, which is the one control
+ * marking a message as a peer's rather than the operator's. A registry name or
+ * a directory basename can contain a quote; slugify is what stops it closing
+ * the tag early. `renderEnvelope` sanitises this again at the interpolation, so
+ * the control does not rest on every caller having remembered.
+ */
 export function selfNameFor(runtime: RuntimeName, ctx: HostContext): string {
   if (runtime === 'claude-code') {
     // Tin Can runs as a child of the session, so ctx.pid is never the
@@ -92,9 +108,13 @@ export function selfNameFor(runtime: RuntimeName, ctx: HostContext): string {
     // cwd. CLAUDE_CODE_SESSION_ID is the only identifier that works.
     const sessionId = (ctx.env ?? process.env).CLAUDE_CODE_SESSION_ID;
     const name = findSessionName(ctx.registryDirs(), sessionId);
-    if (name !== undefined) return name;
+    const slug = name === undefined ? '' : slugify(name);
+    if (slug !== '') return slug;
   }
-  return basename(ctx.cwd) || runtime;
+  // Falls through to the runtime name when the directory slugifies away, the
+  // same shape as the other two arms. A bare `basename(cwd) || runtime` would
+  // return `???` here and put it in from=.
+  return slugify(basename(ctx.cwd)) || runtime;
 }
 
 function findSessionName(
