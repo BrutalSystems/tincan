@@ -140,6 +140,18 @@ The separator is `.` so that an address needs no shell quoting.
 `canonical_id` is always fully qualified, whether or not there is a collision.
 It is the form to record in logs and to pass between tools.
 
+**Do not recover the suffix from a canonical id by string surgery.** Taking the
+last dot-separated segment gave the three-character suffix before 1.0.0 and
+gives the whole durable id now — `01a0b9b4-a33e-7ab1-80a0-bb715504a0fb`, not
+`0fb`. A reimplementation that does this builds qualified addresses that look
+right and match nothing, and the failure surfaces as `unknown`, which names a
+missing peer rather than a malformed address. Reported by muster, where it made
+every `slug.suffix` address fail silently until a test was written for it.
+
+Derive the suffix from the **uuid**, with `suffixOf` — the last three hex
+characters of the id with non-hex removed. The canonical form is an address to
+pass along whole, not a record to parse fields out of.
+
 ## Collision
 
 A peer is suffixed in its **display** form when either:
