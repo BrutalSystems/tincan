@@ -1283,3 +1283,23 @@ describe('an attempt that never became a send is still recorded', () => {
     expect(log.read({ last_n: 10 })).toHaveLength(0);
   });
 });
+
+// #32, the caller-facing half. `state` keeps its safe default so nothing that
+// switches on it changes behaviour; the flag rides alongside so a caller can
+// tell a peer that is genuinely mid-turn from one whose status Tin Can could
+// not read.
+describe('a peer whose published status could not be read', () => {
+  test('is reported busy, and says the state is a default rather than a reading', async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ state: 'busy', statusUnreadable: true })] }),
+    });
+    const r = await tools(side).peers();
+    expect(r.peers[0]).toMatchObject({ state: 'busy', status_unreadable: true });
+  });
+
+  test('says nothing at all when the status was understood', async () => {
+    const { side } = makeSide({ listPeers: async () => ({ peers: [peer({ state: 'busy' })] }) });
+    const r = await tools(side).peers();
+    expect(r.peers[0]).not.toHaveProperty('status_unreadable');
+  });
+});

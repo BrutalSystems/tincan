@@ -36,6 +36,12 @@ export interface ClaudeSession {
   rawName: string | null;
   cwd: string;
   state: PeerState;
+  /**
+   * #32: `state` here is a safe default rather than a reading — the published
+   * status was absent, malformed, or a value this version has never heard of.
+   * Absent whenever the status was understood. See {@link peerStateFrom}.
+   */
+  statusUnreadable?: boolean;
   socketPath: string;
   configDir: string;
   registryDir: string;
@@ -201,13 +207,16 @@ export async function listClaudeSessions(params: ListParams): Promise<ClaudeList
     if (socketPath === undefined) continue;
 
     const live = await probeSocket(socketPath, params.probeMs ?? 1500);
+    const status = peerStateFrom(rec.status);
     const auth = readAuth(registryDir, pid);
     sessions.push({
       pid,
       uuid: String(rec.sessionId ?? ''),
       rawName: typeof rec.name === 'string' && rec.name !== '' ? rec.name : null,
       cwd: String(rec.cwd ?? ''),
-      state: live ? mapState(rec.status) : 'unreachable',
+      ...(live
+        ? { state: status.state, ...(status.unreadable && { statusUnreadable: true as const }) }
+        : { state: 'unreachable' as const }),
       socketPath,
       registryDir,
       configDir: dirname(registryDir),
@@ -225,9 +234,31 @@ export async function listClaudeSessions(params: ListParams): Promise<ClaudeList
   return { sessions, accountedPids, ...(diagnostic !== undefined && { diagnostic }) };
 }
 
-/** `waiting` means the session is blocked on its human — not free to answer. */
-function mapState(status: unknown): PeerState {
-  return status === 'idle' ? 'idle' : 'busy';
+/**
+ * Read Claude Code's published session status (#32).
+ *
+ * `waiting` means the session is blocked on its human — not free to answer, so
+ * it maps to busy along with everything else that is not `idle`.
+ *
+ * `unreadable` is the part worth having. Defaulting to busy is the right SAFE
+ * choice — assuming a peer is occupied beats assuming it is free — but it made
+ * "we do not know" indistinguishable from "we know it is busy". This says
+ * which one it is WITHOUT widening `PeerState`: the enum is a published
+ * contract that Muster consumes, its safe default is already correct, and
+ * adding a fourth value would make every consumer handle it only to arrive at
+ * the same behaviour.
+ *
+ * This file is Claude Code's, not Tin Can's, and it is undocumented. Every
+ * field is read as absent-by-default and nothing here may throw: a shape
+ * change must never break peer listing.
+ */
+export function peerStateFrom(status: unknown): { state: PeerState; unreadable: boolean } {
+  if (status === 'idle') return { state: 'idle', unreadable: false };
+  // The statuses this version knows about. Anything else — missing,
+  // malformed, or introduced by a later Claude Code — is still reported busy,
+  // but no longer as if it had been understood.
+  if (status === 'busy' || status === 'waiting') return { state: 'busy', unreadable: false };
+  return { state: 'busy', unreadable: true };
 }
 
 function findSocket(pid: number, env: NodeJS.ProcessEnv, uid: number): string | undefined {

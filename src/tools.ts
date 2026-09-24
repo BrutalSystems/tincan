@@ -29,6 +29,8 @@ export interface SidePeer {
   uuid: string;
   cwd: string;
   state: PeerState;
+  /** Claude Code only (#32): `state` is a safe default, not a reading. */
+  statusUnreadable?: boolean;
   threadId?: string;
   socketPath?: string;
   auth?: unknown;
@@ -251,6 +253,13 @@ export interface PeersResult {
     display_label: string;
     canonical_id: string;
     state: PeerState;
+    /**
+     * #32. Present only when Tin Can could not read this peer's published
+     * status, so `state` is the safe default (`busy`) rather than a reading.
+     * Treat the peer as busy either way — that is what makes this additive
+     * rather than a fourth `PeerState` every consumer would have to handle.
+     */
+    status_unreadable?: boolean;
     cwd: string;
     thread_id?: string;
     session_id?: string;
@@ -418,6 +427,9 @@ export function createTools(side: Side, log: MessageLog) {
             : `${basename(p.side.cwd) || p.runtime} · ${(p.side.threadId ?? p.uuid).slice(-4).toLowerCase()}`,
           canonical_id: p.canonicalId,
           state: p.side.state,
+          // Additive, and absent unless it applies: `state` stays the whole
+          // answer for every consumer that switches on it.
+          ...(p.side.statusUnreadable === true && { status_unreadable: true }),
           cwd: p.side.cwd,
           ...durableIdOf(p.side),
           ...(p.side.configDir !== undefined && { config_dir: p.side.configDir }),

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeInbox, type FakeInbox } from './fakes.js';
-import { listClaudeSessions, socketDirCandidates } from '../src/claude/discover.js';
+import { listClaudeSessions, peerStateFrom, socketDirCandidates } from '../src/claude/discover.js';
 
 let dir: string;
 let open: FakeInbox[] = [];
@@ -318,5 +318,44 @@ describe('the same directory twice is not a collision', () => {
     expect(listing.sessions).toEqual([]);
     expect(listing.diagnostic).toContain('1111');
     rmSync(b, { recursive: true, force: true });
+  });
+});
+
+// #32. `mapState` collapsed everything that is not exactly 'idle' into 'busy'
+// — a missing field, a malformed record, and any status Claude Code adds
+// later. Defaulting to busy is the right SAFE choice: assuming a peer is
+// occupied beats assuming it is free. But it made "we do not know" and "we
+// know it is busy" indistinguishable to a caller.
+//
+// The decision #32 asks for: a fourth PeerState, or a separate field. A
+// separate field, because `state` is a published contract that Muster consumes
+// and its safe default is correct — an unreadable status should still be
+// treated as busy. Widening the enum would make every consumer handle a value
+// for a case that has never been observed, to reach the same behaviour.
+describe('reading a peer status Tin Can does not recognise', () => {
+  test('idle and busy are read as themselves, and are not flagged', () => {
+    expect(peerStateFrom('idle')).toEqual({ state: 'idle', unreadable: false });
+    expect(peerStateFrom('busy')).toEqual({ state: 'busy', unreadable: false });
+  });
+
+  test('a status that is absent or malformed stays busy, and says it is a guess', () => {
+    for (const status of [undefined, null, '', 42, {}]) {
+      expect(peerStateFrom(status)).toEqual({ state: 'busy', unreadable: true });
+    }
+  });
+
+  // The forward-compatibility case: Claude Code adds a status, and an older
+  // Tin Can reads it. Still busy — nothing else is safe to assume — but no
+  // longer reported as if it were understood.
+  test('a status this version has never heard of stays busy, and says it is a guess', () => {
+    expect(peerStateFrom('compacting')).toEqual({ state: 'busy', unreadable: true });
+  });
+
+  // This file is Claude Code's, not Tin Can's, and it is undocumented. A shape
+  // change must never break peer listing.
+  test('never throws, whatever it is handed', () => {
+    for (const status of [Symbol('x'), [], () => {}, NaN]) {
+      expect(() => peerStateFrom(status)).not.toThrow();
+    }
   });
 });

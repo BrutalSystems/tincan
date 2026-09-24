@@ -69,6 +69,9 @@ export function toolDefinitions(
         `List the live ${peer} sessions on this machine that you can message. ` +
         `Returns each peer's name, state (${PEER_STATES.join(' | ')}), working directory, ` +
         `and a durable id (thread_id for Codex, session_id for Claude Code and opencode). ` +
+        `A peer carrying \`status_unreadable\` is reported busy as a safe default, not ` +
+        `because it was observed busy — treat it as busy, and do not report its state as ` +
+        `a fact. ` +
         `Show display_label to the user: unnamed sessions use project · short ID. ` +
         `When display_label differs from name, also show the full durable ID for copying. ` +
         `Use name, not display_label, when calling send_peer. ` +

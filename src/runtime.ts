@@ -212,6 +212,7 @@ export async function claudePeersWithSweep(
     uuid: session.uuid,
     cwd: session.cwd,
     state: session.state,
+    ...(session.statusUnreadable === true && { statusUnreadable: true }),
     socketPath: session.socketPath,
     configDir: session.configDir,
     canReply: replyCapable.has(session.uuid),
