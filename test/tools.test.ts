@@ -29,7 +29,6 @@ function makeSide(over: Partial<Side> = {}) {
   const delivered: Delivered[] = [];
   const side: Side = {
     selfRuntime: 'claude-code',
-    ownKindScope: 'cross-config-dir',
     resolveSelf: async () => ({ sessionId: undefined }),
     selfName: async () => 'billing-api',
     selfCwd: '/src/billing',
@@ -184,7 +183,6 @@ describe('peers', () => {
     // mode. The note must now name opencode too rather than exempting it.
     const { side } = makeSide({
       selfRuntime: 'opencode',
-      ownKindScope: 'included',
       peerRuntimes: ['opencode'],
       listPeers: async () => ({ peers: [peer({ runtime: 'opencode', socketPath: '/tmp/x.sock' })] }),
     });
@@ -341,11 +339,12 @@ describe('send_peer', () => {
   /**
    * Cross-account mis-send.
    *
-   * A Claude Code host lists Claude sessions ONLY from other CLAUDE_CONFIG_DIRs
-   * — same-account ones are reached natively by SendMessage — and it carries no
-   * session id of its own (`resolveSelf` answers NO_SESSION), so `isSelfAddress`
-   * can only compare NAMES. `selfNameFor` falls back to `basename(cwd)` when
-   * CLAUDE_CODE_SESSION_ID is absent or the registry lookup misses.
+   * A Claude Code host carries no session id of its own (`resolveSelf` answers
+   * NO_SESSION), so `isSelfAddress` can only compare NAMES. `selfNameFor` falls
+   * back to `basename(cwd)` when CLAUDE_CODE_SESSION_ID is absent or the
+   * registry lookup misses — and CLAUDE_CODE_SESSION_ID being absent is now
+   * also what makes the arm hide its own config dir, so the peers left in the
+   * list at that moment are precisely the other accounts.
    *
    * `resolvePeer` delivers on a single PREFIX match. So a fallback self-name
    * that prefixes exactly one other-account peer resolves to that peer and
@@ -613,14 +612,16 @@ test('a codex peer reports neither field', async () => {
   expect(result.peers[0]).not.toHaveProperty('can_reply');
 });
 
-test('the peers note names both halves of the native path to same-account sessions', async () => {
+test('an empty peer list carries no note claiming sessions were scoped out of it', async () => {
+  // This note existed because an empty scoped list reads as "nothing else is
+  // running". The list is not scoped any more, so an empty one means empty,
+  // and a note pointing at a native path would send the reader looking for
+  // sessions that are not there.
   const { side } = makeSide({ listPeers: async () => ({ peers: [] }) });
-  const result = await tools(side).peers();
-  // Discovery as well as delivery: naming only the send verb leaves the
-  // reader knowing a path exists but not how to enumerate what is on it.
-  expect(result.notes?.join(' ')).toContain('ListAgents');
-  expect(result.notes?.join(' ')).toContain('SendMessage');
-  expect(result.notes?.join(' ')).toContain('CLAUDE_CONFIG_DIR');
+  const notes = (await tools(side).peers()).notes?.join(' ') ?? '';
+  expect(notes).not.toContain('ListAgents');
+  expect(notes).not.toContain('SendMessage');
+  expect(notes).not.toContain('CLAUDE_CONFIG_DIR');
 });
 
 describe('message_log integrity', () => {

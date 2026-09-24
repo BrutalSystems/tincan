@@ -90,7 +90,6 @@ function side(): Side {
   };
   return {
     selfRuntime: 'claude-code',
-    ownKindScope: 'cross-config-dir',
     resolveSelf: async () => ({ sessionId: undefined }),
     selfName: async () => 'billing-api',
     selfCwd: '/src/billing',
@@ -102,7 +101,7 @@ function side(): Side {
 }
 
 describe('README parity', () => {
-  const defs = toolDefinitions(['codex'], 'codex', 'included');
+  const defs = toolDefinitions(['codex']);
 
   it('documents every tool the server exposes, and invents none', () => {
     expect([...toolRows().keys()].sort()).toEqual(defs.map((d) => d.name).sort());
@@ -163,9 +162,12 @@ describe('README parity', () => {
     expect(README).toContain(`up to ${MAX_FANOUT} recipients`);
   });
 
-  // The asymmetry table is the claim a reader uses to decide whether a missing
+  // The peer matrix is the claim a reader uses to decide whether a missing
   // peer is a bug or the design, and it is three rows of prose beside a switch
-  // statement. Checked against the side each host actually builds.
+  // statement. It used to be asymmetric — the Claude Code row scoped its own
+  // kind to other config dirs — and the three rows agree now, which is exactly
+  // when a table stops being re-read and starts going stale. Checked against
+  // the side each host actually builds.
   describe('the peer matrix matches the side each host builds', () => {
     const ctx = (): HostContext => ({
       registryDirs: () => [join(mkdtempSync(join(tmpdir(), 'tincan-matrix-')), 'sessions')],
@@ -197,11 +199,12 @@ describe('README parity', () => {
       );
       expect(new Set(listed)).toEqual(new Set(built.peerRuntimes));
 
-      // The one row that must carry the caveat is the one whose side scopes
-      // its own kind. Stating it on the wrong row is how a reader concludes a
-      // peer is unreachable when it is natively listed.
-      const scoped = /other\*{0,2}\s*config dirs|other config dirs/i.test(row ?? '');
-      expect(scoped).toBe(built.ownKindScope === 'cross-config-dir');
+      // No row may re-introduce the config-dir caveat. It lived on the Claude
+      // Code row while that arm scoped its own kind; left behind now, it would
+      // tell a reader a peer is unreachable that the list in front of them
+      // already contains. The prose below the table may still describe the
+      // old rule in the past tense — this checks the table only.
+      expect(row).not.toMatch(/other\*{0,2}\s*config dirs/i);
     });
   });
 

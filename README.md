@@ -169,27 +169,28 @@ to trust.
 
 ## Which peers you see
 
-**The peer list is deliberately asymmetric. Do not "fix" it into symmetry.**
+**Every host lists every live session on the machine, itself excepted.**
 
 | Hosted in | Lists |
 |---|---|
-| Claude Code | Codex, opencode, and Claude Code sessions in *other* config dirs |
+| Claude Code | Codex, Claude Code, opencode |
 | Codex | Codex, Claude Code, opencode |
 | opencode | Codex, Claude Code, opencode |
 
-Claude Code is the only runtime that scopes its own kind, and the rule is about
-reachability rather than about the runtime: **Tin Can lists a Claude Code peer
-only when `SendMessage` cannot reach it.** `SendMessage` and `ListAgents` are
-scoped to one `CLAUDE_CONFIG_DIR`, so a session started under a different one —
-a second account, say — is invisible to them. That session is Tin Can's to
-carry; a same-account one is not, because two logged paths to one destination is
-worse than one.
+The Claude Code row used to read *"Claude Code sessions in **other** config
+dirs"*, because `SendMessage` already reaches the same-account ones and two
+logged paths to one destination looked worse than one. Only one of those paths
+is logged, though: a same-account `SendMessage` leaves no record in
+`message_log`. So the scoping bought symmetry with the native path at the price
+of a peer list that did not describe the machine and a log that could not
+account for every send — and callers reported the short list to their users as
+the whole machine anyway, which is the failure the scoping note existed to
+prevent. Since 1.4.0 the list is simply the machine, and there is no note.
 
-**The scoping is stated at runtime, not just here**: the `peers` description
-says it, and every `peers` result — including an empty one — carries a note
-naming `SendMessage` as the path to same-account sessions. A scoped list that
-does not say it is scoped reads as the whole machine, and gets reported to the
-user that way.
+The one Claude Code session never listed is the calling session itself, keyed on
+`CLAUDE_CODE_SESSION_ID`. When that variable is missing Tin Can cannot tell
+itself from a sibling, so it falls back to hiding its whole config dir: a hidden
+same-account peer is recoverable, a message delivered to your own inbox is not.
 
 Tin Can finds another config dir two ways. Every Tin Can running in Claude Code
 writes a small pointer record under `~/.tincan/peers/claude-code/` naming its
@@ -650,10 +651,11 @@ instructions from other agents*, so combining the two would build a path from
 "peer message arrives" to "spawn an agent with permissions the receiver lacks".
 Keeping them apart is what makes it safe to install at user scope everywhere.
 
-**No same-account Claude-to-Claude messaging.** `SendMessage` already covers it
-natively, and two logged paths to one destination is worse than one. It covers
-exactly one `CLAUDE_CONFIG_DIR` though, so Claude sessions under a *different*
-one are Tin Can's — see [Which peers you see](#which-peers-you-see).
+**Same-account Claude-to-Claude messaging is Tin Can's too, as of 1.4.0.**
+`SendMessage` also reaches those sessions, so there are two paths to one
+destination — but only Tin Can's is recorded in `message_log`, and a peer list
+that omitted the account read as the whole machine. See
+[Which peers you see](#which-peers-you-see).
 
 **Nothing blocks.** `send_peer` returns when the peer's harness accepts the
 message, never when the peer answers. There is no `await_reply`. The peer may

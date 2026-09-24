@@ -1,14 +1,12 @@
 /** MCP tool descriptors. The peer runtime is named so the model knows who it reaches. */
 import { PEER_STATES } from './claude/discover.js';
-import { LABEL, type RuntimeName } from './naming.js';
+import { type RuntimeName } from './naming.js';
 import {
   DEFAULT_LAST_N,
   labelList,
   MAX_FANOUT,
   MAX_REPLAY_MINUTES,
-  NATIVE_PEER_PATH,
   runtimeSupportsUrgent,
-  type OwnKindScope,
 } from './tools.js';
 import { IDEMPOTENCY_WINDOW_MS } from './idempotency.js';
 
@@ -22,23 +20,8 @@ export interface ToolDefinition {
   };
 }
 
-export function toolDefinitions(
-  peerRuntimes: RuntimeName[],
-  selfRuntime: RuntimeName,
-  ownKindScope: OwnKindScope,
-): ToolDefinition[] {
+export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
   const peer = labelList(peerRuntimes);
-  // Told before the call, not only after it: a model that knows the list is
-  // scoped asks its host for the rest instead of reporting the peer list as
-  // the whole machine. The `peers` result repeats it as a note (tools.ts),
-  // because a description read at connect time is a long way from a result
-  // read mid-turn.
-  const ownKindNote =
-    ownKindScope === 'cross-config-dir'
-      ? ` Lists ${LABEL[selfRuntime]} sessions only when they run under a different ` +
-        `CLAUDE_CONFIG_DIR; your host reaches same-account sessions natively` +
-        `${NATIVE_PEER_PATH[selfRuntime] !== undefined ? ` (${NATIVE_PEER_PATH[selfRuntime]})` : ''}.`
-      : '';
   // `runtimeSupportsUrgent` is false for every runtime as of 0.6.0 (see its
   // docstring for the trade), so `steerable` is always empty and only the
   // first of the three wordings below can currently be reached.
@@ -76,8 +59,7 @@ export function toolDefinitions(
         `Show display_label to the user: unnamed sessions use project · short ID. ` +
         `When display_label differs from name, also show the full durable ID for copying. ` +
         `Use name, not display_label, when calling send_peer. ` +
-        `Call this before send_peer: names change and sessions come and go.` +
-        ownKindNote,
+        `Call this before send_peer: names change and sessions come and go.`,
       inputSchema: { type: 'object', properties: {} },
     },
     {

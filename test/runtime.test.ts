@@ -16,7 +16,7 @@ import {
 } from '../src/runtime.js';
 import { CLAUDE_LIMITS, CODEX_LIMITS } from '../src/guard.js';
 import { slugify } from '../src/naming.js';
-import { createTools, runtimeSupportsUrgent } from '../src/tools.js';
+import { createTools, runtimeSupportsUrgent, type SidePeer } from '../src/tools.js';
 import { MessageLog } from '../src/log.js';
 import { fakeInbox, fakeOpencodeInstance } from './fakes.js';
 import { pointerDir, writePointer } from '../src/claude/registry.js';
@@ -243,14 +243,15 @@ describe('the claude arm re-reads its own name', () => {
 });
 
 describe('buildSide', () => {
-  test('hosted in Claude Code, it exposes Codex, opencode, and Claude sessions SendMessage cannot reach', () => {
-    // SendMessage reaches its own kind natively, but only within one
-    // CLAUDE_CONFIG_DIR — so the arm lists claude-code, scoped to the
-    // sessions that native path cannot see.
+  test('hosted in Claude Code, it exposes all three runtimes, its own included', () => {
+    // No scoping member any more: the arm used to list claude-code only from
+    // other config dirs, and `peerRuntimes` could not express that, so a
+    // separate `ownKindScope` carried it. Every side lists its own kind now,
+    // which is exactly what peerRuntimes already says.
     const side = buildSide('claude-code', { registryDirs: () => [join(dir, 'sessions')], pid: 1, cwd: '/src/x' }, { sweep: { socketDirs: [] } });
     expect(side.selfRuntime).toBe('claude-code');
     expect(side.peerRuntimes).toEqual(['codex', 'opencode', 'claude-code']);
-    expect(side.ownKindScope).toBe('cross-config-dir');
+    expect(side).not.toHaveProperty('ownKindScope');
   });
 
   test('honours TINCAN_HOME when discovering opencode peers, matching the plugin', async () => {
@@ -1264,20 +1265,62 @@ describe('the claude-code arm', () => {
     );
   }
 
-  test('excludes a session in our own config dir', async () => {
-    await sessionIn(join(home, '.claude'), 111, 'same-account', 'sid-111');
-    const side = buildSide(
+  /**
+   * Builds the arm against `home`, with both config dirs on the registry path
+   * so "which dir a peer is in" is the only thing a case is varying.
+   */
+  function armIn(sessionId: string | undefined) {
+    return buildSide(
       'claude-code',
       {
-        registryDirs: () => [join(home, '.claude', 'sessions')],
+        registryDirs: () => [
+          join(home, '.claude', 'sessions'),
+          join(home, '.claude-arm', 'sessions'),
+        ],
         pid: 1,
         cwd: '/x',
-        env: { CLAUDE_CONFIG_DIR: join(home, '.claude') },
+        env: {
+          CLAUDE_CONFIG_DIR: join(home, '.claude'),
+          ...(sessionId !== undefined && { CLAUDE_CODE_SESSION_ID: sessionId }),
+        },
       },
       { sweep: { socketDirs: [] } },
     );
-    const { peers } = await side.listPeers({ sessionId: undefined });
-    expect(peers.filter((p) => p.runtime === 'claude-code')).toEqual([]);
+  }
+
+  const claudeIds = (peers: SidePeer[]) =>
+    peers.filter((p) => p.runtime === 'claude-code').map((p) => p.uuid).sort();
+
+  test('lists a session in our own config dir', async () => {
+    // Tin Can used to drop these on the grounds that SendMessage already
+    // reached them. It does — but only one of the two paths writes the
+    // message log, so a same-account send was the one send the log could not
+    // account for. Listing them costs a duplicate path and buys one story.
+    await sessionIn(join(home, '.claude'), 111, 'same-account', 'sid-111');
+    const { peers } = await armIn('sid-us').listPeers({ sessionId: undefined });
+    expect(claudeIds(peers)).toEqual(['sid-111']);
+  });
+
+  test('excludes our own session by id, though it shares our config dir', async () => {
+    // The exclusion that must never fail: a self-send delivers over our own
+    // inbox. Before same-account sessions were listed the config-dir filter
+    // hid us as a side effect, so this id check now stands alone.
+    await sessionIn(join(home, '.claude'), 111, 'ourselves', 'sid-111');
+    await sessionIn(join(home, '.claude-arm'), 222, 'other-account', 'sid-222');
+    const { peers } = await armIn('sid-111').listPeers({ sessionId: undefined });
+    expect(claudeIds(peers)).toEqual(['sid-222']);
+  });
+
+  test('excludes our whole config dir when it cannot name our own session', async () => {
+    // No CLAUDE_CODE_SESSION_ID: we cannot tell ourselves from a sibling, and
+    // `selfPid` is Tin Can's MCP subprocess rather than the session's, so
+    // there is no second key to fall back on. Over-exclude our own dir —
+    // hiding a same-account peer is recoverable, a self-send is not. Another
+    // config dir is by definition not us and stays listed.
+    await sessionIn(join(home, '.claude'), 111, 'maybe-us', 'sid-111');
+    await sessionIn(join(home, '.claude-arm'), 222, 'other-account', 'sid-222');
+    const { peers } = await armIn(undefined).listPeers({ sessionId: undefined });
+    expect(claudeIds(peers)).toEqual(['sid-222']);
   });
 
   test(

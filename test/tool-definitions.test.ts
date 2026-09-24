@@ -9,7 +9,7 @@ import {
 import { PEER_STATES } from '../src/claude/discover.js';
 import type { RuntimeName } from '../src/naming.js';
 
-const defs = toolDefinitions(['codex'], 'codex', 'included');
+const defs = toolDefinitions(['codex']);
 const byName = (n: string) => defs.find((d) => d.name === n)!;
 
 describe('toolDefinitions', () => {
@@ -67,7 +67,7 @@ describe('toolDefinitions', () => {
     const all: RuntimeName[] = ['codex', 'claude-code', 'opencode'];
     expect(all.filter(runtimeSupportsUrgent)).toEqual([]);
 
-    const mixed = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included');
+    const mixed = toolDefinitions(['codex', 'claude-code', 'opencode']);
     const urgent = (
       mixed.find((d) => d.name === 'send_peer')!.inputSchema.properties as Record<
         string,
@@ -102,7 +102,7 @@ describe('toolDefinitions', () => {
   });
 
   test('names both runtimes when a side exposes both', () => {
-    const both = toolDefinitions(['codex', 'claude-code'], 'codex', 'included');
+    const both = toolDefinitions(['codex', 'claude-code']);
     const d = both.find((x) => x.name === 'peers')!.description;
     expect(d).toContain('Codex');
     expect(d).toContain('Claude Code');
@@ -110,7 +110,7 @@ describe('toolDefinitions', () => {
 
   test('lists three runtimes as a list, not "A and B and C"', () => {
     // The Codex and opencode hosts expose all three.
-    const three = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included');
+    const three = toolDefinitions(['codex', 'claude-code', 'opencode']);
     for (const name of ['peers', 'send_peer']) {
       const d = three.find((x) => x.name === name)!.description;
       expect(d).toContain('Codex, Claude Code, and opencode');
@@ -118,31 +118,18 @@ describe('toolDefinitions', () => {
     }
   });
 
-  test('says the host’s own kind is scoped when this side lists only part of it', () => {
-    // The Claude Code host. Without this the model reads a short peer list as
-    // the whole machine and reports "three peers" when there are fifteen
-    // reachable sessions.
-    const d = toolDefinitions(['codex', 'opencode', 'claude-code'], 'claude-code', 'cross-config-dir').find(
+  // `peers` used to describe itself differently depending on which host it was
+  // generated for: the Claude Code host said it listed its own kind only from
+  // other config dirs, and took `selfRuntime` solely to say so. Nothing is
+  // scoped now, so the description is the same wherever it is read, and a
+  // surviving caveat would send the model asking its host for sessions already
+  // in the list it was just handed.
+  test('claims no exclusion, whoever is listed', () => {
+    const d = toolDefinitions(['codex', 'opencode', 'claude-code']).find(
       (x) => x.name === 'peers',
     )!.description;
     expect(d).toContain('Claude Code');
-    expect(d).toMatch(/only when they run under a different CLAUDE_CONFIG_DIR/i);
-    // Both halves of the native path, not just the send verb. A model told
-    // only that SendMessage exists still has no way to FIND the session it
-    // would send to, which is exactly how a caller concluded the excluded
-    // peers were unreachable rather than natively listed.
-    expect(d).toContain('ListAgents');
-    expect(d).toContain('SendMessage');
-  });
-
-  test('says nothing about exclusion on a side that lists its own kind', () => {
-    // Codex and opencode list their own kind, so there is nothing missing to
-    // warn about — an unconditional warning would be a lie on two of three
-    // hosts.
-    const d = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included').find(
-      (x) => x.name === 'peers',
-    )!.description;
-    expect(d).not.toMatch(/does not list|not listed/i);
+    expect(d).not.toMatch(/does not list|not listed|CLAUDE_CONFIG_DIR/i);
     expect(d).not.toContain('SendMessage');
     expect(d).not.toContain('ListAgents');
   });
@@ -160,14 +147,9 @@ describe('toolDefinitions', () => {
   });
 });
 
-test('the claude arm says its own-kind listing is scoped to other config dirs', () => {
-  const [peers] = toolDefinitions(['codex', 'opencode', 'claude-code'], 'claude-code', 'cross-config-dir');
-  expect(peers?.description).toContain('different CLAUDE_CONFIG_DIR');
-  expect(peers?.description).toContain('ListAgents');
-  expect(peers?.description).toContain('SendMessage');
-});
-
-test('an arm that lists its own kind in full says nothing about scoping', () => {
-  const [peers] = toolDefinitions(['codex', 'claude-code', 'opencode'], 'codex', 'included');
-  expect(peers?.description).not.toContain('CLAUDE_CONFIG_DIR');
+test('toolDefinitions takes no host argument, because nothing varies by host', () => {
+  // The signature IS the assertion. `selfRuntime` was a parameter for as long
+  // as one host's `peers` description had to disclaim part of its own list;
+  // taking it back would mean that disclaimer had returned.
+  expect(toolDefinitions).toHaveLength(1);
 });

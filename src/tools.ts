@@ -74,20 +74,17 @@ export interface SelfRef {
   sessionId: string | undefined;
 }
 
-/** Everything that differs between being hosted in Claude Code and in Codex. */
 /**
- * How much of its own runtime a side lists.
+ * Everything that differs between being hosted in Claude Code and in Codex.
  *
- * `cross-config-dir` exists because the Claude arm's exclusion was never
- * about the runtime: SendMessage reaches one CLAUDE_CONFIG_DIR, so the rule
- * is "list a Claude peer only when SendMessage cannot reach it". peerRuntimes
- * alone cannot express "lists its own kind, but only some of them".
+ * There is deliberately no "how much of my own kind do I list" member. There
+ * was one — `OwnKindScope` — for as long as the Claude arm listed its own
+ * sessions only from other config dirs. Every side now lists its own kind in
+ * full, so `peerRuntimes` says everything there is to say and the peer list
+ * needs no footnote explaining who is missing from it.
  */
-export type OwnKindScope = 'included' | 'cross-config-dir';
-
 export interface Side {
   selfRuntime: RuntimeName;
-  ownKindScope: OwnKindScope;
   /**
    * Answer "which session is calling?" exactly once per tool call. The result
    * is passed back into `selfName`, `listPeers` and `deliver` so all three
@@ -323,27 +320,6 @@ export function runtimeSupportsUrgent(_runtime: RuntimeName): boolean {
 }
 
 /**
- * The host-native peer-messaging path that lets a runtime exclude its own kind
- * from Tin Can's peer list, named so the model is told where the missing
- * sessions actually are rather than merely that some are missing.
- *
- * Only Claude Code has one (README, "Which peers you see"). Keeping it a
- * lookup rather than a hard-coded "Claude Code" string in `tools.ts` and
- * `tool-definitions.ts` is the same single-source rule as
- * `runtimeSupportsUrgent` above: the condition is derived from `peerRuntimes`
- * vs `selfRuntime`, so a side that starts listing its own kind stops claiming
- * otherwise without anyone remembering to edit the wording.
- */
-export const NATIVE_PEER_PATH: Partial<Record<RuntimeName, string>> = {
-  // Discovery first, then delivery. Naming only the send verb told the reader
-  // a native path exists without saying how to enumerate what is on it — and a
-  // caller who read this concluded the excluded same-config peers were
-  // unreachable, when its host had been listing them the whole time.
-  'claude-code': 'ListAgents and SendMessage',
-};
-
-/** Whether this side hides the host's own kind from its peer list. */
-/**
  * The human labels for a set of runtimes, as English: "Codex", "Codex and
  * opencode", "Codex, Claude Code, and opencode". Duplicates collapse.
  *
@@ -403,21 +379,11 @@ export function createTools(side: Side, log: MessageLog) {
       const { named: list, diagnostic } = await named(await side.resolveSelf());
       const notes: string[] = [];
 
-      // Scoping, before the urgent caveat: which sessions this list covers
-      // matters more than how they are delivered to, and unlike the urgent
-      // note it is emitted for an *empty* list too. An empty peer list with
-      // no explanation is exactly what reads as "nothing else is running" on
-      // a machine with a dozen live Claude Code sessions.
-      if (side.ownKindScope === 'cross-config-dir') {
-        const native = NATIVE_PEER_PATH[side.selfRuntime];
-        notes.push(
-          `${LABEL[side.selfRuntime]} sessions are listed here only when they run under a ` +
-            `different CLAUDE_CONFIG_DIR. Your host reaches same-account sessions ` +
-            `natively${native !== undefined ? ` (${native})` : ''}, so Tin Can does not ` +
-            `duplicate that path.`,
-        );
-      }
-
+      // No scoping note. There was one for as long as the Claude arm listed
+      // its own kind only from other config dirs: an empty list that does not
+      // say it is scoped reads as "nothing else is running" on a machine with
+      // a dozen live sessions. The list is no longer scoped, so the note
+      // would now be the thing that misleads.
       const nonSteerable = [...new Set(side.peerRuntimes)].filter(
         (r) => !runtimeSupportsUrgent(r),
       );

@@ -73,7 +73,7 @@ async function main(): Promise<void> {
 
   const log = new MessageLog(messagesPath(process.env));
   const tools = createTools(side, log);
-  const definitions = toolDefinitions(side.peerRuntimes, side.selfRuntime, side.ownKindScope);
+  const definitions = toolDefinitions(side.peerRuntimes);
 
   const server = new Server(
     { name: 'tincan', version: VERSION },

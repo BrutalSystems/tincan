@@ -346,12 +346,16 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
   switch (runtime) {
     case 'claude-code': {
-      // Claude Code's own sessions are reached natively by SendMessage — but
-      // only within one config dir. A session under a different
-      // CLAUDE_CONFIG_DIR is invisible to it, which is precisely the gap Tin
-      // Can fills here. The exclusion was never about the runtime; it is
-      // about reachability, and two logged paths to one destination is still
-      // worse than one.
+      // This arm used to list a Claude Code peer only when SendMessage could
+      // not reach it — that is, only from another CLAUDE_CONFIG_DIR — on the
+      // grounds that two logged paths to one destination is worse than one.
+      // In practice only one of those two paths is logged at all: a
+      // same-account send over SendMessage leaves no record in message_log,
+      // so the scoping bought symmetry with the native path at the cost of a
+      // peer list that did not describe the machine and a log that could not
+      // account for every send. Both are worse than the duplicate path. All
+      // three arms now list their own kind; the only Claude session excluded
+      // here is us.
       const codex = createCodexEnv();
       // Re-read on a window rather than captured once. `selfNameFor` was
       // called here exactly once when the side was built, so a Claude session
@@ -367,10 +371,11 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
       const registryDir = opencodeRegistryDir(env);
       const peerRuntimes: RuntimeName[] = ['codex', 'opencode', 'claude-code'];
 
-      // From the environment, never from registryDirs()[0]: `resolve('')`
-      // returns the *cwd*, so an empty list would silently compare every peer
-      // against the working directory, match nothing, and list the
-      // same-account sessions SendMessage already covers.
+      // Used only by the id-less fallback below, and read from the
+      // environment rather than registryDirs()[0]: `resolve('')` returns the
+      // *cwd*, so an empty list would silently compare every peer against the
+      // working directory and match nothing — which in the one case this
+      // value still serves would mean listing ourselves.
       const ownRegistryDir = resolve(
         join(
           env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.length > 0
@@ -383,7 +388,6 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
       return {
         ...common,
-        ownKindScope: 'cross-config-dir',
         resolveSelf: async () => NO_SESSION,
         selfName: selfNameClaude,
         // Read from the environment on every call, not captured: the name is
@@ -408,19 +412,26 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             ),
           ]);
 
+          // Self-exclusion, in two tiers — the same shape as the opencode arm
+          // below, and for the same reason: a self-send delivers over our own
+          // inbox, so under-excluding is the one failure with no recovery.
           const claudePeers = claudeListing.peers.filter((p) => {
-            // Ours, by session id: the one exclusion that must never fail,
-            // since a self-send would deliver over our own inbox.
-            if (selfSessionId !== undefined && p.uuid === selfSessionId) return false;
-            // Same config dir: SendMessage's job, not ours. An unresolved
-            // swept peer has no configDir and is by definition not ours.
-            if (
-              p.configDir !== undefined &&
-              resolve(join(p.configDir, 'sessions')) === ownRegistryDir
-            ) {
-              return false;
-            }
-            return true;
+            // By session id. This is the whole guard now that same-config-dir
+            // peers are listed; the config-dir filter used to hide us as a
+            // side effect of hiding the account.
+            if (selfSessionId !== undefined) return p.uuid !== selfSessionId;
+            // No CLAUDE_CODE_SESSION_ID, so we cannot name ourselves at all.
+            // `selfPid` is no help — listClaudeSessions is handed `ctx.pid`,
+            // Tin Can's own MCP subprocess, which the registry never records.
+            // Fall back to excluding our entire config dir: over-excluding
+            // hides a same-account peer, which is recoverable by setting the
+            // variable; under-excluding sends us a message from ourselves.
+            // An unresolved swept peer carries no configDir and is by
+            // definition from a dir ours did not account for, so it stays.
+            return (
+              p.configDir === undefined ||
+              resolve(join(p.configDir, 'sessions')) !== ownRegistryDir
+            );
           });
 
           const peers = [
@@ -466,7 +477,6 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
       return {
         ...common,
-        ownKindScope: 'included',
         // Called once per tool call by createTools, never from inside the
         // three consumers below — that is the whole point.
         resolveSelf: async () => ({ sessionId: await resolveSelfSession() }),
@@ -609,7 +619,6 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
 
       return {
         ...common,
-        ownKindScope: 'included',
         resolveSelf: async () => NO_SESSION,
         selfName,
         // Cached for the process: unlike a thread's TITLE, its id does not
