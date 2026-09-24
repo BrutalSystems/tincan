@@ -21,6 +21,8 @@ import { toolDefinitions } from '../src/tool-definitions.js';
 import { createTools, MAX_FANOUT, sendPeerSchema, type Side, type SidePeer } from '../src/tools.js';
 import { CODEX_LIMITS } from '../src/guard.js';
 import { PEER_STATES } from '../src/claude/discover.js';
+import { buildSide, type HostContext } from '../src/runtime.js';
+import { LABEL, type RuntimeName } from '../src/naming.js';
 import { MessageLog, messagesPath } from '../src/log.js';
 
 const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
@@ -159,6 +161,48 @@ describe('README parity', () => {
 
   it('states the fan-out cap send_peer actually enforces', () => {
     expect(README).toContain(`up to ${MAX_FANOUT} recipients`);
+  });
+
+  // The asymmetry table is the claim a reader uses to decide whether a missing
+  // peer is a bug or the design, and it is three rows of prose beside a switch
+  // statement. Checked against the side each host actually builds.
+  describe('the peer matrix matches the side each host builds', () => {
+    const ctx = (): HostContext => ({
+      registryDirs: () => [join(mkdtempSync(join(tmpdir(), 'tincan-matrix-')), 'sessions')],
+      pid: 1,
+      cwd: '/src/x',
+      env: {},
+    });
+
+    /** The `Hosted in | Lists` rows, keyed by the host's label. */
+    const matrixRows = (): Map<string, string> => {
+      const rows = new Map<string, string>();
+      for (const line of README.split('\n')) {
+        const m = /^\|\s*(Claude Code|Codex|opencode)\s*\|(.+)\|\s*$/.exec(line);
+        if (m?.[1] !== undefined && m[2] !== undefined) rows.set(m[1], m[2]);
+      }
+      return rows;
+    };
+
+    it.each(['claude-code', 'codex', 'opencode'] as const)('%s', (runtime) => {
+      const built = buildSide(runtime, ctx(), { sweep: { socketDirs: [] } });
+      const row = matrixRows().get(LABEL[runtime]);
+      expect(row, `no matrix row for ${LABEL[runtime]}`).toBeDefined();
+
+      const listed = (Object.keys(LABEL) as RuntimeName[]).filter((r) =>
+        // `opencode` is a substring of nothing else; `Codex` and `Claude Code`
+        // are distinct. Word-ish match so "Claude Code" does not count as
+        // "Codex".
+        new RegExp(`\\b${LABEL[r]}\\b`).test(row ?? ''),
+      );
+      expect(new Set(listed)).toEqual(new Set(built.peerRuntimes));
+
+      // The one row that must carry the caveat is the one whose side scopes
+      // its own kind. Stating it on the wrong row is how a reader concludes a
+      // peer is unreachable when it is natively listed.
+      const scoped = /other\*{0,2}\s*config dirs|other config dirs/i.test(row ?? '');
+      expect(scoped).toBe(built.ownKindScope === 'cross-config-dir');
+    });
   });
 
   it('names the log path the code actually writes', () => {
