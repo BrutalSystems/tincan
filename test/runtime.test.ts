@@ -1445,6 +1445,31 @@ describe('the claude-code arm', () => {
     );
   }
 
+  test('reregister repairs a drifted pointer and names the id it replaced', async () => {
+    await sessionIn(join(home, '.claude'), 500, 'us-now', 'sid-now');
+    const side = armAtPid(500, 'sid-boot');
+    // Startup wrote a pointer under the id we booted with.
+    mkdirSync(join(home, '.tincan', 'peers', 'claude-code'), { recursive: true });
+    writeFileSync(
+      join(home, '.tincan', 'peers', 'claude-code', 'sid-boot.json'),
+      JSON.stringify({
+        sessionId: 'sid-boot',
+        pid: 500,
+        configDir: join(home, '.claude'),
+        registryDir: join(home, '.claude', 'sessions'),
+        tincanVersion: '0.0.1',
+        writtenAt: Date.now(),
+      }),
+    );
+    const r = await side.reregister?.();
+    expect(r).toMatchObject({
+      registered: true,
+      session_id: 'sid-now',
+      previous_session_id: 'sid-boot',
+      name: 'us-now',
+    });
+  });
+
   test('excludes our own session when our environment names an id the harness has abandoned', async () => {
     await sessionIn(join(home, '.claude'), 500, 'us-now', 'sid-now');
     await sessionIn(join(home, '.claude'), 111, 'someone-else', 'sid-111');

@@ -50,6 +50,22 @@ export interface SidePeer {
   tincanVersion?: string;
 }
 
+/**
+ * What `reregister` answers. Reports the id it now holds rather than just
+ * "done", because the whole point is that the caller could not see which id it
+ * was registered under in the first place.
+ */
+export interface ReregisterResult {
+  registered: boolean;
+  session_id?: string;
+  /** Slugified, so it is the name peers will see and type back. */
+  name?: string;
+  tincan_version: string;
+  /** Present only when a drifted registration was actually replaced. */
+  previous_session_id?: string;
+  detail: string;
+}
+
 export interface DeliveryOutcome {
   delivered: boolean;
   method: DeliveryMethod;
@@ -109,6 +125,11 @@ export interface Side {
   selfDurableId?(self: SelfRef): Promise<{ thread_id: string } | { session_id: string } | undefined>;
   /** Resolved lazily: the Codex side must derive its own identity at runtime. */
   selfName(self: SelfRef): Promise<string>;
+  /**
+   * Claude Code only: force our registration to match the live harness record.
+   * Absent on the runtimes that keep no such record.
+   */
+  reregister?(): Promise<ReregisterResult>;
   selfCwd: string;
   /** Which runtimes this side exposes. Codex-hosted exposes both. */
   peerRuntimes: RuntimeName[];
@@ -445,6 +466,20 @@ export function createTools(side: Side, log: MessageLog) {
         ...(diagnostic !== undefined && { diagnostic }),
         ...(notes.length > 0 && { notes }),
       };
+    },
+
+    async reregister(): Promise<ReregisterResult> {
+      if (side.reregister === undefined) {
+        return {
+          registered: false,
+          tincan_version: VERSION,
+          detail:
+            `Nothing to reregister: only a Claude Code session publishes a registration ` +
+            `record, and this session is hosted in ${LABEL[side.selfRuntime]}. Peers here ` +
+            `are discovered live, so there is no stale key to repair.`,
+        };
+      }
+      return side.reregister();
     },
 
     async send_peer(rawArgs: SendPeerArgs): Promise<SendPeerResult> {

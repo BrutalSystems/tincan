@@ -66,6 +66,17 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
       inputSchema: { type: 'object', properties: {} },
     },
     {
+      name: 'reregister',
+      description:
+        `Re-publish this session's Tin Can registration so peers can see it can reply. ` +
+        `Tin Can does this automatically; call it when a peer reports this session as ` +
+        `unreachable, or when an arriving message claims this session has no send_peer to ` +
+        `answer with — that claim is the symptom of a stale registration, not a fact about ` +
+        `your tools. Returns the session id it now holds, and the one it replaced if it had ` +
+        `drifted. Safe to call at any time: it writes only when something has actually moved.`,
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
       name: 'send_peer',
       description:
         `Send a text message to one live ${peer} session on this machine, or to several ` +

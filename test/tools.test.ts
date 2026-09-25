@@ -1514,3 +1514,43 @@ describe('peers reports which tincan is running', () => {
     expect(r.peers[0]).not.toHaveProperty('tincan_version');
   });
 });
+
+/**
+ * The manual lever, for when the automatic one is not trusted or not enough.
+ *
+ * It exists because the failure it repairs is invisible from inside the
+ * session it happens to: the session is told by an arriving envelope that it
+ * has no way to answer, and has no other signal that anything is wrong.
+ */
+describe('reregister', () => {
+  test('repairs the registration and says which id it now holds', async () => {
+    const { side } = makeSide({
+      reregister: async () => ({
+        registered: true,
+        session_id: 'sid-now',
+        name: 'billing-api',
+        tincan_version: VERSION,
+        previous_session_id: 'sid-boot',
+        detail: 'repaired',
+      }),
+    });
+    const r = await tools(side).reregister();
+    expect(r).toMatchObject({
+      registered: true,
+      session_id: 'sid-now',
+      previous_session_id: 'sid-boot',
+    });
+  });
+
+  /**
+   * Honest rather than absent on the other two runtimes. A tool that silently
+   * does nothing is worse than one that says there was nothing to do.
+   */
+  test('says plainly that there is nothing to register on a runtime that does not', async () => {
+    const { side } = makeSide();
+    const r = await tools(side).reregister();
+    expect(r.registered).toBe(false);
+    expect(r.tincan_version).toBe(VERSION);
+    expect(r.detail.toLowerCase()).toContain('claude code');
+  });
+});

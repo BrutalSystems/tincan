@@ -12,11 +12,23 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectRuntime, buildSide, claudeRegistryDirs } from './runtime.js';
-import { registerSelf } from './claude/self.js';
+import { startSelfPointerRefresh, syncSelfPointer } from './claude/self.js';
 import { toolDefinitions } from './tool-definitions.js';
 import { createTools, type SendPeerArgs, type MessageLogArgs } from './tools.js';
 import { MessageLog, messagesPath } from './log.js';
 import { VERSION, versionLine, helpText, classifyArgv, unknownArgText } from './version.js';
+
+/**
+ * Test seam, and an operator's escape hatch if the default is ever wrong.
+ * Floored rather than trusted: a zero or a negative would spin the event loop,
+ * and this runs in every session on the machine.
+ */
+function refreshMs(env: NodeJS.ProcessEnv): number | undefined {
+  const raw = env.TINCAN_SELF_REFRESH_MS;
+  if (raw === undefined || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(250, n) : undefined;
+}
 
 function diag(msg: string): void {
   process.stderr.write(`[tincan] ${msg}\n`);
@@ -62,8 +74,15 @@ async function main(): Promise<void> {
   // it either: readPointers already prunes any record whose pid is dead, so a
   // record left behind by a kill costs a listing nothing.
   if (runtime === 'claude-code') {
-    const unregister = registerSelf(process.env, process.ppid);
-    if (unregister !== undefined) process.on('exit', unregister);
+    // Refreshed on an interval, not written once. Claude Code assigns this
+    // session's real id moments AFTER spawning us, so a single write at
+    // startup records the boot id and is wrong almost every time — which
+    // advertises this session to every peer as unable to reply. The interval
+    // is unref'd, so it never holds the process open.
+    const unregister = startSelfPointerRefresh(process.env, process.ppid, {
+      ...(refreshMs(process.env) !== undefined && { intervalMs: refreshMs(process.env) }),
+    });
+    process.on('exit', unregister);
   }
   const side = buildSide(runtime, {
     registryDirs: () => claudeRegistryDirs(process.env),
@@ -87,6 +106,16 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
+    // Belt to the interval's braces, and free: any tool call is a moment we
+    // know we are alive, so it is a moment to confirm the registration still
+    // names the session we are actually in.
+    if (runtime === 'claude-code') {
+      try {
+        syncSelfPointer(process.env, process.ppid);
+      } catch {
+        /* never fail a tool call over the pointer */
+      }
+    }
     try {
       switch (name) {
         case 'peers':
@@ -95,6 +124,8 @@ async function main(): Promise<void> {
           return text(await tools.send_peer(args as SendPeerArgs));
         case 'message_log':
           return text(await tools.message_log(args as MessageLogArgs));
+        case 'reregister':
+          return text(await tools.reregister());
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
       }

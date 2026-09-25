@@ -2,7 +2,12 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveClaudeSelf, registerSelf, syncSelfPointer } from '../src/claude/self.js';
+import {
+  resolveClaudeSelf,
+  registerSelf,
+  syncSelfPointer,
+  startSelfPointerRefresh,
+} from '../src/claude/self.js';
 import { pointerDir, readPointers } from '../src/claude/registry.js';
 
 let home: string;
@@ -255,5 +260,79 @@ describe('when Claude Code reassigns the session id under a live process', () =>
     expect(
       readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId).sort(),
     ).toEqual([NOW, 'someone-else']);
+  });
+});
+
+/**
+ * 1.9.1 repaired the pointer on every `peers` call, which is not enough — and
+ * the shortfall is a trap rather than a gap.
+ *
+ * Measured after 1.9.1 shipped: 20 of 25 live MCP servers held an env id that
+ * disagreed with the harness record at their own ppid, including sessions
+ * started minutes earlier. The reassignment is not an occasional resume
+ * artifact; it is the ordinary startup sequence — the MCP server is spawned
+ * with a boot id and the harness assigns the session's real id just after. So
+ * `registerSelf` at startup writes the wrong key almost every time.
+ *
+ * The trap: a drifted session is advertised to senders as unable to reply, so
+ * the envelope tells the RECIPIENT "no send_peer to answer with". A session
+ * that believes that never calls a Tin Can tool, so the repair that only runs
+ * on a tool call never runs. Observed live: a session told exactly that, which
+ * then reported to its user that it could not acknowledge a message it had
+ * plainly received.
+ *
+ * The refresh therefore cannot depend on the model doing anything.
+ */
+describe('keeping the pointer true without being asked', () => {
+  const BOOT = '073ad916-d46a-4018-b19a-0c36b088d9da';
+  const NOW = '5c379b7c-c023-47fd-ae85-9b2222ec6c55';
+
+  function fakeClock() {
+    const ticks: Array<() => void> = [];
+    return {
+      schedule: (fn: () => void) => {
+        ticks.push(fn);
+        return () => {};
+      },
+      tick: () => ticks.forEach((f) => f()),
+    };
+  }
+
+  test('registers immediately, then repairs the id the harness assigns after startup', () => {
+    const cfg = join(home, '.claude');
+    // Startup: the harness record still carries the boot id our env was given.
+    writeSessionRecord(cfg, 18233, BOOT);
+    const env = {
+      CLAUDE_CONFIG_DIR: cfg,
+      CLAUDE_CODE_SESSION_ID: BOOT,
+      CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/18233.sock',
+      TINCAN_HOME: join(home, '.tincan'),
+    };
+    const clock = fakeClock();
+    const stop = startSelfPointerRefresh(env, 18233, { home, schedule: clock.schedule });
+    expect(readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId)).toEqual([BOOT]);
+
+    // Seconds later the harness assigns the real id. Nobody calls a tool.
+    writeSessionRecord(cfg, 18233, NOW);
+    clock.tick();
+
+    expect(readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId)).toEqual([NOW]);
+    stop();
+  });
+
+  test('stopping removes the pointer under whichever id is current', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 18233, BOOT);
+    const env = {
+      CLAUDE_CONFIG_DIR: cfg,
+      CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/18233.sock',
+      TINCAN_HOME: join(home, '.tincan'),
+    };
+    const clock = fakeClock();
+    const stop = startSelfPointerRefresh(env, 18233, { home, schedule: clock.schedule });
+    writeSessionRecord(cfg, 18233, NOW);
+    clock.tick();
+    stop();
+    expect(readPointers(pointerDir(env, home), () => true)).toEqual([]);
   });
 });

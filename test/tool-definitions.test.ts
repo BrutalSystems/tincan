@@ -13,8 +13,13 @@ const defs = toolDefinitions(['codex']);
 const byName = (n: string) => defs.find((d) => d.name === n)!;
 
 describe('toolDefinitions', () => {
-  test('exposes exactly peers, send_peer and message_log', () => {
-    expect(defs.map((d) => d.name).sort()).toEqual(['message_log', 'peers', 'send_peer']);
+  test('exposes exactly peers, reregister, send_peer and message_log', () => {
+    expect(defs.map((d) => d.name).sort()).toEqual([
+      'message_log',
+      'peers',
+      'reregister',
+      'send_peer',
+    ]);
   });
 
   // Only `message` is structurally required now: a recipient may be given as

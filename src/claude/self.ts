@@ -195,3 +195,64 @@ export function syncSelfPointer(
   }
   return self.sessionId;
 }
+
+/**
+ * How often the pointer is re-checked against the harness record.
+ *
+ * Short, because the window it closes is the one between the MCP server being
+ * spawned and the harness assigning the session's real id — seconds — and for
+ * the whole of that window this session is advertised to every peer as unable
+ * to reply. The check is one small read; a write happens only when something
+ * actually moved.
+ */
+export const SELF_POINTER_REFRESH_MS = 10_000;
+
+/**
+ * Keep the pointer true for the life of the process, without anyone asking.
+ *
+ * Repairing on a tool call is not enough, and the shortfall is a trap rather
+ * than a gap: a drifted session is advertised as unable to reply, so the
+ * envelope tells the RECIPIENT it has no send_peer to answer with. A session
+ * that believes that never calls a Tin Can tool, so a repair that only runs on
+ * a tool call never runs. Observed live — a session reported to its user that
+ * it could not acknowledge a message it had plainly received.
+ *
+ * `schedule` is injected by tests; production uses an unref'd interval so this
+ * never holds the process open.
+ */
+export function startSelfPointerRefresh(
+  env: NodeJS.ProcessEnv,
+  ppid: number,
+  opts: {
+    home?: string;
+    intervalMs?: number;
+    schedule?: (fn: () => void, ms: number) => () => void;
+  } = {},
+): () => void {
+  const home = opts.home ?? homedir();
+  const intervalMs = opts.intervalMs ?? SELF_POINTER_REFRESH_MS;
+  const tick = (): void => {
+    try {
+      syncSelfPointer(env, ppid, home);
+    } catch {
+      /* a transient unreadable registry must never take the server down */
+    }
+  };
+  tick();
+  const schedule =
+    opts.schedule ??
+    ((fn: () => void, ms: number) => {
+      const timer = setInterval(fn, ms);
+      timer.unref?.();
+      return () => clearInterval(timer);
+    });
+  const stop = schedule(tick, intervalMs);
+  return () => {
+    stop();
+    // Resolved at teardown, not closed over: by now the id may have moved
+    // again, and removing the one we started with would leave the current
+    // pointer behind for every peer to keep finding.
+    const id = resolveClaudeSelf(env, ppid, home)?.sessionId;
+    if (id !== undefined) removePointer(pointerDir(env, home), id);
+  };
+}

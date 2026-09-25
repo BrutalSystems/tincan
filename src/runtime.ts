@@ -12,7 +12,8 @@ import { listClaudeSessions, probeSocket, canonicalDir, dedupeDirs } from './cla
 import { sweepUnaccounted } from './claude/sweep.js';
 import { resolveConfigDirFromProcess, type ConfigDirResolver } from './claude/env.js';
 import { readPointers, pointerDir } from './claude/registry.js';
-import { ownSessionRecord, syncSelfPointer } from './claude/self.js';
+import { ownSessionRecord, syncSelfPointer, harnessPid } from './claude/self.js';
+import { VERSION } from './version.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
 import { createCodexEnv, parentPidLookup } from './codex/cli.js';
@@ -482,6 +483,39 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         },
         peerRuntimes,
         limitsFor,
+        reregister: async () => {
+          const ppid = ctx.ppid ?? process.ppid;
+          const dir = pointerDir(env);
+          const pid = harnessPid(env, ppid);
+          // Read before the repair, so we can name what we replaced. Liveness
+          // is not a filter here: the record we are about to overwrite may sit
+          // at a pid that has already gone.
+          const before = readPointers(dir, () => true).find((r) => r.pid === pid);
+          const id = syncSelfPointer(env, ppid);
+          if (id === undefined) {
+            return {
+              registered: false,
+              tincan_version: VERSION,
+              detail:
+                `Could not register: no Claude Code session record was found at pid ${pid}, ` +
+                `so Tin Can cannot say which session it is running in. Peers will keep ` +
+                `reporting this session as unable to reply until that record exists.`,
+            };
+          }
+          const own = ownSessionRecord(ctx.registryDirs(), env, ppid);
+          const moved = before !== undefined && before.sessionId !== id;
+          return {
+            registered: true,
+            session_id: id,
+            ...(own?.name !== undefined && { name: slugify(own.name) }),
+            tincan_version: VERSION,
+            ...(moved && { previous_session_id: before.sessionId }),
+            detail: moved
+              ? `Registration moved from ${before.sessionId} to ${id}. Peers can see this ` +
+                `session again; the stale record was removed.`
+              : `Already registered as ${id}. Nothing had drifted.`,
+          };
+        },
         async listPeers() {
           // Before reading the pointers, make our own say what is true now.
           //
