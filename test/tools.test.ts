@@ -6,6 +6,7 @@ import { MessageLog } from '../src/log.js';
 import { buildEnvelope } from '../src/envelope.js';
 import { CODEX_LIMITS, CLAUDE_LIMITS } from '../src/guard.js';
 import { createTools, labelList, type Side, type SidePeer } from '../src/tools.js';
+import { VERSION } from '../src/version.js';
 
 let dir: string;
 let log: MessageLog;
@@ -1468,5 +1469,48 @@ describe('a peer whose published status could not be read', () => {
     const { side } = makeSide({ listPeers: async () => ({ peers: [peer({ state: 'busy' })] }) });
     const r = await tools(side).peers();
     expect(r.peers[0]).not.toHaveProperty('status_unreadable');
+  });
+});
+
+/**
+ * Reporting the version (#-, from a live intake failure).
+ *
+ * A session could not answer "which tincan is running here" from its tools at
+ * all: `peers`, `send_peer` and `message_log` carried no version, and the
+ * three places VERSION did reach — MCP serverInfo, `--version`, the stderr
+ * startup line — are none of them readable by the model inside the session.
+ * The workaround, shelling out to `tincan --version`, answers a DIFFERENT
+ * question: it reports whatever is on PATH, not the build this server started
+ * with, and on this repo HEAD routinely runs ahead of the installed CLI.
+ *
+ * The peer half costs nothing to add: every Claude Code session already
+ * writes `tincanVersion` into its pointer record, and `readPointers` already
+ * parses it back. It was read and then dropped.
+ */
+describe('peers reports which tincan is running', () => {
+  test('reports the version of the tincan serving this call', async () => {
+    const { side } = makeSide();
+    const r = await tools(side).peers();
+    expect(r.tincan_version).toBe(VERSION);
+  });
+
+  test("reports a peer's own version, from the pointer record it wrote", async () => {
+    const { side } = makeSide({
+      listPeers: async () => ({ peers: [peer({ tincanVersion: '1.7.0' })] }),
+    });
+    const r = await tools(side).peers();
+    expect(r.peers[0]).toMatchObject({ tincan_version: '1.7.0' });
+  });
+
+  /**
+   * Absent, not "unknown". A peer that wrote no pointer record — a Codex or
+   * opencode session, or a Claude session running no Tin Can — has no version
+   * to report, and inventing a string for it would make "we did not look" and
+   * "it told us nothing" read identically.
+   */
+  test('omits the field entirely for a peer whose version is unknown', async () => {
+    const { side } = makeSide();
+    const r = await tools(side).peers();
+    expect(r.peers[0]).not.toHaveProperty('tincan_version');
   });
 });

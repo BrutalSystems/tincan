@@ -97,7 +97,7 @@ session's next turn. Both directions are recorded in one log.
 
 | Tool | What it does |
 |---|---|
-| `peers` | Lists the live sessions you can reach (see [Which peers you see](#which-peers-you-see)): name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code and opencode. |
+| `peers` | Lists the live sessions you can reach (see [Which peers you see](#which-peers-you-see)): name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code and opencode. Also reports `tincan_version` for the Tin Can serving the call, and each peer's own recorded version where it wrote one. |
 | `send_peer` | Sends text to one peer, or to several at once. `{peer?, peers?, message, in_reply_to?, expect_reply?, answers?, urgent?, expect_id?, idempotency_key?, replay_for_minutes?}` — exactly one of `peer` and `peers`. `replay_for_minutes` leaves a refused send for the recipient to collect when it returns, and needs `expect_id` to say who it was for. |
 | `message_log` | Reads back `~/.tincan/messages.jsonl`, filtered by peer or by reply chain. `missed: true` returns only the attempts left for this session that are still in date. |
 

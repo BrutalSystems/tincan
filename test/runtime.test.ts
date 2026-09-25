@@ -1225,13 +1225,48 @@ describe('claude peers include swept strangers', () => {
     );
   }
 
+  /**
+   * The pointer record already carried `tincanVersion` and `readPointers`
+   * already parsed it; nothing consumed it. Carrying it onto the peer is what
+   * lets `peers` answer "which tincan is that session running" without
+   * anyone having to ask it.
+   */
+  test("carries a peer's recorded tincan version onto the peer", async () => {
+    session(join(home, '.claude'), 901, 'alpha', 'sid-901', join(sockDir, '901.sock'));
+    writeFileSync(join(sockDir, '901.sock'), '');
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Map([['sid-901', '1.7.0']]),
+      deps(),
+    );
+    expect(peers).toHaveLength(1);
+    expect(peers[0]?.canReply).toBe(true);
+    expect(peers[0]?.tincanVersion).toBe('1.7.0');
+  });
+
+  test('leaves the version absent for a session that wrote no pointer', async () => {
+    session(join(home, '.claude'), 902, 'beta', 'sid-902', join(sockDir, '902.sock'));
+    writeFileSync(join(sockDir, '902.sock'), '');
+    const { peers } = await claudePeersWithSweep(
+      ctx([join(home, '.claude', 'sessions')]),
+      { XDG_RUNTIME_DIR: runtimeDir },
+      501,
+      new Map<string, string>(),
+      deps(),
+    );
+    expect(peers[0]?.canReply).toBe(false);
+    expect(peers[0]?.tincanVersion).toBeUndefined();
+  });
+
   test('a session whose config dir cannot be resolved is listed, with no name of its own, and cannot reply', async () => {
     writeFileSync(join(sockDir, '777.sock'), '');
     const { peers, diagnostic } = await claudePeersWithSweep(
       ctx([join(home, '.claude', 'sessions')]),
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
-      new Set<string>(),
+      new Map<string, string>(),
       deps(),
     );
     expect(peers).toHaveLength(1);
@@ -1248,7 +1283,7 @@ describe('claude peers include swept strangers', () => {
       ctx([join(home, '.claude', 'sessions')]),
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
-      new Set<string>(),
+      new Map<string, string>(),
       deps(),
     );
     expect(peers.map((p) => p.rawName).sort()).toEqual(['unknown-777', 'unknown-888']);
@@ -1263,7 +1298,7 @@ describe('claude peers include swept strangers', () => {
       ctx([join(home, '.claude', 'sessions')]),
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
-      new Set(['sid-888']),
+      new Map([['sid-888', '1.8.0']]),
       deps(),
     );
     expect(peers[0]?.canReply).toBe(true);
@@ -1277,7 +1312,7 @@ describe('claude peers include swept strangers', () => {
       ctx([join(home, '.claude', 'sessions')]),
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
-      new Set<string>(),
+      new Map<string, string>(),
       deps(),
     );
     expect(peers[0]?.canReply).toBe(false);
@@ -1295,7 +1330,7 @@ describe('claude peers include swept strangers', () => {
       ctx([join(home, '.claude', 'sessions')]),
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
-      new Set<string>(),
+      new Map<string, string>(),
       deps(() => ({ read: true, configDir: join(home, '.claude-arm') })),
     );
 
@@ -1317,7 +1352,7 @@ describe('claude peers include swept strangers', () => {
       ctx([join(home, '.claude', 'sessions'), join(home, '.claude-arm', 'sessions')]),
       { XDG_RUNTIME_DIR: runtimeDir },
       501,
-      new Set<string>(),
+      new Map<string, string>(),
       deps(),
     );
     expect(peers.map((p) => p.rawName).sort()).toEqual(['other-dir', 'same-dir']);

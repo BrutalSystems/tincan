@@ -180,12 +180,34 @@ export interface SweepDeps {
   socketDirs?: string[];
 }
 
-/** The session ids that wrote a pointer — i.e. the peers that can answer. */
-export function replyCapableSessionIds(
+/**
+ * What each pointer record says: session id -> the Tin Can version that wrote
+ * it. Presence in this map is what `canReply` means — a peer that wrote a
+ * pointer is running a Tin Can and can answer.
+ *
+ * A map rather than the set this used to be, because the record already
+ * carried `tincanVersion` and `readPointers` already parsed it, and nothing
+ * consumed it. One read answers both questions; reading the directory twice to
+ * keep them apart would let the two answers disagree about the same peer.
+ *
+ * `readPointers` substitutes the literal 'unknown' for a record written by a
+ * Tin Can too old to record its version, so a value here is always a string
+ * and never silently absent.
+ */
+export function pointerVersionsBySessionId(
   env: NodeJS.ProcessEnv,
   home: string = homedir(),
-): Set<string> {
-  return new Set(readPointers(pointerDir(env, home)).map((r) => r.sessionId));
+): Map<string, string> {
+  return new Map(readPointers(pointerDir(env, home)).map((r) => [r.sessionId, r.tincanVersion]));
+}
+
+/** Spreadable, so the key is absent rather than present-and-undefined. */
+function versionOf(
+  pointerVersions: ReadonlyMap<string, string>,
+  sessionId: string,
+): { tincanVersion?: string } {
+  const v = pointerVersions.get(sessionId);
+  return v === undefined ? {} : { tincanVersion: v };
 }
 
 /**
@@ -197,7 +219,7 @@ export async function claudePeersWithSweep(
   ctx: HostContext,
   env: NodeJS.ProcessEnv,
   uid: number,
-  replyCapable: Set<string>,
+  pointerVersions: ReadonlyMap<string, string>,
   deps: SweepDeps = {},
 ): Promise<{ peers: SidePeer[]; diagnostic?: string }> {
   const known = ctx.registryDirs();
@@ -227,7 +249,7 @@ export async function claudePeersWithSweep(
         });
 
   const peers: SidePeer[] = listing.sessions.map((session) => ({
-    runtime: 'claude-code',
+    runtime: 'claude-code' as const,
     rawName: session.rawName,
     uuid: session.uuid,
     cwd: session.cwd,
@@ -235,7 +257,11 @@ export async function claudePeersWithSweep(
     ...(session.statusUnreadable === true && { statusUnreadable: true }),
     socketPath: session.socketPath,
     configDir: session.configDir,
-    canReply: replyCapable.has(session.uuid),
+    canReply: pointerVersions.has(session.uuid),
+    // Absent, not 'unknown', when the peer wrote no pointer: a Codex or
+    // opencode session, or a Claude session running no Tin Can, has no version
+    // to report, and a placeholder would read as something it told us.
+    ...versionOf(pointerVersions, session.uuid),
     ...(session.auth !== undefined && { auth: session.auth }),
   }));
 
@@ -427,7 +453,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
               ctx,
               env,
               process.getuid?.() ?? 0,
-              replyCapableSessionIds(env),
+              pointerVersionsBySessionId(env),
               deps.sweep ?? {},
             ),
           ]);
@@ -517,7 +543,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
               ctx,
               env,
               process.getuid?.() ?? 0,
-              replyCapableSessionIds(env),
+              pointerVersionsBySessionId(env),
               deps.sweep ?? {},
             ),
             listOpencodeSessions({ registryDir }),
@@ -659,7 +685,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
               ctx,
               env,
               process.getuid?.() ?? 0,
-              replyCapableSessionIds(env),
+              pointerVersionsBySessionId(env),
               deps.sweep ?? {},
             ),
             listOpencodeSessions({ registryDir }),

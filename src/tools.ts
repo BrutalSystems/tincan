@@ -20,6 +20,7 @@ import {
 import { Guard, type GuardLimits, type GuardReason } from './guard.js';
 import { MessageLog, type LogRecord, type LogIntegrity } from './log.js';
 import { IdempotencyStore, IDEMPOTENCY_WINDOW_MS } from './idempotency.js';
+import { VERSION } from './version.js';
 import type { PeerState } from './claude/discover.js';
 
 export interface SidePeer {
@@ -41,6 +42,12 @@ export interface SidePeer {
    * wrote a pointer record, which it does only when it is running Tin Can.
    */
   canReply?: boolean;
+  /**
+   * The Tin Can version this peer's pointer record says it is running, or
+   * absent when it wrote no pointer. Reported so a peer's version can be read
+   * without asking it — which is most of the cost of triaging a bug report.
+   */
+  tincanVersion?: string;
 }
 
 export interface DeliveryOutcome {
@@ -277,7 +284,16 @@ export interface PeersResult {
     config_dir?: string;
     /** Claude Code peers only: false when the peer has no Tin Can to answer with. */
     can_reply?: boolean;
+    /**
+     * The Tin Can version this peer's own pointer record claims, or absent
+     * when it wrote none. `'unknown'` for a record written by a Tin Can too
+     * old to have recorded it — which is itself an answer, and a different one
+     * from the field being missing.
+     */
+    tincan_version?: string;
   }>;
+  /** The Tin Can serving this call. Always present. */
+  tincan_version: string;
   diagnostic?: string;
   notes?: string[];
 }
@@ -399,6 +415,17 @@ export function createTools(side: Side, log: MessageLog) {
         );
       }
       return {
+        /**
+         * The version of the Tin Can serving THIS call — not whatever `tincan
+         * --version` finds on PATH.
+         *
+         * A session had no way to answer "which Tin Can is running here" from
+         * its tools: VERSION reached MCP serverInfo, `--version` and the
+         * stderr startup line, and the model can read none of the three.
+         * Shelling out answers a different question, because a long-lived
+         * session keeps serving the build it started with while HEAD moves on.
+         */
+        tincan_version: VERSION,
         peers: list.map((p) => ({
           name: p.display,
           display_label: slugify(p.rawName ?? '')
@@ -413,6 +440,7 @@ export function createTools(side: Side, log: MessageLog) {
           ...durableIdOf(p.side),
           ...(p.side.configDir !== undefined && { config_dir: p.side.configDir }),
           ...(p.side.canReply !== undefined && { can_reply: p.side.canReply }),
+          ...(p.side.tincanVersion !== undefined && { tincan_version: p.side.tincanVersion }),
         })),
         ...(diagnostic !== undefined && { diagnostic }),
         ...(notes.length > 0 && { notes }),
