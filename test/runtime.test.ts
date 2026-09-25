@@ -1409,6 +1409,61 @@ describe('the claude-code arm', () => {
   const claudeIds = (peers: SidePeer[]) =>
     peers.filter((p) => p.runtime === 'claude-code').map((p) => p.uuid).sort();
 
+  /**
+   * The self-listing bug, which is the dangerous face of the id drift.
+   *
+   * Self-exclusion is by session id, and the id came from
+   * CLAUDE_CODE_SESSION_ID — captured when the MCP server was spawned.
+   * Claude Code reassigns the id on resume, so the filter removes an id that
+   * no longer exists and the CURRENT session falls through into its own peer
+   * list. Observed live: session 9aeb9b26 listed itself, state busy, while
+   * its MCP server's environment said dd754ea0.
+   *
+   * It is the one failure with no recovery, because `selfName` degrades in
+   * the same breath — findSessionName misses the stale id and falls back to
+   * the cwd basename — so `isSelfAddress` does not catch it either, and a
+   * send addressed to our own display name is delivered to us.
+   */
+  function armAtPid(harnessPid: number, envSessionId: string | undefined) {
+    return buildSide(
+      'claude-code',
+      {
+        registryDirs: () => [
+          join(home, '.claude', 'sessions'),
+          join(home, '.claude-arm', 'sessions'),
+        ],
+        pid: 1,
+        cwd: '/x',
+        env: {
+          CLAUDE_CONFIG_DIR: join(home, '.claude'),
+          CLAUDE_CODE_MESSAGING_SOCKET: `/tmp/cc-socks/${harnessPid}.sock`,
+          TINCAN_HOME: join(home, '.tincan'),
+          ...(envSessionId !== undefined && { CLAUDE_CODE_SESSION_ID: envSessionId }),
+        },
+      },
+      { sweep: { socketDirs: [] } },
+    );
+  }
+
+  test('excludes our own session when our environment names an id the harness has abandoned', async () => {
+    await sessionIn(join(home, '.claude'), 500, 'us-now', 'sid-now');
+    await sessionIn(join(home, '.claude'), 111, 'someone-else', 'sid-111');
+    const { peers } = await armAtPid(500, 'sid-boot').listPeers({ sessionId: undefined });
+    expect(claudeIds(peers)).toEqual(['sid-111']);
+  });
+
+  test('names itself from the record at its own pid, not the cwd basename, after a drift', async () => {
+    await sessionIn(join(home, '.claude'), 500, 'us-now', 'sid-now');
+    const side = armAtPid(500, 'sid-boot');
+    expect(await side.selfName(await side.resolveSelf())).toBe('us-now');
+  });
+
+  test('reports the drifted-to id as its own durable id, so from= and the log agree', async () => {
+    await sessionIn(join(home, '.claude'), 500, 'us-now', 'sid-now');
+    const side = armAtPid(500, 'sid-boot');
+    expect(await side.selfDurableId?.(await side.resolveSelf())).toEqual({ session_id: 'sid-now' });
+  });
+
   test('lists a session in our own config dir', async () => {
     // Tin Can used to drop these on the grounds that SendMessage already
     // reached them. It does — but only one of the two paths writes the

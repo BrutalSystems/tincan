@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveClaudeSelf, registerSelf } from '../src/claude/self.js';
+import { resolveClaudeSelf, registerSelf, syncSelfPointer } from '../src/claude/self.js';
 import { pointerDir, readPointers } from '../src/claude/registry.js';
 
 let home: string;
@@ -72,12 +72,45 @@ describe('resolveClaudeSelf', () => {
     expect(self?.pid).toBe(97213);
   });
 
-  test('refuses when the config dir holds no record for our session id', () => {
+  /**
+   * This used to refuse, and refusing is what took 13 of 25 live sessions off
+   * the air. A record at our own pid naming a different session is not a
+   * mismatch to fail closed on — it is Claude Code having reassigned our id
+   * while we ran, which is routine. The record is the harness's current
+   * statement about the process; our environment is a snapshot of when we were
+   * spawned. The record wins.
+   */
+  test('takes the id from the record at our pid even when our environment disagrees', () => {
     const cfg = join(home, '.claude');
     writeSessionRecord(cfg, 97213, 'a-different-session');
     expect(
       resolveClaudeSelf(
         { CLAUDE_CODE_SESSION_ID: SID, CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/97213.sock' },
+        97213,
+        home,
+      )?.sessionId,
+    ).toBe('a-different-session');
+  });
+
+  test('refuses when the config dir holds no record for our pid at all', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 55555, SID);
+    expect(
+      resolveClaudeSelf(
+        { CLAUDE_CODE_SESSION_ID: SID, CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/97213.sock' },
+        97213,
+        home,
+      ),
+    ).toBeUndefined();
+  });
+
+  test('refuses when the record at our pid names no session', () => {
+    const cfg = join(home, '.claude');
+    mkdirSync(join(cfg, 'sessions'), { recursive: true });
+    writeFileSync(join(cfg, 'sessions', '97213.json'), JSON.stringify({ pid: 97213, name: 'x' }));
+    expect(
+      resolveClaudeSelf(
+        { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/97213.sock' },
         97213,
         home,
       ),
@@ -95,12 +128,20 @@ describe('resolveClaudeSelf', () => {
     ).toBeUndefined();
   });
 
-  test('refuses when CLAUDE_CODE_SESSION_ID is absent', () => {
+  /**
+   * Also inverted, and for the better. The variable used to be the only way to
+   * name ourselves, so its absence meant we could not, and the arm fell back
+   * to hiding our whole config dir. Reading our own pid's record names us
+   * without it — which is the difference between excluding ourselves precisely
+   * and excluding an entire account to be safe.
+   */
+  test('resolves without CLAUDE_CODE_SESSION_ID, from the record at our pid', () => {
     const cfg = join(home, '.claude');
     writeSessionRecord(cfg, 97213, SID);
     expect(
-      resolveClaudeSelf({ CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/97213.sock' }, 97213, home),
-    ).toBeUndefined();
+      resolveClaudeSelf({ CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/97213.sock' }, 97213, home)
+        ?.sessionId,
+    ).toBe(SID);
   });
 });
 
@@ -135,5 +176,84 @@ describe('registerSelf', () => {
     expect(Object.keys(rec ?? {}).sort()).toEqual(
       ['configDir', 'pid', 'procStart', 'registryDir', 'sessionId', 'tincanVersion', 'writtenAt'],
     );
+  });
+});
+
+/**
+ * Claude Code reassigns a session's id while the harness process lives — it
+ * rewrites `<pid>.json` with a new `sessionId` on resume — and an MCP server
+ * spawned earlier keeps the OLD id in its environment forever. Verified on
+ * this machine: MCP pid 50431 held
+ * CLAUDE_CODE_SESSION_ID=dd754ea0-… while its harness pid 50400 was
+ * registered as 9aeb9b26-…, and 13 of 25 live sessions were in that state.
+ *
+ * Keying identity on the environment variable therefore keys it on a
+ * transient boot id. The record at our own pid is the only statement that
+ * stays true, because the pid is what cannot drift inside a live process.
+ */
+describe('when Claude Code reassigns the session id under a live process', () => {
+  const BOOT = '073ad916-d46a-4018-b19a-0c36b088d9da';
+  const NOW = '5c379b7c-c023-47fd-ae85-9b2222ec6c55';
+  const envFor = (cfg: string, pid: number, sessionId: string) => ({
+    CLAUDE_CONFIG_DIR: cfg,
+    CLAUDE_CODE_SESSION_ID: sessionId,
+    CLAUDE_CODE_MESSAGING_SOCKET: `/tmp/cc-socks/${pid}.sock`,
+    TINCAN_HOME: join(home, '.tincan'),
+  });
+
+  test('resolves the id the harness records at our pid, not the one in our environment', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 18233, NOW);
+    const self = resolveClaudeSelf(envFor(cfg, 18233, BOOT), 18233, home);
+    expect(self?.sessionId).toBe(NOW);
+  });
+
+  test('registers the pointer under the current id, so peers can see we can reply', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 18233, NOW);
+    const env = envFor(cfg, 18233, BOOT);
+    registerSelf(env, 18233, home);
+    expect(readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId)).toEqual([NOW]);
+  });
+
+  /**
+   * The orphan must GO, not merely be joined by a correct record. Two
+   * pointers at one live pid make one Tin Can look like two sessions, and the
+   * stale one carries the version that was running when it was written.
+   */
+  test('a drift after startup leaves exactly one pointer, under the new id', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 18233, BOOT);
+    const env = envFor(cfg, 18233, BOOT);
+    registerSelf(env, 18233, home);
+    expect(readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId)).toEqual([BOOT]);
+
+    // The harness reassigns the id; our environment still says BOOT.
+    writeSessionRecord(cfg, 18233, NOW);
+    syncSelfPointer(env, 18233, home);
+
+    expect(readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId)).toEqual([NOW]);
+  });
+
+  test('syncing is idempotent: no drift, no rewrite, still one pointer', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 18233, NOW);
+    const env = envFor(cfg, 18233, NOW);
+    registerSelf(env, 18233, home);
+    syncSelfPointer(env, 18233, home);
+    syncSelfPointer(env, 18233, home);
+    expect(readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId)).toEqual([NOW]);
+  });
+
+  test('leaves another session\'s pointer at a different pid alone', () => {
+    const cfg = join(home, '.claude');
+    writeSessionRecord(cfg, 18233, NOW);
+    writeSessionRecord(cfg, 999, 'someone-else');
+    const env = envFor(cfg, 18233, BOOT);
+    registerSelf(envFor(cfg, 999, 'someone-else'), 999, home);
+    syncSelfPointer(env, 18233, home);
+    expect(
+      readPointers(pointerDir(env, home), () => true).map((r) => r.sessionId).sort(),
+    ).toEqual([NOW, 'someone-else']);
   });
 });

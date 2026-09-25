@@ -12,6 +12,7 @@ import { listClaudeSessions, probeSocket, canonicalDir, dedupeDirs } from './cla
 import { sweepUnaccounted } from './claude/sweep.js';
 import { resolveConfigDirFromProcess, type ConfigDirResolver } from './claude/env.js';
 import { readPointers, pointerDir } from './claude/registry.js';
+import { ownSessionRecord, syncSelfPointer } from './claude/self.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
 import { createCodexEnv, parentPidLookup } from './codex/cli.js';
@@ -32,6 +33,13 @@ export interface HostContext {
   pid: number;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The HARNESS's pid, not ours — `pid` above is Tin Can's own MCP subprocess,
+   * which the session registry never records. Needed because the record at the
+   * harness's pid is the only current statement of which session we are in;
+   * see `ownSessionRecord`. Falls back to `process.ppid`.
+   */
+  ppid?: number;
 }
 
 /**
@@ -104,10 +112,18 @@ export function selfNameFor(runtime: RuntimeName, ctx: HostContext): string {
   if (runtime === 'claude-code') {
     // Tin Can runs as a child of the session, so ctx.pid is never the
     // session's — which is why the old `rec.pid === pid` arm could not match,
-    // and why a session under an alternate config dir fell through to its
-    // cwd. CLAUDE_CODE_SESSION_ID is the only identifier that works.
-    const sessionId = (ctx.env ?? process.env).CLAUDE_CODE_SESSION_ID;
-    const name = findSessionName(ctx.registryDirs(), sessionId);
+    // and why a session under an alternate config dir fell through to its cwd.
+    //
+    // The HARNESS's pid is the identifier that works. CLAUDE_CODE_SESSION_ID
+    // was used for this and is only a snapshot of who we were when we were
+    // spawned: Claude Code reassigns the id under a live process, and from
+    // that moment this lookup missed and `from=` silently became the working
+    // directory's basename — the same value every session in that directory
+    // produces, and therefore not an address at all. It stays as a fallback
+    // for a host that publishes no socket to name its pid with.
+    const env = ctx.env ?? process.env;
+    const own = ownSessionRecord(ctx.registryDirs(), env, ctx.ppid ?? process.ppid);
+    const name = own?.name ?? findSessionName(ctx.registryDirs(), env.CLAUDE_CODE_SESSION_ID);
     const slug = name === undefined ? '' : slugify(name);
     if (slug !== '') return slug;
   }
@@ -379,7 +395,25 @@ const NO_SESSION: SelfRef = { sessionId: undefined };
  * with no sessionId reads back as `''`, and two empty strings must not match
  * each other into "this peer is us".
  */
-function selfClaudeSessionId(env: NodeJS.ProcessEnv): string | undefined {
+/**
+ * Which session Tin Can is running in, for self-exclusion and for `from=`.
+ *
+ * Resolved from the record at the harness's pid on every call. It used to be
+ * read straight off CLAUDE_CODE_SESSION_ID and captured once when the side was
+ * built, which was wrong twice over: captured once cannot see a reassignment,
+ * and the variable itself stops being true the moment Claude Code reassigns
+ * the id under the live process. Self-exclusion then filtered an id that no
+ * longer existed and the current session appeared in its own peer list —
+ * observed live, and the one failure with no recovery, because a self-send
+ * delivers over our own inbox.
+ *
+ * The environment variable remains the fallback: over-excluding an id nothing
+ * matches costs nothing, and a host that publishes no socket still has to name
+ * itself somehow.
+ */
+function selfClaudeSessionId(ctx: HostContext, env: NodeJS.ProcessEnv): string | undefined {
+  const own = ownSessionRecord(ctx.registryDirs(), env, ctx.ppid ?? process.ppid);
+  if (own !== undefined) return own.sessionId;
   return env.CLAUDE_CODE_SESSION_ID !== undefined && env.CLAUDE_CODE_SESSION_ID !== ''
     ? env.CLAUDE_CODE_SESSION_ID
     : undefined;
@@ -410,7 +444,10 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
       // peer_unknown. Resolving through the registry returns undefined when
       // the session is not found, so the cwd fallback is never cached.
       const selfNameClaude = makeSelfNameResolver(
-        async () => findSessionName(ctx.registryDirs(), env.CLAUDE_CODE_SESSION_ID),
+        async () => {
+          const own = ownSessionRecord(ctx.registryDirs(), env, ctx.ppid ?? process.ppid);
+          return own?.name ?? findSessionName(ctx.registryDirs(), env.CLAUDE_CODE_SESSION_ID);
+        },
         ctx.cwd,
         { ttlMs: deps.selfNameTtlMs },
       );
@@ -430,7 +467,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           'sessions',
         ),
       );
-      const selfSessionId = selfClaudeSessionId(env);
+      const selfSessionId = () => selfClaudeSessionId(ctx, env);
 
       return {
         ...common,
@@ -440,12 +477,25 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
         // now re-read on a window and the id must not be the stale half of a
         // pair that is supposed to agree.
         selfDurableId: async () => {
-          const id = selfClaudeSessionId(env);
+          const id = selfSessionId();
           return id === undefined ? undefined : { session_id: id };
         },
         peerRuntimes,
         limitsFor,
         async listPeers() {
+          // Before reading the pointers, make our own say what is true now.
+          //
+          // Registering once at startup was the whole bug: Claude Code
+          // reassigns the session id under a live process, so the pointer keeps
+          // the id we booted with, `canReply` stops matching, and every peer is
+          // told this session has no way to answer. Doing it here means the
+          // repair happens on the same call that would otherwise report the
+          // damage, and it costs one small read when nothing has moved.
+          //
+          // Deliberately not conditional on `deps`: a test that builds this arm
+          // against a temp home is exercising the same path production does.
+          syncSelfPointer(env, ctx.ppid ?? process.ppid);
+
           const [codexListing, opencodeListing, claudeListing] = await Promise.all([
             listCodex(codex),
             listOpencodeSessions({ registryDir }),
@@ -465,7 +515,8 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
             // By session id. This is the whole guard now that same-config-dir
             // peers are listed; the config-dir filter used to hide us as a
             // side effect of hiding the account.
-            if (selfSessionId !== undefined) return p.uuid !== selfSessionId;
+            const selfId = selfSessionId();
+            if (selfId !== undefined) return p.uuid !== selfId;
             // No CLAUDE_CODE_SESSION_ID, so we cannot name ourselves at all.
             // `selfPid` is no help — listClaudeSessions is handed `ctx.pid`,
             // Tin Can's own MCP subprocess, which the registry never records.
@@ -562,7 +613,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           // Normalised to undefined when absent or empty: a Claude record
           // with no sessionId reads back as '' and must not be mistaken for
           // us on the strength of two empty strings matching.
-          const selfClaudeSession = selfClaudeSessionId(env);
+          const selfClaudeSession = selfClaudeSessionId(ctx, env);
           const claudePeers: SidePeer[] = claudeListing.peers.filter(
             (p) => p.uuid !== selfClaudeSession,
           );
@@ -705,7 +756,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           // order, not of this arm. One function's safety should not rest on
           // another function's internals.
           const claudePeers: SidePeer[] = claudeListing.peers.filter(
-            (p) => p.uuid !== selfClaudeSessionId(env),
+            (p) => p.uuid !== selfClaudeSessionId(ctx, env),
           );
 
           const opencodePeers = opencodeListing.peers.map(toOpencodeSidePeer);

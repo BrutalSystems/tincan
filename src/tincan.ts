@@ -68,6 +68,9 @@ async function main(): Promise<void> {
   const side = buildSide(runtime, {
     registryDirs: () => claudeRegistryDirs(process.env),
     pid: process.pid,
+    // The session's pid, not ours: the record the harness keeps there is the
+    // only current statement of which session we are inside.
+    ppid: process.ppid,
     cwd: process.cwd(),
   });
 
