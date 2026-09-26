@@ -10,6 +10,18 @@
  */
 import net from 'node:net';
 
+/**
+ * Statuses that mean the message was dropped and nothing will deliver it.
+ *
+ * Deliberately a closed set rather than "anything that is not `held`": a status
+ * Tin Can has never seen carries no established meaning, and guessing that it
+ * means failure is the same overclaim in the other direction. `refuse` and
+ * `refused` are both listed because the settings key is `crossSessionInbound:
+ * "refuse"` while the outcome it produces is named "refused", and either spelling
+ * reaching the wire means the same thing.
+ */
+const REFUSAL_STATUSES = new Set(['refused', 'refuse', 'rejected', 'dropped']);
+
 export interface InboxAuth {
   peerToken: string;
   procStart?: string;
@@ -38,6 +50,7 @@ export function sendToInbox(params: SendToInboxParams): Promise<SendToInboxResul
   return new Promise((resolve) => {
     let settled = false;
     let notice: string | undefined;
+    let refused = false;
     let buf = '';
 
     const finish = (r: SendToInboxResult) => {
@@ -64,7 +77,10 @@ export function sendToInbox(params: SendToInboxParams): Promise<SendToInboxResul
           msg_id: msgId,
         }) + '\n',
       );
-      setTimeout(() => finish({ delivered: true, ...(notice !== undefined && { notice }) }), receiptMs);
+      setTimeout(
+        () => finish({ delivered: !refused, ...(notice !== undefined && { notice }) }),
+        receiptMs,
+      );
     });
 
     conn.on('data', (d) => {
@@ -82,6 +98,20 @@ export function sendToInbox(params: SendToInboxParams): Promise<SendToInboxResul
         }
         if (frame.type === 'peer_message_status' && frame.orig_msg_id === msgId) {
           // A hold is not a failure (§6): the peer's human may still release it.
+          //
+          // A refusal is. Claude Code's inbound controls end in one of three
+          // states — delivered, held, refused — and a refusal means the message
+          // was dropped without reaching the receiving Claude. Reporting that as
+          // `delivered` with a note attached claims more than was established.
+          //
+          // Only a KNOWN refusal flips the verdict. An unrecognised status stays
+          // a notice, because the alternative — treating anything unfamiliar as
+          // failure — would report a delivered message as failed the first time
+          // Claude Code adds a fourth state, and a caller acting on that would
+          // resend a message the peer already has.
+          if (frame.status !== undefined && REFUSAL_STATUSES.has(frame.status.toLowerCase())) {
+            refused = true;
+          }
           notice = `receiver ${frame.status ?? 'reported'} message${frame.detail ? `: ${frame.detail}` : ''}`;
         }
       }

@@ -65,6 +65,17 @@ close:
   not sent a complete line within 30 seconds.
 - A held message comes back as a `peer_message_status` frame correlated by
   `orig_msg_id`. A hold is not a failure — it is surfaced as a notice.
+- A **refused** message comes back the same way, and is not a notice. Claude
+  Code's inbound controls end in one of three states — delivered, held, or
+  refused — and a refusal means the receiver dropped the message without
+  delivering it. Tin Can reports that as `failed` with `delivery_failed`, keeps
+  the receiver's wording as the notice, and writes no idempotency record, so the
+  same key can be used to retry. The peer is not marked unreachable: a session
+  that refuses is alive, so the registry must not prune it.
+- A status Tin Can does not recognise stays a notice and leaves the delivery
+  reported as accepted. Treating an unfamiliar status as failure would report a
+  delivered message as failed the first time a fourth state is added, and a
+  caller acting on that would resend a message the peer already has.
 
 ### opencode: inverted reach
 

@@ -465,6 +465,42 @@ describe('send_peer', () => {
     expect(log.read({ last_n: 99 })[0]).toMatchObject({ notice: 'receiver held message' });
   });
 
+  /**
+   * The counterpart to the hold above, and the user-visible half of the change.
+   *
+   * A hold may still be released, so it is `accepted` with a notice. A refusal
+   * means the message was dropped, so the caller must see `failed` — and must be
+   * allowed to retry, which means no idempotency record may be written for it.
+   * Reporting this as `accepted` is the overclaim the README says Tin Can never
+   * makes, and it is what shipped before this test.
+   */
+  test('reports a refusal as failed, retryable, with the notice kept', async () => {
+    const { side } = makeSide({
+      deliver: async () => ({
+        delivered: false,
+        method: 'inbox' as const,
+        notice: 'receiver refused message: crossSessionInbound is "refuse"',
+      }),
+    });
+    const r = await tools(side).send_peer({
+      peer: 'auth-refactor',
+      message: 'hi',
+      idempotency_key: 'k-refused',
+    });
+    expect(r.outcome).toBe('failed');
+    expect(r.refusal).toBe('delivery_failed');
+    expect(r.notice).toContain('refused');
+    // A dropped message is not a spent key: the same key must still be usable,
+    // or the caller is locked out of retrying a message nobody received.
+    const again = await tools(side).send_peer({
+      peer: 'auth-refactor',
+      message: 'hi',
+      idempotency_key: 'k-refused',
+    });
+    expect(again.refusal).not.toBe('duplicate_send');
+    expect(log.read({ last_n: 99 })[0]).toMatchObject({ notice: expect.stringContaining('refused') });
+  });
+
   test('marks delivery false and keeps the record when the transport fails', async () => {
     const { side } = makeSide({
       deliver: async () => ({ delivered: false, method: 'thread/queue/add' as const, error: 'thread not found' }),
