@@ -1,0 +1,65 @@
+{
+  "name": "@brutalsystems/tincan",
+  "version": "1.10.1",
+  "description": "Peer messaging between a live Claude Code session and a live Codex session on the same machine. One MCP server, run inside each.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "codex",
+    "agents",
+    "agent-messaging"
+  ],
+  "license": "MIT",
+  "author": "Mike Williams",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BrutalSystems/tincan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BrutalSystems/tincan/issues"
+  },
+  "homepage": "https://github.com/BrutalSystems/tincan#readme",
+  "type": "module",
+  "bin": {
+    "tincan": "./dist/tincan.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CANONICAL_ID.md",
+    "test/fixtures/canonical-id.json",
+    "plugins/opencode/tincan.ts",
+    "plugins/opencode/LICENSE",
+    "plugins/opencode/tincan-lib",
+    "plugins/opencode/README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck:plugin": "tsc -p tsconfig.plugin.json",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "sync-version": "node scripts/sync-version.mjs",
+    "check-version": "node scripts/sync-version.mjs --check",
+    "version": "node scripts/sync-version.mjs && git add test/fixtures/canonical-id.json plugins/opencode/package.json plugins/opencode/tincan-lib/types.ts CANONICAL_ID.md",
+    "postversion": "git push origin HEAD --follow-tags",
+    "prepublishOnly": "npm run build && npm run typecheck:plugin && npm run typecheck:test && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

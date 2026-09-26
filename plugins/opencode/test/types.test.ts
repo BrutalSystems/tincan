@@ -1,0 +1,28 @@
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { PLUGIN_VERSION, SESSION_ID_RE, MESSAGE_ID_RE } from '../tincan-lib/types.js';
+
+describe('plugin constants', () => {
+  it('exposes a semver plugin version', () => {
+    expect(PLUGIN_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it('reports the package version, not a number matching no release', () => {
+    // Every registry record carries this, and Tin Can shows it. Read from
+    // package.json so the two cannot drift apart unnoticed.
+    const pkg = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'));
+    expect(PLUGIN_VERSION).toBe(pkg.version);
+  });
+
+  it('matches opencode session ids and rejects others', () => {
+    expect(SESSION_ID_RE.test('ses_f41a2b3c4ffeExampleSess01Z')).toBe(true);
+    expect(SESSION_ID_RE.test('sess_abc')).toBe(true);
+    expect(SESSION_ID_RE.test('msg_abc')).toBe(false);
+    expect(SESSION_ID_RE.test('')).toBe(false);
+  });
+
+  it('matches opencode message ids and rejects others', () => {
+    expect(MESSAGE_ID_RE.test('msg_01J8TESTAAAAAAAAAAAAAAAA')).toBe(true);
+    expect(MESSAGE_ID_RE.test('not-a-msg-id')).toBe(false);
+  });
+});

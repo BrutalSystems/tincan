@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+__pycache__/
+
+# never commit credentials or publish artifacts
+.npmrc
+.env
+.env.*
+*.tgz

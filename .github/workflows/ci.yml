@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The npm that packs the tarball, pinned so the same commit packs the same way
+# here, in the publish job and on a laptop. npm's forced-inclusion rules are
+# exactly where versions drift: #15 shipped a file under npm 10 that npm 12
+# left out, and the two disagreed on the same commit. publish.yml pins the
+# SAME version — bump both together, and see RELEASING.md.
+#
+# Deliberately not applied to the `check` matrix below: that job exists to
+# prove the engines floor, and forcing npm 12 onto the Node 22 leg would stop
+# exercising the npm a Node 22 user actually has.
+env:
+  NPM_VERSION: '12.0.2'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # A hung job must fail, not sit. `vitest`'s own testTimeout is implemented
+    # with timers, so it cannot fire while a SYNCHRONOUS call is blocking the
+    # event loop — which is exactly how a test that pointed its writes at the
+    # runner's procfs stalled `npm test` for seventeen minutes and shipped
+    # nothing, with no timeout firing and no error. The default job limit is
+    # 360 minutes, so this is the only bound that catches that class at all.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the engines floor; 24 is what development happens on.
+        # Both must stay green or the floor is a fiction.
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck the opencode plugin
+        run: npm run typecheck:plugin
+
+      # `tsconfig.json` builds src only, so the suite was never typechecked.
+      # Nothing caught a fixture using a delivery method the program cannot
+      # produce, an envelope missing a required field, or — the one that cost
+      # real isolation — a test seam passed as a fourth argument to a
+      # three-argument function, silently dropped, leaving two tests sweeping
+      # whatever sessions happened to be running on the machine.
+      - name: Typecheck the test suite
+        run: npm run typecheck:test
+
+      - name: Test
+        run: npm test
+
+      # All four version locations in one check, against package.json as the
+      # source. The suite covers three of them from the other direction; this
+      # also catches the fourth, which is prose, and names every drifted file
+      # at once instead of the first. See RELEASING.md.
+      - name: Every version site agrees with package.json
+        run: npm run check-version
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Before `npm ci`, so the lockfile is resolved by the same npm that
+      # packs below. Node 22 ships npm 10.x; the pin is what makes this job
+      # and the publish job agree about what ships.
+      - name: Pin npm
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm -v
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # Same check the publish job runs, on every push — so tarball drift
+      # surfaces when it is introduced, not at release time.
+      - name: Verify the tarball
+        run: node scripts/verify-tarball.mjs

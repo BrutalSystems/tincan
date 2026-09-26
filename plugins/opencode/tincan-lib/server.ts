@@ -1,0 +1,214 @@
+import { chmod, mkdir, unlink } from 'node:fs/promises';
+import { createServer, connect, type Server, type Socket } from 'node:net';
+import { dirname } from 'node:path';
+import { swallow } from './log.js';
+import { socketPathTooLong } from './paths.js';
+import { MAX_LINE_BYTES } from './wire.js';
+
+/**
+ * Resource hygiene on our own listener, not rate limiting — SPEC §8.6 puts
+ * throttling in Tin Can, and nothing here counts or delays messages. What
+ * these bound is file descriptors and buffers held inside the opencode
+ * process: a leaking sender that connects and never closes would otherwise
+ * accumulate sockets, each able to hold MAX_LINE_BYTES of unterminated
+ * buffer, until fd exhaustion wedges the host — which SPEC §8.1 calls a
+ * worse outcome than a missed message.
+ */
+export const MAX_CONNECTIONS = 64;
+export const IDLE_TIMEOUT_MS = 30_000;
+
+export interface ListenOptions {
+  path: string;
+  /**
+   * Resolves to the line to write back. A handler that answers nothing — or
+   * is not async at all — is still valid: the socket is closed either way,
+   * so a sender never waits on a listener that has nothing to say.
+   */
+  onLine: (line: string) => void | Promise<string | undefined>;
+  onError: (err: unknown) => void;
+  /** Overridable so tests need not wait out the real one. */
+  idleTimeoutMs?: number;
+}
+
+export interface ServerHandle {
+  close(): Promise<void>;
+}
+
+/**
+ * `onError` is already wrapped with `swallow`, so it is safe to call bare.
+ * `onLine` is not: its failure has somewhere useful to go, so it is called
+ * inside a try that reports to `onError` rather than being swallowed.
+ */
+interface Handlers {
+  onLine: (line: string) => void | Promise<string | undefined>;
+  onError: (err: unknown) => void;
+}
+
+function frame(socket: Socket, handlers: Handlers): void {
+  socket.setEncoding('utf8');
+  let buf = '';
+  let overflowed = false;
+  // A sender writes one line and half-closes, so one connection carries one
+  // message and earns one answer. `answered` also guarantees we end the
+  // socket exactly once: the server runs with allowHalfOpen, so nothing
+  // closes our side for us any more.
+  let answered = false;
+  let handled = 0;
+
+  const reply = (line: string | undefined) => {
+    if (answered) return;
+    answered = true;
+    try {
+      if (socket.writableEnded || socket.destroyed) return;
+      if (line === undefined) socket.end();
+      else socket.end(`${line}\n`);
+    } catch (e) {
+      // An old Tin Can stops reading and destroys the connection as soon as
+      // our side closes, so writing into it can EPIPE. That is the expected
+      // shape of version skew, not a fault. SPEC §8.1.
+      handlers.onError(e);
+    }
+  };
+
+  const emit = (line: string) => {
+    if (line.length === 0) return;
+    handled++;
+    void (async () => {
+      let answer: string | undefined;
+      try {
+        const r = await handlers.onLine(line);
+        answer = typeof r === 'string' ? r : undefined;
+      } catch (e) {
+        // A handler failure must never reach the host. SPEC §8.1. The sender
+        // still gets its side closed, so it falls back rather than waiting.
+        handlers.onError(e);
+      }
+      reply(answer);
+    })();
+  };
+
+  socket.on('data', (chunk: string) => {
+    buf += chunk;
+    let i: number;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (overflowed) { overflowed = false; continue; }
+      if (Buffer.byteLength(line, 'utf8') >= MAX_LINE_BYTES) {
+        handlers.onError(new Error('oversize line dropped'));
+        continue;
+      }
+      emit(line);
+    }
+    if (Buffer.byteLength(buf, 'utf8') >= MAX_LINE_BYTES) {
+      handlers.onError(new Error('oversize line dropped'));
+      buf = '';
+      overflowed = true;
+    }
+  });
+
+  socket.on('end', () => {
+    if (!overflowed && buf.length > 0) emit(buf);
+    buf = '';
+    // Nothing to answer and, with allowHalfOpen, nothing to close us either.
+    if (handled === 0) reply(undefined);
+  });
+  socket.on('error', (e) => handlers.onError(e));
+}
+
+export async function listenLines(opts: ListenOptions): Promise<ServerHandle> {
+  if (socketPathTooLong(opts.path)) {
+    throw new Error(`socket path too long (${Buffer.byteLength(opts.path)} bytes): ${opts.path}`);
+  }
+  const dir = dirname(opts.path);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  // mkdir's `mode` is ignored when the directory already exists, and this
+  // parent is shared across every instance and every restart — so without
+  // an unconditional chmod, the 0700 protection SPEC §8.3 calls load-bearing
+  // only ever applies on a machine's first run. Matches registry.ts's
+  // writeRecord.
+  await chmod(dir, 0o700);
+  try {
+    await unlink(opts.path);
+  } catch {
+    // Nothing there is the common case.
+  }
+
+  const sockets = new Set<Socket>();
+  const idleMs = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+  // Wrapped exactly once, here, and called bare from then on. A caller's
+  // onError can itself throw (a broken logging sink, say) and that must
+  // never propagate out of a synchronous EventEmitter callback — SPEC §8.1
+  // is absolute, and this module is its strictest instance.
+  const handlers: Handlers = { onLine: opts.onLine, onError: swallow(opts.onError) };
+  // allowHalfOpen is what makes an answer possible at all. Without it Node
+  // ends our writable side automatically the moment the sender's FIN lands —
+  // and the sender FINs immediately after writing its line, so by the time we
+  // have something to say the socket is already closing. The cost is that
+  // every path out of `frame` must end the socket itself; `reply` is that
+  // single exit, and the idle timeout below is the backstop.
+  const server: Server = createServer({ allowHalfOpen: true }, (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    // A sender writes one line and closes. Anything still idle after this
+    // is a leak, not a peer.
+    socket.setTimeout(idleMs, () => socket.destroy());
+    frame(socket, handlers);
+  });
+  server.maxConnections = MAX_CONNECTIONS;
+  server.on('error', (e) => handlers.onError(e));
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(opts.path, () => resolve());
+  });
+
+  const closeServer = () => new Promise<void>((resolve) => server.close(() => resolve()));
+
+  try {
+    // Neither node:net nor Bun.listen honours 0600 on creation. SPEC §4.
+    await chmod(opts.path, 0o600);
+  } catch (e) {
+    // Rethrowing from here would leave a listening server on a 0755 socket
+    // that no ServerHandle exists to close.
+    await closeServer();
+    try { await unlink(opts.path); } catch { /* already gone */ }
+    throw e;
+  }
+
+  let closed = false;
+  return {
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      // server.close() only stops new connections and waits for existing
+      // ones to end on their own — it never terminates them. A single idle
+      // peer would otherwise wedge this forever, and SPEC §8.1 names
+      // wedging the user's session as worse than a missed message.
+      for (const socket of sockets) socket.destroy();
+      await closeServer();
+      try {
+        await unlink(opts.path);
+      } catch {
+        // Already gone.
+      }
+    },
+  };
+}
+
+/** The liveness test the whole staleness model rests on. SPEC §6. */
+export function probeSocket(path: string, timeoutMs = 250): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (alive: boolean) => {
+      if (done) return;
+      done = true;
+      try { c.destroy(); } catch { /* already gone */ }
+      resolve(alive);
+    };
+    const c = connect(path);
+    c.setTimeout(timeoutMs, () => finish(false));
+    c.on('connect', () => finish(true));
+    c.on('error', () => finish(false));
+  });
+}

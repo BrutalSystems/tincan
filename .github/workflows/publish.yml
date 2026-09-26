@@ -1,0 +1,296 @@
+name: Publish
+
+# Tag-driven, matching RELEASING.md. Pushing v0.5.0 publishes 0.5.0, and
+# nothing publishes from a branch push — a release should be a deliberate act.
+#
+# Authentication is npm trusted publishing over OIDC: there is no npm token,
+# here or in the repository secrets. The registry trusts this exact repo, this
+# exact workflow FILENAME, and the `npm` environment below. Renaming this file
+# or that environment breaks publishing until the trusted publisher is
+# reconfigured. See docs/ci-cd-standard.md.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+# Must match ci.yml's NPM_VERSION. See RELEASING.md.
+env:
+  NPM_VERSION: '12.0.2'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # A hung job must fail, not sit. `vitest`'s own testTimeout is implemented
+    # with timers, so it cannot fire while a SYNCHRONOUS call is blocking the
+    # event loop — which is exactly how a test that pointed its writes at the
+    # runner's procfs stalled `npm test` for seventeen minutes and shipped
+    # nothing, with no timeout firing and no error. The default job limit is
+    # 360 minutes, so this is the only bound that catches that class at all.
+    timeout-minutes: 15
+
+    # A fork that pushes a tag gets no run at all. OIDC would refuse it anyway,
+    # but an explicit gate beats a confusing red run in someone else's fork.
+    if: github.repository == 'BrutalSystems/tincan'
+
+    # Part of the trusted-publisher identity, not decoration. Also where a
+    # required reviewer goes, since OIDC widens publish rights from "whoever
+    # holds the token" to "whoever can push a tag".
+    environment: npm
+
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # OIDC: the npm credential itself, and provenance
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # The engines floor. The runner stays on it; npm is upgraded below
+          # rather than moving the whole runtime.
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+          # No dependency cache in a release build. Valid from setup-node v5
+          # on; under v4 it was silently ignored with an "Unexpected input"
+          # annotation, so the release built against a warm cache it was
+          # written to avoid.
+          package-manager-cache: false
+
+      # Node 22 ships npm 10.x; trusted publishing needs >= 11.5.1.
+      # Pinned, not `npm@latest`. Trusted publishing needs >= 11.5.1, but the
+      # version also decides what `npm pack` puts in the tarball — #15 had the
+      # same commit pack differently under npm 10 and npm 12. `latest` moves
+      # on its own schedule and would reintroduce that the day it changes a
+      # forced-inclusion rule. ci.yml pins the SAME version; bump both
+      # together, and see RELEASING.md.
+      - name: Pin npm (trusted publishing needs >= 11.5.1)
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm -v
+
+      # Cheapest checks first — fail before installing anything.
+      - name: Tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json $pkg"
+            exit 1
+          fi
+          echo "releasing $pkg"
+
+      # A version already on the registry is not an error — a re-pushed tag, or
+      # a release published by hand, should leave this run green with nothing
+      # to do. Shipping the WRONG version is what the check above catches, and
+      # that one does fail.
+      - name: Already published?
+        id: published
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          if npm view "@brutalsystems/tincan@$pkg" version >/dev/null 2>&1; then
+            echo "::notice::@brutalsystems/tincan@$pkg is already on the registry — nothing to publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: npm ci
+        if: steps.published.outputs.skip == 'false'
+
+      - run: npm run build
+        if: steps.published.outputs.skip == 'false'
+
+      - run: npm run typecheck:plugin
+        if: steps.published.outputs.skip == 'false'
+
+      - run: npm test
+        if: steps.published.outputs.skip == 'false'
+
+      - name: Pack
+        id: pack
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          echo "tarball=brutalsystems-tincan-$pkg.tgz" >> "$GITHUB_OUTPUT"
+          npm pack
+
+      - name: Verify the tarball
+        if: steps.published.outputs.skip == 'false'
+        run: node scripts/verify-tarball.mjs
+
+      # Install the packed artifact and run the binary. Nothing else in this
+      # pipeline would notice a broken `bin`, a missing dist file, or a bad
+      # shebang — the unit tests import source, not the package.
+      - name: Smoke-test the packed artifact
+        if: steps.published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          prefix=$(mktemp -d)
+          npm install -g --prefix "$prefix" "./${{ steps.pack.outputs.tarball }}"
+
+          # Assert the version, not merely that something was printed. Until
+          # 0.5.4 the binary ignored argv entirely, so ANY argument produced
+          # the server's startup banner and a "did it print anything" check
+          # passed while the program reported a version three releases stale.
+          got=$("$prefix/bin/tincan" --version 2>&1 | head -1)
+          echo "binary reports: $got"
+          if [ "$got" != "tincan $pkg" ]; then
+            echo "::error::expected 'tincan $pkg', got '$got'"
+            exit 1
+          fi
+
+          # --help must not start the server, and must exit 0.
+          "$prefix/bin/tincan" --help > /dev/null
+
+      # Publish the artifact that was just smoke-tested, not the directory, so
+      # what shipped is exactly what was checked. No NODE_AUTH_TOKEN: OIDC
+      # supplies the credential, and provenance follows from it.
+      - name: Publish
+        if: steps.published.outputs.skip == 'false'
+        run: npm publish "./${{ steps.pack.outputs.tarball }}" --provenance
+
+      # The opencode plugin ships as its own package so opencode can install
+      # it by npm specifier ("plugin": ["@brutalsystems/tincan-opencode"])
+      # instead of the user copying files into ~/.config/opencode/ by hand. A
+      # hand-copied plugin silently lagged the server for five releases and
+      # kept posting to a route that did not run messages; that is the failure
+      # this split ends.
+      #
+      # Same run, same version, same trusted publisher deliberately. Releasing
+      # them separately would reintroduce exactly the skew being removed.
+      #
+      # REQUIRES its own trusted-publisher registration on npmjs.com — OIDC
+      # trust is per package. See RELEASING.md. Until that exists this step
+      # fails the run, which is correct: a release that ships the server
+      # without the matching plugin is the thing we are trying to prevent.
+      - name: Plugin package — already published?
+        id: plugin_published
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          if npm view "@brutalsystems/tincan-opencode@$pkg" version >/dev/null 2>&1; then
+            echo "::notice::@brutalsystems/tincan-opencode@$pkg is already on the registry"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pack the plugin package
+        id: plugin_pack
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: |
+          pkg=$(node -p "require('./plugins/opencode/package.json').version")
+          ( cd plugins/opencode && npm pack )
+          echo "tarball=plugins/opencode/brutalsystems-tincan-opencode-$pkg.tgz" >> "$GITHUB_OUTPUT"
+
+      # The plugin is loaded untranspiled by opencode, so the tarball is the
+      # source. That makes it easy to ship the wrong source: the test suite
+      # and SPEC.md sit in the same tree and must not go out.
+      - name: Verify the plugin tarball
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: |
+          files=$(tar tzf "${{ steps.plugin_pack.outputs.tarball }}" | sed 's|^package/||' | grep -v '/$' | sort)
+          echo "$files"
+          for required in tincan.ts package.json LICENSE; do
+            echo "$files" | grep -qx "$required" || { echo "::error::plugin tarball is missing $required"; exit 1; }
+          done
+          echo "$files" | grep -q '^tincan-lib/' || { echo "::error::plugin tarball ships no tincan-lib"; exit 1; }
+          if echo "$files" | grep -qE '^(test/|SPEC\.md)'; then
+            echo "::error::plugin tarball ships tests or SPEC.md"
+            exit 1
+          fi
+
+      - name: Publish the plugin package
+        if: steps.plugin_published.outputs.skip == 'false'
+        run: npm publish "./${{ steps.plugin_pack.outputs.tarball }}" --provenance
+
+      # BOTH packages, not just the main one. The split exists so the two can
+      # never drift apart in version — see the 0.6.3 note below — and a
+      # confirmation that looks at only one of them is blind to exactly that
+      # drift: a plugin publish that reports success and never lands leaves
+      # this run green while telling you both shipped.
+      - name: Confirm the registry is serving it
+        id: served
+        if: steps.published.outputs.skip == 'false' || steps.plugin_published.outputs.skip == 'false'
+        run: |
+          # attempts is per package because they demonstrably lag by different
+          # amounts: on 0.7.0 the main package was served in under a second
+          # and the plugin took roughly ten minutes, both from one publish
+          # step. Polling is free when the registry is quick — it costs time
+          # only in the case that would otherwise warn.
+          poll() {
+            name=$1; ver=$2; attempts=$3
+            for i in $(seq 1 "$attempts"); do
+              if npm view "$name@$ver" version >/dev/null 2>&1; then
+                echo "registry serving $name@$ver"
+                npm view "$name@$ver" dist.integrity
+                return 0
+              fi
+              echo "$name not yet (attempt $i/$attempts), waiting 20s"; sleep 20
+            done
+            echo "::warning::registry still not serving $name@$ver — publish reported success, so this is lag or a silent drop"
+            return 1
+          }
+
+          pkg=$(node -p "require('./package.json').version")
+          plugin=$(node -p "require('./plugins/opencode/package.json').version")
+
+          # `served` is the MAIN package's answer alone, and must stay that
+          # way: the only consumer is "Verify the PUBLISHED artifact", which
+          # downloads the main tarball. A plugin that has not appeared yet
+          # must not suppress that check.
+          served=true
+          if [ "${{ steps.published.outputs.skip }}" = "false" ]; then
+            poll "@brutalsystems/tincan" "$pkg" 10 || served=false
+          fi
+          if [ "${{ steps.plugin_published.outputs.skip }}" = "false" ]; then
+            poll "@brutalsystems/tincan-opencode" "$plugin" 20 || true
+          fi
+          echo "served=$served" >> "$GITHUB_OUTPUT"
+
+      # Everything above inspects a local build. This is the only check that
+      # sees what a consumer actually downloads. Skipped, not failed, when the
+      # registry has not caught up — the publish itself already succeeded.
+      # Advisory, and ordered after everything irreversible on purpose. It is
+      # the only check that inspects what a consumer downloads, but it runs
+      # against a CDN that lags the publish — `npm view` can answer while
+      # `npm pack` still 404s, which is not a disagreement about content, just
+      # two endpoints catching up at different speeds. On 0.6.3 that race
+      # failed this step and skipped the plugin publish and the GitHub
+      # Release behind it, leaving the two packages at different versions —
+      # precisely the skew the split exists to prevent. So: retry, and treat
+      # a download that never arrives as a warning. Only a real file-list
+      # difference fails the run.
+      - name: Verify the PUBLISHED artifact
+        if: steps.published.outputs.skip == 'false' && steps.served.outputs.served == 'true'
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          mkdir -p /tmp/published
+          for i in $(seq 1 6); do
+            if npm pack "@brutalsystems/tincan@$pkg" --pack-destination /tmp/published >/dev/null 2>&1; then
+              got=yes; break
+            fi
+            echo "tarball not downloadable yet (attempt $i), waiting 20s"; sleep 20
+          done
+          if [ "${got:-no}" != "yes" ]; then
+            echo "::warning::registry never served a downloadable $pkg tarball — publish succeeded, contents unverified"
+            exit 0
+          fi
+          tar tzf "/tmp/published/brutalsystems-tincan-$pkg.tgz" | sed 's|^package/||' | grep -v '/$' | sort > /tmp/remote.txt
+          tar tzf "./${{ steps.pack.outputs.tarball }}"          | sed 's|^package/||' | grep -v '/$' | sort > /tmp/local.txt
+          if ! diff -u /tmp/local.txt /tmp/remote.txt; then
+            echo "::error::the published tarball does not match what this run packed"
+            exit 1
+          fi
+          echo "published artifact matches — $(wc -l < /tmp/remote.txt) files"
+
+      # Tincan has no RELEASE_NOTES.md; the tag annotation is its release
+      # record. A repo that keeps release notes extracts that version's
+      # section here instead. See docs/ci-cd-standard.md.
+      - name: GitHub Release
+        if: steps.published.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-from-tag --verify-tag

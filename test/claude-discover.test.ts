@@ -1,0 +1,414 @@
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fakeInbox, type FakeInbox } from './fakes.js';
+import { listClaudeSessions, peerStateFrom, socketDirCandidates } from '../src/claude/discover.js';
+
+let dir: string;
+let open: FakeInbox[] = [];
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'tincan-reg-'));
+  mkdirSync(join(dir, 'sessions'), { recursive: true });
+});
+afterEach(async () => {
+  for (const o of open) await o.close();
+  open = [];
+  rmSync(dir, { recursive: true, force: true });
+});
+
+function writeSession(pid: number, fields: Record<string, unknown>, token?: string) {
+  writeFileSync(
+    join(dir, 'sessions', `${pid}.json`),
+    JSON.stringify({
+      pid,
+      sessionId: `0000${pid}-0000-0000-0000-000000000000`,
+      cwd: '/src/thing',
+      name: `session-${pid}`,
+      status: 'idle',
+      kind: 'interactive',
+      ...fields,
+    }),
+  );
+  if (token) {
+    writeFileSync(
+      join(dir, 'sessions', `${pid}.${'0'.repeat(64)}.key`),
+      JSON.stringify({ peerToken: token, procStart: 'x', pidDomain: 'darwin' }),
+    );
+  }
+}
+
+describe('socketDirCandidates', () => {
+  test('prefers XDG_RUNTIME_DIR, then /tmp/cc-socks, then the uid-suffixed fallback', () => {
+    const c = socketDirCandidates({ XDG_RUNTIME_DIR: '/run/user/501' }, 501);
+    expect(c[0]).toBe('/run/user/501/cc-socks');
+    expect(c).toContain('/tmp/cc-socks');
+    expect(c).toContain('/tmp/cc-socks-501');
+  });
+
+  test('still offers both /tmp shapes when XDG_RUNTIME_DIR is unset', () => {
+    const c = socketDirCandidates({}, 501);
+    expect(c).toEqual(['/tmp/cc-socks', '/tmp/cc-socks-501']);
+  });
+});
+
+describe('listClaudeSessions', () => {
+  test('reads name, cwd, session id and state from the session registry', async () => {
+    const inbox = await fakeInbox();
+    open.push(inbox);
+    writeSession(111, { name: 'billing-api', cwd: '/src/billing', messagingSocketPath: inbox.path });
+
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
+    expect(peers).toHaveLength(1);
+    expect(peers[0]).toMatchObject({
+      rawName: 'billing-api',
+      cwd: '/src/billing',
+      uuid: '0000111-0000-0000-0000-000000000000',
+      state: 'idle',
+    });
+  });
+
+  test('excludes the session tincan is hosted in', async () => {
+    const inbox = await fakeInbox();
+    open.push(inbox);
+    writeSession(111, { messagingSocketPath: inbox.path });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 111 });
+    expect(peers).toEqual([]);
+  });
+
+  test('reports a session whose socket refuses the connection as unreachable', async () => {
+    const dead = await fakeInbox({ accept: false });
+    open.push(dead);
+    writeSession(111, { messagingSocketPath: dead.path });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
+    expect(peers[0]!.state).toBe('unreachable');
+  });
+
+  test('loads the peer token from the per-session key file', async () => {
+    const inbox = await fakeInbox();
+    open.push(inbox);
+    writeSession(111, { messagingSocketPath: inbox.path }, 'b'.repeat(32));
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
+    expect(peers[0]!.auth?.peerToken).toBe('b'.repeat(32));
+  });
+
+  test('still lists a session whose key file is missing, with no auth', async () => {
+    const inbox = await fakeInbox();
+    open.push(inbox);
+    writeSession(111, { messagingSocketPath: inbox.path });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
+    expect(peers[0]!.auth).toBeUndefined();
+  });
+
+  test('maps a session waiting on its human to busy, not idle', async () => {
+    const inbox = await fakeInbox();
+    open.push(inbox);
+    writeSession(111, { status: 'busy', messagingSocketPath: inbox.path });
+    const { sessions: peers } = await listClaudeSessions({ registryDirs: [join(dir, 'sessions')], selfPid: 999 });
+    expect(peers[0]!.state).toBe('busy');
+  });
+});
+
+describe('several registry dirs', () => {
+  let a: string;
+  let b: string;
+
+  beforeEach(() => {
+    a = mkdtempSync(join(tmpdir(), 'tincan-a-'));
+    b = mkdtempSync(join(tmpdir(), 'tincan-b-'));
+    mkdirSync(join(a, 'sessions'), { recursive: true });
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(a, { recursive: true, force: true });
+    rmSync(b, { recursive: true, force: true });
+  });
+
+  function write(root: string, pid: number, fields: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(root, 'sessions', `${pid}.json`),
+      JSON.stringify({
+        pid,
+        sessionId: `0000${pid}-0000-0000-0000-000000000000`,
+        cwd: '/src/thing',
+        name: `session-${pid}`,
+        status: 'idle',
+        ...fields,
+      }),
+    );
+  }
+
+  test('lists sessions from every dir, and tags each with where it came from', async () => {
+    const one = await fakeInbox();
+    const two = await fakeInbox();
+    open.push(one, two);
+    write(a, 111, { messagingSocketPath: one.path });
+    write(b, 222, { messagingSocketPath: two.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+    });
+
+    expect(listing.sessions.map((s) => s.pid).sort()).toEqual([111, 222]);
+    expect(listing.sessions.find((s) => s.pid === 222)?.registryDir).toBe(join(b, 'sessions'));
+    expect(listing.sessions.find((s) => s.pid === 222)?.configDir).toBe(b);
+  });
+
+  test('reports every pid it accounted for, including unreachable ones', async () => {
+    write(a, 111, { messagingSocketPath: join(a, 'gone.sock') });
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions')],
+      selfPid: 1,
+      probeMs: 50,
+    });
+    expect(listing.accountedPids.has(111)).toBe(true);
+  });
+
+  test('a dir that does not exist is skipped, not thrown on', async () => {
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), '/definitely/not/here'],
+      selfPid: 1,
+    });
+    expect(listing.sessions).toEqual([]);
+  });
+
+  test('the same pid in two dirs: procStart picks the live one', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    // A real collision is a recycled pid, so the two records name different
+    // sessions; two records naming one session are covered separately below.
+    write(a, 333, { messagingSocketPath: sock.path, procStart: 'STALE', name: 'stale-one', sessionId: 'dead-session' });
+    write(b, 333, { messagingSocketPath: sock.path, procStart: 'LIVE', name: 'live-one', sessionId: 'live-session' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => 'LIVE',
+    });
+
+    expect(listing.sessions).toHaveLength(1);
+    expect(listing.sessions[0]?.rawName).toBe('live-one');
+  });
+
+  test('the tiebreak still picks the live one on a machine that is not on UTC', async () => {
+    // The test above proves the tiebreak with a placeholder that matches by
+    // construction. This one uses the two REAL formats, which do not.
+    //
+    // Claude Code writes procStart into its registry in UTC — verified against
+    // a live record, where `procStart` was "Thu Sep 24 08:36:26 2026" for a
+    // process `ps` reports as starting 04:36:26 EDT. `ps -o lstart=` prints
+    // LOCAL time, so on any machine that is not on UTC the comparison could
+    // never be true, every real collision fell through to `ambiguous`, and a
+    // live session was dropped from the listing entirely.
+    //
+    // TZ is forced rather than read so this fails on a UTC CI runner too,
+    // where the bug does not reproduce on its own.
+    const sock = await fakeInbox();
+    open.push(sock);
+    const priorTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      // process.pid is genuinely live, so the real procStartOf has something
+      // to read, and this is the format Claude Code would have recorded for it.
+      const asClaudeCodeRecordsIt = execFileSync('ps', ['-p', String(process.pid), '-o', 'lstart='], {
+        encoding: 'utf8',
+        env: { ...process.env, TZ: 'UTC' },
+      }).trim();
+
+      write(a, process.pid, {
+        messagingSocketPath: sock.path,
+        procStart: 'Mon Sep 21 10:00:00 2026',
+        name: 'stale-one',
+        sessionId: 'dead-session',
+      });
+      write(b, process.pid, {
+        messagingSocketPath: sock.path,
+        procStart: asClaudeCodeRecordsIt,
+        name: 'live-one',
+        sessionId: 'live-session',
+      });
+
+      const listing = await listClaudeSessions({
+        registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+        selfPid: 1,
+      });
+
+      expect(listing.diagnostic).toBeUndefined();
+      expect(listing.sessions).toHaveLength(1);
+      expect(listing.sessions[0]?.rawName).toBe('live-one');
+    } finally {
+      if (priorTz === undefined) delete process.env.TZ;
+      else process.env.TZ = priorTz;
+    }
+  });
+
+  test('the same pid in two dirs, neither matching: both dropped, with a diagnostic', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 444, { messagingSocketPath: sock.path, procStart: 'ONE', sessionId: 'session-one' });
+    write(b, 444, { messagingSocketPath: sock.path, procStart: 'TWO', sessionId: 'session-two' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => 'NEITHER',
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('444');
+    expect(listing.accountedPids.has(444)).toBe(true);
+  });
+
+  test('the same pid in two dirs with no procStart anywhere: both dropped', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 555, { messagingSocketPath: sock.path, sessionId: 'session-one' });
+    write(b, 555, { messagingSocketPath: sock.path, sessionId: 'session-two' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('555');
+  });
+});
+
+describe('the same directory twice is not a collision', () => {
+  let a: string;
+
+  beforeEach(() => {
+    a = mkdtempSync(join(tmpdir(), 'tincan-dup-'));
+    mkdirSync(join(a, 'sessions'), { recursive: true });
+  });
+  afterEach(() => rmSync(a, { recursive: true, force: true }));
+
+  function write(root: string, pid: number, fields: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(root, 'sessions', `${pid}.json`),
+      JSON.stringify({
+        pid,
+        sessionId: `0000${pid}-0000-0000-0000-000000000000`,
+        cwd: '/src/thing',
+        name: `session-${pid}`,
+        status: 'idle',
+        ...fields,
+      }),
+    );
+  }
+
+  test('one dir listed twice yields one session and no diagnostic', async () => {
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 777, { messagingSocketPath: sock.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(a, 'sessions')],
+      selfPid: 1,
+    });
+
+    expect(listing.sessions).toHaveLength(1);
+    expect(listing.diagnostic).toBeUndefined();
+  });
+
+  test('two dirs whose records name the SAME session are one session, not a conflict', async () => {
+    const b = mkdtempSync(join(tmpdir(), 'tincan-dup2-'));
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 888, { messagingSocketPath: sock.path });
+    write(b, 888, { messagingSocketPath: sock.path });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toHaveLength(1);
+    expect(listing.diagnostic).toBeUndefined();
+    rmSync(b, { recursive: true, force: true });
+  });
+
+  test('two dirs naming DIFFERENT sessions on one pid is still a real collision', async () => {
+    const b = mkdtempSync(join(tmpdir(), 'tincan-dup3-'));
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 999, { messagingSocketPath: sock.path, sessionId: 'session-one' });
+    write(b, 999, { messagingSocketPath: sock.path, sessionId: 'session-two' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('999');
+    rmSync(b, { recursive: true, force: true });
+  });
+
+  test('two records with no sessionId at all stay a collision — nothing proves they match', async () => {
+    const b = mkdtempSync(join(tmpdir(), 'tincan-dup4-'));
+    mkdirSync(join(b, 'sessions'), { recursive: true });
+    const sock = await fakeInbox();
+    open.push(sock);
+    write(a, 1111, { messagingSocketPath: sock.path, sessionId: '' });
+    write(b, 1111, { messagingSocketPath: sock.path, sessionId: '' });
+
+    const listing = await listClaudeSessions({
+      registryDirs: [join(a, 'sessions'), join(b, 'sessions')],
+      selfPid: 1,
+      liveProcStart: () => undefined,
+    });
+
+    expect(listing.sessions).toEqual([]);
+    expect(listing.diagnostic).toContain('1111');
+    rmSync(b, { recursive: true, force: true });
+  });
+});
+
+// #32. `mapState` collapsed everything that is not exactly 'idle' into 'busy'
+// — a missing field, a malformed record, and any status Claude Code adds
+// later. Defaulting to busy is the right SAFE choice: assuming a peer is
+// occupied beats assuming it is free. But it made "we do not know" and "we
+// know it is busy" indistinguishable to a caller.
+//
+// The decision #32 asks for: a fourth PeerState, or a separate field. A
+// separate field, because `state` is a published contract that Muster consumes
+// and its safe default is correct — an unreadable status should still be
+// treated as busy. Widening the enum would make every consumer handle a value
+// for a case that has never been observed, to reach the same behaviour.
+describe('reading a peer status Tin Can does not recognise', () => {
+  test('idle and busy are read as themselves, and are not flagged', () => {
+    expect(peerStateFrom('idle')).toEqual({ state: 'idle', unreadable: false });
+    expect(peerStateFrom('busy')).toEqual({ state: 'busy', unreadable: false });
+  });
+
+  test('a status that is absent or malformed stays busy, and says it is a guess', () => {
+    for (const status of [undefined, null, '', 42, {}]) {
+      expect(peerStateFrom(status)).toEqual({ state: 'busy', unreadable: true });
+    }
+  });
+
+  // The forward-compatibility case: Claude Code adds a status, and an older
+  // Tin Can reads it. Still busy — nothing else is safe to assume — but no
+  // longer reported as if it were understood.
+  test('a status this version has never heard of stays busy, and says it is a guess', () => {
+    expect(peerStateFrom('compacting')).toEqual({ state: 'busy', unreadable: true });
+  });
+
+  // This file is Claude Code's, not Tin Can's, and it is undocumented. A shape
+  // change must never break peer listing.
+  test('never throws, whatever it is handed', () => {
+    for (const status of [Symbol('x'), [], () => {}, NaN]) {
+      expect(() => peerStateFrom(status)).not.toThrow();
+    }
+  });
+});
