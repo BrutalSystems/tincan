@@ -171,7 +171,10 @@ npm run typecheck:plugin  # separate tsconfig; the plugin ships untranspiled
 ```
 
 Both peers are sockets, so both fake cleanly. No test touches a real model or a
-real session.
+real session: `test/setup.ts` runs before every file, points `TINCAN_HOME` at a
+throwaway directory, and removes the session variables of whoever started the
+run — so the suite cannot reach the `~/.tincan` records of the sessions you have
+open while you run it, and behaves the same inside a live session as on CI.
 
 ## License and releases
 
