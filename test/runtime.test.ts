@@ -1048,7 +1048,11 @@ describe('buildSide, hosted in opencode', () => {
           // canonical_id is built from the same slug and the same id, so it is
           // held to a charset here as well rather than left as the one way the
           // hostile value could re-enter the tag intact.
-          /^<peer_message from="[a-z0-9-]+" runtime="opencode" session_id="[A-Za-z0-9_.:-]*" canonical_id="[A-Za-z0-9_.:@-]*" id="msg_[0-9a-f]+" \/>$/,
+          //
+          // `cwd` cannot be pinned to a slug charset — a real path carries `/`,
+          // spaces and unicode — so what is pinned is the guarantee that
+          // actually fences the tag: it contains none of `"`, `<` or `>`.
+          /^<peer_message from="[a-z0-9-]+" runtime="opencode" cwd="[^"<>]*" session_id="[A-Za-z0-9_.:-]*" canonical_id="[A-Za-z0-9_.:@-]*" id="msg_[0-9a-f]+" \/>$/,
         );
         // One tag, so the hostile slug did not open a second one.
         expect(wire.text.match(/<peer_message/g)).toHaveLength(1);
