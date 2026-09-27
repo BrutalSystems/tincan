@@ -59,6 +59,9 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
         `Show display_label to the user: unnamed sessions use project · short ID. ` +
         `When display_label differs from name, also show the full durable ID for copying. ` +
         `Use name, not display_label, when calling send_peer. ` +
+        `This session is never in the list; \`self\` is the address that reaches it — ` +
+        `give self.name (or self.canonical_id) when asked for your own peer name, never a ` +
+        `bare session id, which send_peer does not accept. ` +
         `Also returns tincan_version: the Tin Can serving this call, and per peer the ` +
         `version its own Tin Can recorded — report those rather than shelling out to ` +
         `\`tincan --version\`, which reports whatever is on PATH instead of what is running. ` +

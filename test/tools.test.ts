@@ -1785,3 +1785,78 @@ describe('a key that was spent on a session which no longer holds the name', () 
     expect(reused.refusal).toBe('key_reused');
   });
 });
+
+/**
+ * #45: a session could not say what address reaches it.
+ *
+ * `peers` excludes the caller — correctly — and so a session asked "what is
+ * your peer name?" could only answer with its session id, which `send_peer`
+ * does not accept. The one tool that did return the name was `reregister`, a
+ * repair lever nobody reaches for to answer "who am I".
+ *
+ * The name reported is the qualified `slug.suffix`, never the display name.
+ * The display name depends on who is looking: two sessions sharing a slug each
+ * see the OTHER unsuffixed, because each excludes itself. Only the qualified
+ * form and `canonical_id` resolve the same way from every observer.
+ */
+describe('peers reports the caller its own address', () => {
+  const SID = 'b687a4eb-4b06-4e08-b6cd-3ca21e6d5a11';
+
+  test('names the caller by an address every peer can resolve', async () => {
+    const { side } = makeSide({
+      selfName: async () => 'simple-cms-46',
+      selfCwd: '/src/simple-cms',
+      selfDurableId: async () => ({ session_id: SID }),
+    });
+    const r = await tools(side).peers();
+    expect(r.self).toEqual({
+      runtime: 'claude-code',
+      name: 'simple-cms-46.a11',
+      canonical_id: `claude-code:simple-cms-46.${SID}`,
+      session_id: SID,
+      cwd: '/src/simple-cms',
+    });
+  });
+
+  test('qualifies the name even when no peer shares its slug', async () => {
+    const { side } = makeSide({ selfDurableId: async () => ({ session_id: SID }) });
+    const r = await tools(side).peers();
+    expect(r.self?.name).toBe('billing-api.a11');
+  });
+
+  test('carries a Codex thread_id rather than a session_id', async () => {
+    const tid = '0199aaaa-bbbb-7ccc-8ddd-eeeeeeeee7f3';
+    const { side } = makeSide({
+      selfRuntime: 'codex',
+      selfDurableId: async () => ({ thread_id: tid }),
+    });
+    const r = await tools(side).peers();
+    expect(r.self).toMatchObject({ runtime: 'codex', name: 'billing-api.7f3', thread_id: tid });
+    expect(r.self).not.toHaveProperty('session_id');
+  });
+
+  /**
+   * Absent, not invented. With no durable id there is no suffix and no
+   * canonical id to build — a Codex host before its first thread, a Claude
+   * session whose id the harness has not handed over yet.
+   */
+  test('reports the bare name and omits canonical_id when no durable id is known', async () => {
+    const { side } = makeSide();
+    const r = await tools(side).peers();
+    expect(r.self).toEqual({ runtime: 'claude-code', name: 'billing-api', cwd: '/src/billing' });
+  });
+
+  /** The address must be one send_peer would refuse as a self-send, or it is not ours. */
+  test('the reported name is refused by send_peer as this session', async () => {
+    const { side, delivered } = makeSide({
+      selfDurableId: async () => ({ session_id: SID }),
+      listPeers: async () => ({ peers: [peer({ rawName: 'billing-api-v2' })] }),
+    });
+    const t = tools(side);
+    const { self } = await t.peers();
+    const r = await t.send_peer({ peer: self!.name, message: 'hi' });
+    expect(r.outcome).toBe('rejected');
+    expect(r.refusal).toBe('self_send');
+    expect(delivered).toHaveLength(0);
+  });
+});

@@ -6,6 +6,7 @@ import {
   assignNames,
   resolvePeer,
   slugify,
+  suffixOf,
   LABEL,
   type NamedPeer,
   type RuntimeName,
@@ -352,10 +353,53 @@ export interface PeersResult {
      */
     tincan_version?: string;
   }>;
+  /**
+   * #45: the address that reaches THIS session, since `peers` never lists it.
+   * Absent only for the external `send` CLI, which cannot be addressed.
+   */
+  self?: SelfAddress;
   /** The Tin Can serving this call. Always present. */
   tincan_version: string;
   diagnostic?: string;
   notes?: string[];
+}
+
+/**
+ * How another session reaches this one (#45).
+ *
+ * `name` is the qualified `slug.suffix`, never the display name a peer sees.
+ * The display name depends on who is looking: two sessions sharing a slug each
+ * list the OTHER unsuffixed, because each excludes itself. `slug.suffix` and
+ * `canonical_id` resolve identically from every observer. With no durable id
+ * there is no suffix to add, so `name` is the bare slug and `canonical_id` is
+ * omitted rather than invented.
+ */
+export interface SelfAddress {
+  runtime: RuntimeName;
+  name: string;
+  canonical_id?: string;
+  thread_id?: string;
+  session_id?: string;
+  cwd: string;
+}
+
+export function selfAddressOf(
+  runtime: RuntimeName,
+  selfName: string,
+  selfId: { thread_id: string } | { session_id: string } | undefined,
+  cwd: string,
+): SelfAddress {
+  // The same fallback assignNames applies, so the slug is the one peers derive.
+  const slug = slugify(selfName) || 'thread';
+  if (selfId === undefined) return { runtime, name: slug, cwd };
+  const uuid = 'thread_id' in selfId ? selfId.thread_id : selfId.session_id;
+  return {
+    runtime,
+    name: `${slug}.${suffixOf(uuid)}`,
+    canonical_id: `${runtime}:${slug}.${uuid}`,
+    ...selfId,
+    cwd,
+  };
 }
 
 /**
@@ -471,7 +515,19 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
 
   return {
     async peers(): Promise<PeersResult> {
-      const { named: list, diagnostic } = await named(await side.resolveSelf());
+      // One resolution for the listing and the self block, as in send_peer: the
+      // session excluded from `peers` must be the one `self` describes.
+      const selfRef = await side.resolveSelf();
+      const { named: list, diagnostic } = await named(selfRef);
+      const self =
+        side.selfRuntime === 'external'
+          ? undefined
+          : selfAddressOf(
+              side.selfRuntime,
+              await side.selfName(selfRef),
+              await side.selfDurableId?.(selfRef),
+              side.selfCwd,
+            );
       const notes: string[] = [];
 
       // No scoping note. There was one for as long as the Claude arm listed
@@ -521,6 +577,7 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
           ...(p.side.canReply !== undefined && { can_reply: p.side.canReply }),
           ...(p.side.tincanVersion !== undefined && { tincan_version: p.side.tincanVersion }),
         })),
+        ...(self !== undefined && { self }),
         ...(diagnostic !== undefined && { diagnostic }),
         ...(notes.length > 0 && { notes }),
       };
@@ -709,7 +766,7 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
       const targets: Array<NamedPeer & { side: SidePeer }> = [];
       for (const address of addresses) {
         const resolved = resolvePeer(list, address, (q) =>
-          isSelfAddress(side.selfRuntime, selfName, q),
+          isSelfAddress(side.selfRuntime, selfName, q, selfId),
         );
         if (!resolved.ok) {
           if (resolved.reason === 'self') {
@@ -1076,7 +1133,12 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
  * read can answer differently (the plugin rewrites the record on events), so
  * the check and the provenance marking would disagree about who we are.
  */
-function isSelfAddress(selfRuntime: SenderKind, selfName: string, query: string): boolean {
+function isSelfAddress(
+  selfRuntime: SenderKind,
+  selfName: string,
+  query: string,
+  selfId?: { thread_id: string } | { session_id: string },
+): boolean {
   if (query === '') return false;
   /**
    * An external sender is never an address.
@@ -1091,5 +1153,14 @@ function isSelfAddress(selfRuntime: SenderKind, selfName: string, query: string)
    */
   if (selfRuntime === 'external') return false;
   const name = selfName.toLowerCase();
-  return name === query || name.startsWith(query) || query.startsWith(`${selfRuntime}:${name}`);
+  // #45: the qualified name `peers` reports as `self.name` must read as us, or
+  // a session sending to its own reported address is told `peer_unknown`.
+  const qualified =
+    selfId === undefined ? undefined : selfAddressOf(selfRuntime, selfName, selfId, '').name;
+  return (
+    name === query ||
+    qualified === query ||
+    name.startsWith(query) ||
+    query.startsWith(`${selfRuntime}:${name}`)
+  );
 }
