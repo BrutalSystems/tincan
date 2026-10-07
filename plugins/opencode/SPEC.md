@@ -579,9 +579,36 @@ instance never announced is already dropped.
 `slug` is on `session.created` (`data.slug`), so addresses are built exactly as
 on 1.x — no address-format change.
 
-Not yet used: `session.viewed`, which may close the `--continue` blind spot
-described above (a resumed session fires no create). Worth checking before
-relying on it.
+### Resumed sessions — the plugin remembers names
+
+**`slug` is on `session.created` and nowhere else.** [verified 2.0.24] Not on
+`SessionInfo` (`ctx.session.get`, `GET /api/session`), not on any later event,
+and the plugin context has no `session.log` to read the create back from. The
+1.x routes that carried it are gone (they return the web app's HTML). So a
+session created before the background service last started — any session,
+after a reboot — could never be advertised again, however much it was used.
+That is worse than 1.x, where its next `session.updated` recovered it.
+
+So the plugin keeps its own copy (`tincan-lib/names.ts`): on every
+`session.created` in its directory it writes `names/<sessionID>.json`
+(`{ session_id, slug, at }`) beside the registry. The core reads only
+top-level `ses_*.json`, so it never mistakes one for a peer, and one file per
+session means instances never contend for a file. On `session.execution.started`,
+`session.renamed`, `session.viewed` or `session.inbox.enqueued` for a session
+it has not advertised, it recalls the name, asks `ctx.session.get` for
+directory and title, and — if the directory is its own — advertises it through
+the same path a create takes. `session.deleted` forgets the name; names unseen
+for 30 days are pruned at load (a session deleted while the service was down
+never reports it).
+
+[verified 2.0.24, sandbox: create → `opencode service stop` → `opencode run
+--session <id>` re-advertised it under its original slug, and a `tincan send`
+to that slug arrived as a turn.]
+
+Still invisible: a session created before 2.4.0 was installed (its name was
+never seen), and a resumed session that has done nothing yet — `session.viewed`
+is a read receipt that fires only when there is a finished turn to mark seen.
+The upstream fix is `slug` on `SessionInfo`; with it, all of this goes.
 
 ## 6. Crash and staleness
 

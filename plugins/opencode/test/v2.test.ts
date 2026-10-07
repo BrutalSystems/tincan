@@ -185,3 +185,82 @@ describe('startV2', () => {
     await cleanup();
   });
 });
+
+// opencode 2.x puts a session's slug on `session.created` and nowhere else —
+// not on SessionInfo, not on any later event [verified 2.0.24]. So a session
+// created before the background service last started could never be
+// advertised again, whatever it did. The plugin remembers names itself.
+describe('startV2 — sessions resumed after a service restart', () => {
+  const resumable = (title = 'OK', directory = DIR) => fakeCtx({
+    session: {
+      prompt: vi.fn(async (p: { id: string; sessionID: string }) => ({ id: p.id, sessionID: p.sessionID })),
+      get: vi.fn(async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, title, location: { directory } })),
+    },
+  });
+
+  it('remembers the name of a session it saw created', async () => {
+    const { ctx, events } = fakeCtx();
+    const cleanup = await start(ctx);
+    events.push(created('ses_a'));
+    await settle(() => existsSync(join(dir, 'names', 'ses_a.json')));
+    expect(JSON.parse(readFileSync(join(dir, 'names', 'ses_a.json'), 'utf8'))).toMatchObject({ slug: 'swift-eagle' });
+    await cleanup();
+  });
+
+  it('re-advertises a remembered session on its first activity after a restart', async () => {
+    const first = fakeCtx();
+    const cleanup1 = await start(first.ctx);
+    first.events.push(created('ses_a'));
+    await settle(() => existsSync(join(dir, 'names', 'ses_a.json')));
+    await cleanup1(); // the service restarts: the record goes, the name stays
+    expect(existsSync(join(dir, 'ses_a.json'))).toBe(false);
+
+    const second = resumable('auth refactor');
+    const cleanup2 = await start(second.ctx);
+    second.events.push({ type: 'session.execution.started', data: { sessionID: 'ses_a' } });
+    const file = join(dir, 'ses_a.json');
+    await settle(() => existsSync(file) && JSON.parse(readFileSync(file, 'utf8')).state === 'busy');
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({
+      session_id: 'ses_a', slug: 'swift-eagle', title: 'auth refactor', directory: DIR, state: 'busy',
+    });
+    await cleanup2();
+  });
+
+  it('cannot advertise a session whose name it never saw, and does not ask opencode about it', async () => {
+    const { ctx, events } = resumable();
+    const cleanup = await start(ctx);
+    events.push({ type: 'session.execution.started', data: { sessionID: 'ses_unknown' } });
+    events.push(created('ses_b'));
+    await settle(() => existsSync(join(dir, 'ses_b.json')));
+    expect(existsSync(join(dir, 'ses_unknown.json'))).toBe(false);
+    expect((ctx.session as unknown as { get: ReturnType<typeof vi.fn> }).get).not.toHaveBeenCalled();
+    await cleanup();
+  });
+
+  it('leaves a session in another directory to that directory\'s instance', async () => {
+    const first = fakeCtx({ location: { directory: '/elsewhere' } });
+    const cleanup1 = await start(first.ctx);
+    first.events.push(created('ses_x', '/elsewhere'));
+    await settle(() => existsSync(join(dir, 'names', 'ses_x.json')));
+    await cleanup1();
+
+    const { ctx, events } = resumable('t', '/elsewhere');
+    const cleanup2 = await start(ctx);
+    events.push({ type: 'session.execution.started', data: { sessionID: 'ses_x' } });
+    events.push(created('ses_b'));
+    await settle(() => existsSync(join(dir, 'ses_b.json')));
+    expect(existsSync(join(dir, 'ses_x.json'))).toBe(false);
+    await cleanup2();
+  });
+
+  it('forgets the name when the session is deleted', async () => {
+    const { ctx, events } = fakeCtx();
+    const cleanup = await start(ctx);
+    events.push(created('ses_a'));
+    await settle(() => existsSync(join(dir, 'names', 'ses_a.json')));
+    events.push({ type: 'session.deleted', location: { directory: DIR }, data: { sessionID: 'ses_a' } });
+    await settle(() => !existsSync(join(dir, 'names', 'ses_a.json')));
+    expect(existsSync(join(dir, 'names', 'ses_a.json'))).toBe(false);
+    await cleanup();
+  });
+});

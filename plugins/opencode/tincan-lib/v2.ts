@@ -1,6 +1,7 @@
 import { deliverV2, type PromptV2 } from './delivery-v2.js';
 import { effectOfV2 } from './events-v2.js';
 import { makeLogger, swallow } from './log.js';
+import { forgetName, pruneNames, recallName, rememberName } from './names.js';
 import { startPlugin, type PluginDeps } from './plugin.js';
 
 /**
@@ -10,7 +11,14 @@ import { startPlugin, type PluginDeps } from './plugin.js';
  */
 export interface V2Context {
   location: { directory: string };
-  session: { prompt: PromptV2 };
+  /** 2.0.24 carries `{ name, version, channel }`; only the version is used. */
+  app?: { version?: string };
+  session: {
+    prompt: PromptV2;
+    /** Resolves to SessionInfo — which has no slug. Used only to re-advertise
+     *  a resumed session whose slug we remembered. */
+    get?: (input: { sessionID: string }) => Promise<unknown>;
+  };
   event: { subscribe(options?: { signal?: AbortSignal }): AsyncIterable<unknown> };
   tool: {
     hook(
@@ -62,12 +70,86 @@ export async function startV2(ctx: V2Context, deps: V2Deps): Promise<() => Promi
     effectOf: (event) => effectOfV2(event, directory),
   });
 
+  // Names unseen for 30 days go; best effort, never blocks the load.
+  void pruneNames(deps.dir, deps.now().getTime()).catch(() => undefined);
+
+  /** Sessions this instance has advertised, and those it cannot: no
+   *  remembered name, or another directory's. Checked before any disk read,
+   *  because execution events arrive on every turn. */
+  const announced = new Set<string>();
+  const unresumable = new Set<string>();
+
+  /**
+   * A session we never saw created — created before this service started —
+   * showing activity. Re-advertise it through the same path a create takes,
+   * if we remembered its name and it lives in our directory. SPEC §5.1.
+   */
+  const resume = async (sessionID: string): Promise<void> => {
+    const slug = await recallName(deps.dir, sessionID);
+    if (slug === undefined || typeof ctx.session.get !== 'function') {
+      unresumable.add(sessionID);
+      return;
+    }
+    const got = (await ctx.session.get({ sessionID })) as Record<string, unknown> | null;
+    // Tolerate a `{ data }` envelope as well as the bare SessionInfo 2.0.24 returns.
+    const info = (got && typeof got.data === 'object' && got.data !== null ? got.data : got) as
+      { title?: unknown; location?: { directory?: unknown } } | null;
+    if (info?.location?.directory !== directory) {
+      unresumable.add(sessionID);
+      return;
+    }
+    await hooks.event({ event: {
+      type: 'session.created',
+      location: { directory },
+      data: { sessionID, slug, location: { directory }, version: ctx.app?.version ?? '2' },
+    } });
+    if (typeof info.title === 'string' && info.title !== '') {
+      await hooks.event({ event: { type: 'session.renamed', data: { sessionID, title: info.title } } });
+    }
+    announced.add(sessionID);
+    await rememberName(deps.dir, sessionID, slug, deps.now().getTime());
+  };
+
+  /** Bookkeeping ahead of the shared handler; never throws into the stream. */
+  const track = async (event: unknown): Promise<void> => {
+    try {
+      const e = event as { type?: unknown; location?: { directory?: unknown }; data?: Record<string, unknown> } | null;
+      const sessionID = e?.data?.sessionID;
+      if (typeof sessionID !== 'string') return;
+      switch (e?.type) {
+        case 'session.created': {
+          const dir = (e.data?.location as { directory?: unknown } | undefined)?.directory;
+          if (dir !== directory || typeof e.data?.slug !== 'string') return;
+          announced.add(sessionID);
+          unresumable.delete(sessionID);
+          await rememberName(deps.dir, sessionID, e.data.slug, deps.now().getTime());
+          return;
+        }
+        case 'session.deleted':
+          announced.delete(sessionID);
+          await forgetName(deps.dir, sessionID);
+          return;
+        case 'session.execution.started':
+        case 'session.renamed':
+        case 'session.viewed':
+        case 'session.inbox.enqueued':
+          if (!announced.has(sessionID) && !unresumable.has(sessionID)) await resume(sessionID);
+          return;
+        default:
+          return;
+      }
+    } catch (err) {
+      log({ event: 'resume.failed', detail: String(err) });
+    }
+  };
+
   const abort = new AbortController();
   const subscription = (async () => {
     if (typeof ctx?.event?.subscribe !== 'function') return;
     try {
       for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
         if (abort.signal.aborted) break;
+        await track(event);
         await hooks.event({ event });
       }
     } catch (e) {
