@@ -88,7 +88,16 @@ just shipped.
 gh run watch --repo BrutalSystems/tincan --exit-status   # wait for the publish
 npm install -g @brutalsystems/tincan@<version>           # then install it here
 tincan --version                                         # and prove it
+rm -rf ~/.cache/opencode/packages/@brutalsystems/tincan-opencode@latest   # and drop the stale plugin
 ```
+
+The last line is not optional. opencode 1.x installs the npm plugin once into
+that cache and never looks again, so without it every opencode session here —
+including muster's, which loads the plugin by specifier — keeps running the old
+plugin. It sat at 0.7.2 through every release to 2.4.0 before anyone noticed
+(2026-10-07). The next opencode start downloads the new one; a running session
+keeps the old one until it is restarted. Check with
+`grep plugin_version ~/.tincan/peers/opencode/ses_*.json`.
 
 Do not install before the run finishes — the registry lags the publish by a
 minute or two, and an install that races it either 404s or silently fetches

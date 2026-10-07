@@ -143,8 +143,20 @@ which removes the copy step in step 2 — and the staleness with it:
 
 **Prefer this over the hand copy.** A copied file goes stale in silence —
 nothing updates a copy, and a 0.4.0 plugin sat on one machine through five
-releases still posting to a route that does not run messages. A specifier has
-no copy to go stale.
+releases still posting to a route that does not run messages.
+
+**But on opencode 1.x the specifier goes stale too.** opencode installs it once
+into `~/.cache/opencode/packages/@brutalsystems/tincan-opencode@latest/` and
+never checks for a newer version [verified 1.18.34, 2026-10-07: that cache held
+0.7.2 while 2.4.0 was published, and every session loaded 0.7.2]. After each
+upgrade, clear it, and restart opencode:
+
+```bash
+rm -rf ~/.cache/opencode/packages/@brutalsystems/tincan-opencode@latest
+```
+
+The next start downloads the current release. Step 4 still applies — it is how
+you would notice.
 
 Verified end to end on 0.6.2: opencode resolves and installs the package,
 executes it, and the session registers, receives a peer message and replies —
@@ -185,11 +197,12 @@ Both halves can come from npm, or from disk. The trade-offs:
 |---|---|---|
 | **MCP** via global install (`tincan`) | fast session start; `npm update -g` keeps it current | has to be installed |
 | **MCP** via `npx -y @brutalsystems/tincan` | nothing installed; cannot go stale | re-resolves every session start — latency and a network dependency each launch |
-| **Plugin** via npm specifier | opencode keeps it current; no copy to go stale | needs opencode 1.18.x or newer |
+| **Plugin** via npm specifier | no files to copy; one line of config | needs opencode 1.18.x or newer; on 1.x the cached package never updates on its own — clear it after an upgrade (above) |
 | **Plugin** via hand copy | works without npm resolution | nothing updates a copy — the failure above |
 
 For daily use the global install plus the npm specifier is the combination
-with no stale-copy failure mode and no per-launch cost. `npx` suits a trial.
+with the least to go stale and no per-launch cost — on opencode 1.x, clear the
+plugin cache after each upgrade. `npx` suits a trial.
 Under [Muster](https://github.com/BrutalSystems/muster) neither applies: see
 below.
 

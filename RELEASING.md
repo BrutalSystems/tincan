@@ -12,7 +12,7 @@ re-explained.
 | Phrase | Means |
 |---|---|
 | **"cut"**, "cut a release" | The whole release **including the npm publish** — the `npm version` command in [Steps](#steps) below. The pushed tag publishes; there is no separate publish step. |
-| **"...and update globally"** | After that, watch the run to completion and then `npm install -g @brutalsystems/tincan@<version>` **on this machine**, so the `tincan` CLI on `PATH` is the version just shipped. Verify with `tincan --version`. |
+| **"...and update globally"** | After that, watch the run to completion and then `npm install -g @brutalsystems/tincan@<version>` **on this machine**, so the `tincan` CLI on `PATH` is the version just shipped. Verify with `tincan --version`. Then clear opencode's cached plugin, `rm -rf ~/.cache/opencode/packages/@brutalsystems/tincan-opencode@latest` — opencode 1.x never refreshes it on its own. |
 
 Install only after the run finishes. The registry lags a publish by a minute
 or two, so an install that races it fetches the previous version or 404s.
