@@ -150,6 +150,20 @@ Verified end to end on 0.6.2: opencode resolves and installs the package,
 executes it, and the session registers, receives a peer message and replies —
 with nothing hand-copied anywhere.
 
+**opencode 2.x spells the key `plugins`, plural** — the same one-line
+change as for MCP servers, and the 1.x spelling is not read there:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["@brutalsystems/tincan-opencode"]
+}
+```
+
+Verified end to end on 2.0.24 with 2.3.1: opencode downloads the package
+into its own cache, loads `tincan.ts` from it, and the session registers
+with `plugin_version` 2.3.1 and receives a peer message as a turn.
+
 Whichever you use, run step 4 afterwards. An unloaded plugin looks exactly
 like no plugin at all.
 
