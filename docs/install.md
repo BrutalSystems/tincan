@@ -67,10 +67,26 @@ doing only half of it is easy to do by accident. Do both, in order:
    Without this, the session has no `peers`, `send_peer` or `message_log`
    tools at all — it can be messaged, but it cannot message anyone.
 
-   **opencode 2.x** reads MCP servers from `mcp.servers` rather than `mcp`
-   directly (`{ "mcp": { "servers": { "tincan": { "type": "local",
-   "command": ["tincan"] } } } }`), per its 2.0.24 config schema. Not yet
-   verified end to end with Tin Can; the plugin half below is.
+   **opencode 2.x** reads MCP servers from `mcp.servers`, one level down:
+
+   ```jsonc
+   {
+     "mcp": {
+       "servers": {
+         "tincan": { "type": "local", "command": ["tincan"] }
+       }
+     }
+   }
+   ```
+
+   The 1.x shape above is **ignored on 2.x without any error** — `opencode mcp
+   list` says "No MCP servers configured" — so check with that command after
+   editing. 2.x's default code mode, which offers tools to the model inside a
+   generic `execute` tool rather than one by one, works with Tin Can as is.
+   Sending from a 2.x session needs Tin Can **2.3.1 or later**: earlier
+   versions could not tell they were running under opencode 2.x and refused
+   every send with `peer_unknown`. Verified end to end on 2.0.24, both
+   directions between two 2.x sessions.
 
 > **Upgrading from 0.5.x?** The plugin is copied to disk, so `npm update -g`
 > does **not** update it. Re-run the copy below after every upgrade. 0.6.0

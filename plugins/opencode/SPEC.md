@@ -144,6 +144,7 @@ changed, and what the plugin does about it (`tincan-lib/v2.ts`):
 | Events | `event` hook, `{ type, properties }` | `for await (… of ctx.event.subscribe({ signal }))`, `{ type, data, location? }` |
 | Tool hooks | `tool.execute.before/after`, call id `callID` | `ctx.tool.hook('execute.before' \| 'execute.after', cb)`, call id `id` |
 | Teardown | `dispose` hook | the cleanup `setup` returns |
+| MCP server's environment | `OPENCODE=1` and `OPENCODE_PID` set | neither set — the core finds the host by walking its process ancestors to the `opencode` service, whose pid is the one the plugin records (`src/opencode/host.ts`, 2.3.1) |
 | Host | one TUI process | a shared background service by default; plugins run in it, one instance per directory |
 
 The registry, socket and wire format (§4, §6, §7) are shared unchanged: the

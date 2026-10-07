@@ -12,6 +12,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectRuntime, buildSide, claudeRegistryDirs, externalSide } from './runtime.js';
+import { withOpencodeHost } from './opencode/host.js';
 import { runSend } from './send-cli.js';
 import { FileIdempotencyStore, cliIdempotencyDir } from './cli-idempotency.js';
 import { homedir } from 'node:os';
@@ -156,7 +157,10 @@ function flush(stream: NodeJS.WriteStream, text: string): Promise<void> {
 async function main(): Promise<void> {
   if (await handleArgv(process.argv.slice(2))) return;
 
-  const runtime = detectRuntime(process.env);
+  // opencode 2.x does not tell its MCP servers they run under opencode; the
+  // process tree does. A 1.x environment passes through untouched. See host.ts.
+  const env = await withOpencodeHost(process.env, process.ppid);
+  const runtime = detectRuntime(env);
 
   // Announce which config dir we are in, so another Tin Can can find sessions
   // its own CLAUDE_CONFIG_DIR hides. Claude Code only: no other runtime
@@ -185,6 +189,7 @@ async function main(): Promise<void> {
     // only current statement of which session we are inside.
     ppid: process.ppid,
     cwd: process.cwd(),
+    env,
   });
 
   const log = new MessageLog(messagesPath(process.env));
