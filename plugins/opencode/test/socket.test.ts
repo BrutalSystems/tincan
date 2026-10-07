@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, statSync, existsSync, writeFileSync, chmodSync } f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from 'node:net';
-import { listenLines, probeSocket, type ServerHandle } from '../tincan-lib/server.js';
+import { listenLines, probeSocket, type ServerHandle } from '../tincan-lib/socket.js';
 
 // Gated so every other test in this file runs against the real fs. There is
 // no way to make a chmod of a socket we just created fail for real.

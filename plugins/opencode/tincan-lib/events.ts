@@ -3,6 +3,8 @@ import type { SessionInfo, SessionState } from './types.js';
 export type EventEffect =
   | { kind: 'upsert'; info: SessionInfo }
   | { kind: 'state'; sessionID: string; state: SessionState }
+  /** opencode 2.x only: the title arrives on its own event, after the create. */
+  | { kind: 'rename'; sessionID: string; title: string }
   | { kind: 'remove'; sessionID: string }
   | { kind: 'ignore' };
 

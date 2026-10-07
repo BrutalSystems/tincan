@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, statSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TinCan } from '../tincan.js';
+import * as entry from '../tincan.js';
+import plugin from '../tincan.js';
 import type { PluginHooks } from '../tincan-lib/plugin.js';
 
 // The sink's chmod is the only thing here that cannot be made to fail by
@@ -23,6 +24,9 @@ vi.mock('node:fs', async (importOriginal) => {
     },
   };
 });
+
+// The 1.x half. Tests below this block exercise it as they always have.
+const TinCan = plugin.server;
 
 let dir: string;
 let prevHome: string | undefined;
@@ -121,5 +125,42 @@ describe('TinCan plugin log sink — a chmod that throws', () => {
 
     expect(statSync(logPath).mode & 0o777).toBe(0o600);
     await hooks.dispose();
+  });
+});
+
+// opencode 2.x rejects a module whose default export is not a definition
+// (#46), and 1.x invokes every exported function as a plugin (SPEC §2) — so
+// the one shape both accept is a single default export carrying `id` and
+// `setup` for 2.x and `server` for 1.x, and nothing else exported at all.
+describe('the module export, for both opencode lines', () => {
+  it('exports exactly one thing: the default definition', () => {
+    expect(Object.keys(entry)).toEqual(['default']);
+  });
+
+  it('carries an id and setup for 2.x and server for 1.x', () => {
+    expect(plugin.id).toBe('tincan');
+    expect(typeof plugin.setup).toBe('function');
+    expect(typeof plugin.server).toBe('function');
+  });
+
+  it('setup starts the 2.x path and returns a cleanup that removes what it advertised', async () => {
+    const prompt = vi.fn();
+    let signal: AbortSignal | undefined;
+    const ctx = {
+      location: { directory: '/repo' },
+      session: { prompt },
+      event: {
+        subscribe: (o?: { signal?: AbortSignal }) => {
+          signal = o?.signal;
+          return { async *[Symbol.asyncIterator]() { /* nothing happens */ } };
+        },
+      },
+      tool: { hook: vi.fn(async () => ({ dispose: () => undefined })) },
+    };
+    const cleanup = await plugin.setup(ctx);
+    expect(typeof cleanup).toBe('function');
+    expect(readFileSync(join(dir, 'opencode-plugin.log'), 'utf8')).toContain('event=bound');
+    await (cleanup as () => Promise<void>)();
+    expect(signal?.aborted).toBe(true);
   });
 });

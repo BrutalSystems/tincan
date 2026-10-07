@@ -7,19 +7,28 @@ import {
   writeCaller,
 } from './caller.js';
 import { deliver } from './delivery.js';
-import { effectOf } from './events.js';
+import { effectOf as effectOfV1, type EventEffect } from './events.js';
 import { makeLogger, swallow, type Logger } from './log.js';
 import { socketPath } from './paths.js';
 import {
   composeRecord, isoStamp, removeAllForInstance, removeRecord,
   sameIgnoringTimestamp, sweepOrphans, writeRecord, type RecordContext,
 } from './registry.js';
-import { listenLines, probeSocket, type ServerHandle } from './server.js';
-import { PLUGIN_VERSION, type RegistryRecord, type SessionInfo, type SessionState, type Transport } from './types.js';
+import { listenLines, probeSocket, type ServerHandle } from './socket.js';
+import {
+  PLUGIN_VERSION, type DeliveryOutcome, type InboundMessage, type RegistryRecord, type SessionInfo,
+  type SessionState, type Transport,
+} from './types.js';
 import { parseLine, renderAck, type Ack } from './wire.js';
 
+/** Hands one message to opencode. 1.x posts through the private transport;
+ *  2.x calls the plugin context's own session.prompt. */
+export type Deliver = (msg: InboundMessage, alreadySent: Set<string>) => Promise<DeliveryOutcome>;
+
 export interface LineHandlerDeps {
-  transport: Transport;
+  /** 1.x: delivery goes through this unless `deliver` is given. */
+  transport?: Transport;
+  deliver?: Deliver;
   /** Sessions this process heard announced. Anything else is not addressable. */
   known: Map<string, RegistryRecord>;
   sent: Set<string>;
@@ -35,6 +44,7 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
   // Wrapped once, here, because deps.log is caller-supplied; called bare
   // everywhere below. SPEC §8.1.
   const log = swallow(deps.log);
+  const send: Deliver = deps.deliver ?? ((m, s) => deliver(deps.transport as Transport, m, s));
   return async (line: string): Promise<Ack> => {
     try {
       const parsed = parseLine(line);
@@ -57,7 +67,7 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
           reason: `unknown session ${msg.to_session} on this opencode instance`,
         };
       }
-      const outcome = await deliver(deps.transport, msg, deps.sent);
+      const outcome = await send(msg, deps.sent);
       log({
         event: outcome.kind === 'delivered' ? (outcome.replay ? 'replay' : 'delivered') : outcome.kind,
         session: msg.to_session,
@@ -82,9 +92,12 @@ export function makeLineHandler(deps: LineHandlerDeps): (line: string) => Promis
         message_id: msg.message_id,
         reason:
           outcome.kind === 'rejected'
-            ? `opencode refused the prompt (status ${String(outcome.status)}${
-                outcome.tag === undefined ? '' : `: ${outcome.tag}`
-              })`
+            ? outcome.status === 0
+              // 2.x fails with a tagged error and no HTTP status to report.
+              ? `opencode refused the prompt (${outcome.tag})`
+              : `opencode refused the prompt (status ${String(outcome.status)}${
+                  outcome.tag === undefined ? '' : `: ${outcome.tag}`
+                })`
             : `opencode transport failed: ${outcome.detail}`,
       };
     } catch (e) {
@@ -101,7 +114,14 @@ export interface PluginDeps {
   dir: string;
   instanceId: string;
   pid: number;
-  transport: Transport;
+  /** 1.x only. 2.x supplies `deliver` and `selfCheck` instead. */
+  transport?: Transport;
+  /** Overrides delivery through `transport`. */
+  deliver?: Deliver;
+  /** Overrides the 1.x startup check against `transport`. */
+  selfCheck?: () => Promise<boolean>;
+  /** Overrides the 1.x event mapping; 2.x events have a different shape. */
+  effectOf?: (event: unknown) => EventEffect;
   now: () => Date;
   sink: (line: string) => void;
 }
@@ -165,9 +185,13 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
     now: deps.now,
   };
 
-  const handleLine = makeLineHandler({ transport: deps.transport, known, sent, log });
+  const handleLine = makeLineHandler({ transport: deps.transport, deliver: deps.deliver, known, sent, log });
+  const effectOf = deps.effectOf ?? effectOfV1;
+  const healthy = deps.selfCheck
+    ? await deps.selfCheck().catch(() => false)
+    : deps.transport !== undefined && await selfCheck(deps.transport, log);
 
-  if (await selfCheck(deps.transport, log)) {
+  if (healthy) {
     try {
       const swept = await sweepOrphans(deps.dir, deps.instanceId, probeSocket);
       if (swept.length > 0) log({ event: 'swept', detail: swept.join(',') });
@@ -223,6 +247,12 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
     await applyRecord({ ...base, state, updated_at: isoStamp(ctx.now()) });
   });
 
+  const applyRename = (sessionID: string, title: string): Promise<void> => serial(async () => {
+    const base = known.get(sessionID);
+    if (!base) return;
+    await applyRecord({ ...base, title, updated_at: isoStamp(ctx.now()) });
+  });
+
   const applyRemove = (sessionID: string): Promise<void> => serial(async () => {
     known.delete(sessionID);
     await removeRecord(deps.dir, sessionID);
@@ -246,6 +276,9 @@ export async function startPlugin(deps: PluginDeps): Promise<PluginHooks> {
             return;
           case 'state':
             await applyState(effect.sessionID, effect.state);
+            return;
+          case 'rename':
+            await applyRename(effect.sessionID, effect.title);
             return;
           case 'remove':
             await applyRemove(effect.sessionID);

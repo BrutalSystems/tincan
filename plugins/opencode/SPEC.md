@@ -13,6 +13,10 @@
 > Verified against **opencode 1.18.31** (Bun 1.3.14 embedded). Pin that version
 > in the README.
 >
+> **opencode 2.x** (#46, 2026-10-07) is covered by [§2.1](#21-opencode-2x) and
+> [§5.1](#51-opencode-2x-events); everything else here describes the 1.x path,
+> which is unchanged. Verified against **2.0.24** and **1.18.34**.
+>
 > This document is authoritative for the wire format and the registry layout.
 > The Tin Can — Change Notice §6 defers to it.
 
@@ -85,34 +89,91 @@ called `lib/` because `plugin/` is shared with every other opencode plugin.
 
 ### Export shape — get this right or the plugin silently does nothing
 
-Three shapes load: a named export, `export default async function`, and
-`export default { id, server }`. [verified]
-
-**But if the module's `default` export looks like a v2 plugin — an object with
-`{ id, setup }` — the loader takes the v2 branch and silently ignores every
-named export in the file.** No error, no log. The first probe hit exactly this
-and it read as "the legacy plugin API has been removed."
-
-**Worse: the loader invokes _every_ exported function as a plugin.** A probe
-exporting a pure helper `composeRecord(a, b)` alongside the real plugin saw
-that helper called with `a = <PluginInput>, b = undefined`. [verified] So the
-globbed file cannot export test helpers.
-
-Use a single named export, and no default export of any kind:
+**One default export, and nothing else exported:**
 
 ```ts
-export const TinCan = async (input: PluginInput): Promise<Hooks> => { … }
+export default { id: 'tincan', setup, server: TinCan };
 ```
 
-**Helpers live in a `tincan-lib/` subdirectory.** The glob is one level deep, so
-`plugin/tincan-lib/*.ts` is never loaded as a plugin [verified] while still being
-importable by `tincan.ts` and by tests. This is what makes the code unit-
-testable at all, and it is why the install is a small directory rather than
-Rev 1's single file.
+`server` is the 1.x plugin; `setup` is the 2.x one ([§2.1](#21-opencode-2x)).
+Each line reads its own half and ignores the other's. Every other shape fails
+one of them:
+
+- **2.x refuses anything but a default definition** carrying `id` and `setup`
+  (or `effect`): `PluginModule.LoadError: Plugin must export a default
+  definition with an id and an effect or setup function`. A named export alone
+  is #46 — the plugin is rejected and the session is never addressable.
+- **1.x invokes _every_ exported function as a plugin.** A probe exporting a
+  pure helper `composeRecord(a, b)` alongside the real plugin saw that helper
+  called with `a = <PluginInput>, b = undefined`. [verified] So the globbed
+  file cannot export test helpers, and cannot keep a named `TinCan` export
+  beside the default — 1.x would start it a second time.
+
+**1.x `serve` calls `setup` too.** [verified 1.18.34] `opencode run` calls
+`server()` only; `opencode serve` calls both, handing `setup` a context with no
+`session.prompt`. The 2.x half's check refuses it and logs one
+`selfcheck.failed` line saying so; the 1.x half has already bound. That line is
+expected there and is not a fault. (Rev 2's note that a default `{ id, setup }`
+"takes the v2 branch and ignores every named export" on 1.18.31 is the same
+behaviour seen from the other side.)
+
+**Helpers live in a `tincan-lib/` subdirectory.** The 1.x glob is one level
+deep, so `plugin/tincan-lib/*.ts` is never loaded as a plugin [verified] while
+still being importable by `tincan.ts` and by tests. This is what makes the code
+unit-testable at all, and it is why the install is a small directory rather
+than Rev 1's single file.
+
+**2.x does load subdirectories** — a directory under `plugin/` is a plugin if
+it holds an entry file. [verified 2.0.24] It found `tincan-lib/server.ts`,
+tried to load `tincan-lib/` and logged the #46 error text on every start, from
+a plugin that was working. So `tincan-lib/` must hold no `server.*` or
+`index.*`; the socket module is `socket.ts` for that reason, and
+`test/package.test.ts` guards it. A directory with a `package.json` but no such
+file is silently skipped, which is why a `plugin/tincan/` install shape does
+not work on 2.x.
+
+## 2.1 opencode 2.x
+
+2.x replaced the plugin API rather than extending it. [verified 2.0.24] What
+changed, and what the plugin does about it (`tincan-lib/v2.ts`):
+
+| Concern | 1.x | 2.x |
+|---|---|---|
+| Entry | `server(input)` returns a hooks map | `setup(ctx)` returns a cleanup |
+| Delivery | private `_client` transport, `POST /session/{id}/prompt_async` (§3) | `ctx.session.prompt({ sessionID, id, text, delivery })` — a public API |
+| Events | `event` hook, `{ type, properties }` | `for await (… of ctx.event.subscribe({ signal }))`, `{ type, data, location? }` |
+| Tool hooks | `tool.execute.before/after`, call id `callID` | `ctx.tool.hook('execute.before' \| 'execute.after', cb)`, call id `id` |
+| Teardown | `dispose` hook | the cleanup `setup` returns |
+| Host | one TUI process | a shared background service by default; plugins run in it, one instance per directory |
+
+The registry, socket and wire format (§4, §6, §7) are shared unchanged: the
+2.x half feeds the same `startPlugin` core through three overrides —
+`deliver`, `selfCheck` and `effectOf`.
+
+**Delivery.** `ctx.session.prompt` accepts Tin Can's own `msg_…` id as the
+message id, enqueues the text and runs it as a turn. [verified: a message sent
+with `tincan send` to a 2.0.24 session reached the model as a new turn] It
+also accepts `delivery: "steer" | "queue"`, which 1.x's route could not, so the
+wire's `delivery` is now passed through. Re-submitting an id resolves with the
+**original** message, even when the text differs — no conflict error — which
+is what makes a retry safe. Failures are thrown, tagged errors rather than
+HTTP statuses: an unknown session throws `Session.NotFoundError`, a malformed
+id `SchemaError`. Those become a rejection with status `0` and the tag;
+anything untagged is a broken transport.
+
+**Self-check.** No round trip at load. The context is a real API, not a private
+field that may have moved, so checking that `session.prompt`,
+`event.subscribe` and `location.directory` exist is enough.
+
+**Version.** `session.created` carries `data.version` (`"2.0.24"`), which goes
+into the record's `opencode_version` as before.
 
 ---
 
 ## 3. Reaching the server
+
+> **1.x only.** 2.x hands the plugin `ctx.session.prompt`; none of this section
+> applies there. See [§2.1](#21-opencode-2x).
 
 `input.client` is the **v1 SDK client only**. There is no `client.v2`;
 `"v2" in input.client` is `false` at runtime. [verified] Rev 1's
@@ -491,6 +552,35 @@ load, so no file on disk carries it. Do the sweep in §6 instead.
 socket.** `dispose` fires reliably on both SIGTERM and SIGINT. [verified]
 
 ---
+
+## 5.1 opencode 2.x events
+
+[verified 2.0.24, from a probe plugin and the real one] The body is under
+`data`; a session is named by `data.sessionID`. `session.status` and
+`session.idle` are **never published** — `session.idle` survives only as a
+deprecated definition — so state comes from the execution lifecycle:
+
+| Event | Action |
+|---|---|
+| `session.created` | Write the record, `state: "idle"`, title empty — **only when `data.location.directory` is this instance's directory** |
+| `session.renamed` | Set `title` (`data.title`) on a known session. The title arrives here, after the create |
+| `session.execution.started` | `state: "busy"` |
+| `session.execution.succeeded` / `.failed` / `.interrupted` | `state: "idle"` |
+| `session.deleted` | Delete the record |
+
+**The directory filter is not optional.** The event stream is server-wide: a
+2.x background service hosts every directory its TUIs have open and loads one
+plugin instance per directory, each seeing every event. Without the filter,
+every instance would advertise every session. Execution events carry no
+`location`; they pass through, because a state change for a session this
+instance never announced is already dropped.
+
+`slug` is on `session.created` (`data.slug`), so addresses are built exactly as
+on 1.x — no address-format change.
+
+Not yet used: `session.viewed`, which may close the `--continue` blind spot
+described above (a resumed session fires no create). Worth checking before
+relying on it.
 
 ## 6. Crash and staleness
 

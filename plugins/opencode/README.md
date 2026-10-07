@@ -9,7 +9,10 @@ The plugin receives inbound messages delivered to a Unix socket and injects them
 ## Requirements
 
 - **opencode** 1.18.31 (fully verified). **1.18.32** re-verified for the
-  transport contract the plugin depends on — see SPEC.md §3. Other versions
+  transport contract the plugin depends on — see SPEC.md §3. **1.18.34** and
+  **2.0.24** verified end to end: the same plugin file loads on both and a
+  `tincan send` reaches the session as a turn. 2.x uses its own plugin API
+  (SPEC.md §2.1); nothing about installing it changes. Other versions
   untested.
 - **Tin Can** 0.4.0 or later
 
@@ -96,6 +99,8 @@ tail -f "$TINCAN_HOME/opencode-plugin.log"
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
+| **2.x: `Plugin must export a default definition with an id and an effect or setup function`** | A plugin older than 2.3.0 (#46): it had no default export, which 2.x requires. If the target named is `tincan-lib`, the plugin itself loaded — 2.x also tried the helper directory, which pre-2.3.0 held a `server.ts`. | Install 2.3.0 or later, and replace **both** `tincan.ts` and `tincan-lib/`. |
+| **1.x `opencode serve`: one `event=selfcheck.failed detail="not an opencode 2.x context…"` per start** | Expected, not a fault. `serve` on 1.x calls the 2.x half too; it declines and the 1.x half handles the session. | None. |
 | **No registry files appear at all** | The plugin is not loading, or initialization failed. | Check the plugin log for `event=selfcheck.failed`. This usually means opencode's private `client._client` field moved due to a version change. `_client` is present and carries `post`/`get`/`getConfig` on both 1.18.31 and 1.18.32; a later version is the thing to suspect. See SPEC.md §3. |
 | **No file appears after `opencode --continue`** | Expected, not a bug. A resumed session is invisible until it next does something. | Send one message to the session (type input or wait for agent activity). The registry file will appear then. See SPEC.md §5. |
 | **`event=bind.failed` mentioning socket path too long** | `TINCAN_HOME` directory nesting is too deep. macOS caps AF_UNIX socket paths near 103 bytes. | Shorten `TINCAN_HOME` or the path to it. For example, move `~/.tincan` to a shallower location. |

@@ -36,7 +36,7 @@ describe('startPlugin — startup self-check', () => {
   it('binds the socket when GET /api/session is healthy', async () => {
     const d = deps();
     const hooks = await startPlugin(d);
-    expect(d.transport.get).toHaveBeenCalledWith({ url: '/api/session' });
+    expect(d.transport?.get).toHaveBeenCalledWith({ url: '/api/session' });
     expect(existsSync(join(dir, 'inst-self.sock'))).toBe(true);
     await hooks.dispose();
   });

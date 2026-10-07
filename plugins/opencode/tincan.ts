@@ -1,9 +1,13 @@
 /**
- * Tin Can — opencode plugin.
+ * Tin Can — opencode plugin, for opencode 1.x and 2.x from one file.
  *
- * WARNING: opencode's loader invokes EVERY exported function in this file as a
- * plugin, and does not descend into subdirectories. Export exactly one thing,
- * and never a `default`. All logic lives in ./tincan-lib/. See SPEC.md §2.
+ * WARNING: export exactly one thing — the default definition at the bottom.
+ * opencode 1.x invokes EVERY exported function in this file as a plugin, and
+ * 2.x refuses a module whose default export is not a definition with an `id`
+ * and a `setup` (#46). One default object carrying `id` + `setup` for 2.x and
+ * `server` for 1.x satisfies both; each ignores the other's half. The loader
+ * does not descend into subdirectories, so all logic lives in ./tincan-lib/.
+ * See SPEC.md §2.
  */
 import { randomBytes } from 'node:crypto';
 import { appendFileSync, chmodSync, mkdirSync, renameSync, statSync } from 'node:fs';
@@ -12,12 +16,14 @@ import { dirname } from 'node:path';
 import { newInstanceId, peersDir, pluginLogPath } from './tincan-lib/paths.js';
 import { startPlugin } from './tincan-lib/plugin.js';
 import type { Transport } from './tincan-lib/types.js';
+import { startV2, type V2Context } from './tincan-lib/v2.js';
 
 /** Rotates to `<log>.1` past this. Small enough to stay cheap to read, big
  *  enough to hold a long session's diagnostics. */
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
 
-export const TinCan = async (input: { client: { _client?: unknown } }) => {
+/** The plugin's own log, shared by both halves. */
+function makeSink(): (line: string) => void {
   // console.error would land in the TUI's own terminal — the same one
   // opencode is drawing its interface on — and nowhere else: it never
   // reaches opencode's own log file. Appending to our own log file is the
@@ -67,6 +73,12 @@ export const TinCan = async (input: { client: { _client?: unknown } }) => {
       // Nothing here may reach the host. SPEC §8.1.
     }
   };
+  return sink;
+}
+
+/** opencode 1.x: the hooks map, reached through `server()`. */
+const TinCan = async (input: { client: { _client?: unknown } }) => {
+  const sink = makeSink();
   // The only private-field dependency in the plugin. SPEC §3 explains why it
   // is unavoidable; the self-check inside startPlugin turns a future breakage
   // into "no opencode peers" rather than a crash.
@@ -86,3 +98,15 @@ export const TinCan = async (input: { client: { _client?: unknown } }) => {
     sink,
   });
 };
+
+/** opencode 2.x: the plugin context, reached through `setup()`. SPEC §2.1. */
+const setup = (ctx: V2Context) =>
+  startV2(ctx, {
+    dir: peersDir(process.env, homedir()),
+    instanceId: newInstanceId(() => randomBytes(3).toString('hex')),
+    pid: process.pid,
+    now: () => new Date(),
+    sink: makeSink(),
+  });
+
+export default { id: 'tincan', setup, server: TinCan };

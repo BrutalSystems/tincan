@@ -24,7 +24,7 @@ const ORDER = ['event', 'session', 'from', 'delivery', 'message_id', 'status', '
  * The one place this pattern lives: every host- or caller-supplied callback
  * in the plugin is wrapped exactly once, where it is captured, and is then
  * called bare everywhere else. Three separate hand-rolled versions of this
- * used to sit in log.ts, plugin.ts and server.ts, with call sites that
+ * used to sit in log.ts, plugin.ts and socket.ts, with call sites that
  * disagreed about which of them applied.
  */
 export function swallow<A extends unknown[]>(fn: (...args: A) => void): (...args: A) => void {

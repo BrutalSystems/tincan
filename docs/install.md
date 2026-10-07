@@ -67,6 +67,11 @@ doing only half of it is easy to do by accident. Do both, in order:
    Without this, the session has no `peers`, `send_peer` or `message_log`
    tools at all — it can be messaged, but it cannot message anyone.
 
+   **opencode 2.x** reads MCP servers from `mcp.servers` rather than `mcp`
+   directly (`{ "mcp": { "servers": { "tincan": { "type": "local",
+   "command": ["tincan"] } } } }`), per its 2.0.24 config schema. Not yet
+   verified end to end with Tin Can; the plugin half below is.
+
 > **Upgrading from 0.5.x?** The plugin is copied to disk, so `npm update -g`
 > does **not** update it. Re-run the copy below after every upgrade. 0.6.0
 > changed the endpoint the plugin posts to, and an 0.5.x plugin left in place
@@ -83,7 +88,9 @@ doing only half of it is easy to do by accident. Do both, in order:
    ```
 
    `tincan.ts` must sit **directly** in `plugin/` — opencode's loader globs one
-   level only, so a nested `plugin/tincan/tincan.ts` never loads.
+   level only, so a nested `plugin/tincan/tincan.ts` never loads. The same two
+   copies serve opencode 1.x and 2.x: one file carries both plugin APIs
+   (2.3.0 and later; earlier copies fail to load on 2.x, #46).
    `plugin/tincan-lib/` holds the plugin's actual logic; the loader correctly
    ignores it, so leave it where it lands. (`~/.config/opencode/plugins/`,
    plural, works identically if that is what you already use.)

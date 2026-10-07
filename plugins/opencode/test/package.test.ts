@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const pkg = JSON.parse(
@@ -47,5 +47,21 @@ describe('published plugin manifest', () => {
 
   it('publishes publicly — a new scoped package is restricted by default', () => {
     expect(pkg.publishConfig?.access).toBe('public');
+  });
+});
+
+/**
+ * opencode 2.x loads a SUBDIRECTORY of plugin/ as a plugin too, when it finds
+ * an entry file there — verified on 2.0.24, where tincan-lib/server.ts made it
+ * try tincan-lib/ and log "Plugin must export a default definition" on every
+ * start: the same text as #46, from a plugin that was working. The helper
+ * directory must hold nothing 2.x reads as an entry. `server` is the name
+ * observed; `index` is the conventional one, guarded on the same reasoning.
+ */
+describe('the helper directory, seen by opencode 2.x', () => {
+  it('holds no file 2.x would treat as a plugin entry', () => {
+    const lib = fileURLToPath(new URL('../tincan-lib/', import.meta.url));
+    const entries = readdirSync(lib).filter((f) => /^(server|index)\.(ts|js|mjs)$/.test(f));
+    expect(entries).toEqual([]);
   });
 });
