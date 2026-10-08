@@ -11,6 +11,7 @@ import {
   type NamedPeer,
   type RuntimeName,
   type SenderKind,
+  type SelfMatch,
 } from './naming.js';
 import {
   buildEnvelope,
@@ -1132,13 +1133,16 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
  * again: send_peer resolves it once for the envelope's `from=`, and a second
  * read can answer differently (the plugin rewrites the record on events), so
  * the check and the provenance marking would disagree about who we are.
+ *
+ * Answers `'prefix'` when the address is only a prefix of our name, so
+ * `resolvePeer` can call it ambiguous when peers share that prefix too.
  */
 function isSelfAddress(
   selfRuntime: SenderKind,
   selfName: string,
   query: string,
   selfId?: { thread_id: string } | { session_id: string },
-): boolean {
+): SelfMatch {
   if (query === '') return false;
   /**
    * An external sender is never an address.
@@ -1155,12 +1159,13 @@ function isSelfAddress(
   const name = selfName.toLowerCase();
   // #45: the qualified name `peers` reports as `self.name` must read as us, or
   // a session sending to its own reported address is told `peer_unknown`.
-  const qualified =
-    selfId === undefined ? undefined : selfAddressOf(selfRuntime, selfName, selfId, '').name;
-  return (
-    name === query ||
-    qualified === query ||
-    name.startsWith(query) ||
-    query.startsWith(`${selfRuntime}:${name}`)
-  );
+  const own = selfId === undefined ? undefined : selfAddressOf(selfRuntime, selfName, selfId, '');
+  if (name === query || own?.name === query) return true;
+  if (name.startsWith(query)) return 'prefix';
+  if (!query.startsWith(`${selfRuntime}:${name}`)) return false;
+  // A canonical id carries a durable id. When we know ours, an address that
+  // is not a prefix of our own canonical id names some other session — one
+  // that has exited, or one on another machine — however its name reads (#38).
+  const ownCanonical = own?.canonical_id?.toLowerCase();
+  return ownCanonical === undefined || ownCanonical.startsWith(query);
 }

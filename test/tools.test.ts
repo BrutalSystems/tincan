@@ -398,6 +398,96 @@ describe('send_peer', () => {
     expect(delivered).toHaveLength(1);
   });
 
+  /**
+   * #38's comment: a canonical id that misses the exact stage — its session
+   * has exited, or it names another machine — reached `isSelfAddress`, whose
+   * `runtime:name` prefix arm claimed it whenever our name started its slug.
+   * The id inside it is not ours, which proves it is not us.
+   */
+  describe('a canonical id carrying someone else’s durable id is never us', () => {
+    const MINE = '7f037ac9-641d-4a6d-b863-0680643e56ab';
+    const GONE = 'd66c3e9f-4f83-4ec6-845b-9e8f2e3fb89b';
+    const selfIsBillingApi = (over: Partial<Side> = {}) =>
+      makeSide({
+        selfName: async () => 'billing-api',
+        selfDurableId: async () => ({ session_id: MINE }),
+        listPeers: async () => ({ peers: [] }),
+        ...over,
+      });
+
+    test('a session that has gone is peer_unknown, not self_send', async () => {
+      const { side, delivered } = selfIsBillingApi();
+      const r = await tools(side).send_peer({
+        peer: `claude-code:billing-api.${GONE}`,
+        message: 'hi',
+      });
+      expect(r.refusal).toBe('peer_unknown');
+      expect(delivered).toHaveLength(0);
+    });
+
+    test('a session on another machine is peer_unknown, not self_send', async () => {
+      const { side, delivered } = selfIsBillingApi();
+      const r = await tools(side).send_peer({
+        peer: `claude-code:billing-api.${GONE}@other-box`,
+        message: 'hi',
+      });
+      expect(r.refusal).toBe('peer_unknown');
+      expect(delivered).toHaveLength(0);
+    });
+
+    test('our own canonical id is still a self-send', async () => {
+      const { side, delivered } = selfIsBillingApi();
+      const r = await tools(side).send_peer({
+        peer: `claude-code:billing-api.${MINE}`,
+        message: 'hi',
+      });
+      expect(r.refusal).toBe('self_send');
+      expect(delivered).toHaveLength(0);
+    });
+  });
+
+  /**
+   * An address that is only a PREFIX of our name, and also prefixes several
+   * peers, was refused `"X" is this session` while listing those peers — a
+   * false statement that sent a reporter hunting a mis-attribution bug that
+   * did not exist. It stays a refusal (resolving it would reopen the
+   * cross-account case above); the reason becomes the true one.
+   */
+  test('a prefix of our name that several peers share is ambiguous, not self', async () => {
+    const { side, delivered } = makeSide({
+      selfName: async () => 'billing-api-9d',
+      listPeers: async () => ({
+        peers: [
+          peer({ rawName: 'billing-api-0a', uuid: '00000000-0000-0000-0000-0000000000a1' }),
+          peer({ rawName: 'billing-api-8e', uuid: '00000000-0000-0000-0000-0000000000a2' }),
+        ],
+      }),
+    });
+
+    const r = await tools(side).send_peer({ peer: 'billing-api', message: 'hi' });
+
+    expect(r.refusal).toBe('peer_ambiguous');
+    expect(r.candidates).toEqual(['billing-api-0a.0a1', 'billing-api-8e.0a2']);
+    expect(delivered).toHaveLength(0);
+  });
+
+  test('our exact name is still a self-send when peers share it as a prefix', async () => {
+    const { side, delivered } = makeSide({
+      selfName: async () => 'billing-api',
+      listPeers: async () => ({
+        peers: [
+          peer({ rawName: 'billing-api-0a', uuid: '00000000-0000-0000-0000-0000000000a1' }),
+          peer({ rawName: 'billing-api-8e', uuid: '00000000-0000-0000-0000-0000000000a2' }),
+        ],
+      }),
+    });
+
+    const r = await tools(side).send_peer({ peer: 'billing-api', message: 'hi' });
+
+    expect(r.refusal).toBe('self_send');
+    expect(delivered).toHaveLength(0);
+  });
+
   test('refuses an unknown peer', async () => {
     const { side } = makeSide();
     const r = await tools(side).send_peer({ peer: 'nope', message: 'hi' });

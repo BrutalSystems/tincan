@@ -75,6 +75,12 @@ export type Resolution =
   | { ok: true; peer: NamedPeer }
   | { ok: false; reason: 'unknown' | 'ambiguous' | 'self'; candidates: string[] };
 
+/**
+ * How an address names us: `true` when it is our name or id, `'prefix'` when
+ * it only starts our name, `false` when it is not us.
+ */
+export type SelfMatch = boolean | 'prefix';
+
 /** Makes a widened RuntimeName a compile error at every branch that ignores it. */
 export function assertNever(x: never, context: string): never {
   throw new Error(`${context}: unhandled runtime ${JSON.stringify(x)}`);
@@ -158,7 +164,7 @@ export function assignNames(peers: PeerBase[]): NamedPeer[] {
 export function resolvePeer(
   peers: NamedPeer[],
   input: string,
-  isSelf: (query: string) => boolean = () => false,
+  isSelf: (query: string) => SelfMatch = () => false,
 ): Resolution {
   const q = input.trim().toLowerCase();
   const qualified = (p: NamedPeer) =>
@@ -187,7 +193,13 @@ export function resolvePeer(
   // `candidates` carries the peers this address ALSO matched, so the refusal
   // can say which full name to type instead of leaving the caller to guess
   // that a longer form exists.
-  if (isSelf(q)) return { ok: false, reason: 'self', candidates: prefixed.map(qualified) };
+  // A mere prefix of our name that several peers share is ambiguous, not us:
+  // saying "this is you" while listing the others is false, and the refusal
+  // stands either way.
+  const self = isSelf(q);
+  if (self === 'prefix' && prefixed.length > 1)
+    return { ok: false, reason: 'ambiguous', candidates: prefixed.map(qualified) };
+  if (self) return { ok: false, reason: 'self', candidates: prefixed.map(qualified) };
 
   if (prefixed.length === 1) return { ok: true, peer: prefixed[0]! };
   if (prefixed.length > 1)
