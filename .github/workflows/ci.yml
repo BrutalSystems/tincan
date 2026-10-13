@@ -69,10 +69,10 @@ jobs:
       - name: Test
         run: npm test
 
-      # All four version locations in one check, against package.json as the
-      # source. The suite covers three of them from the other direction; this
-      # also catches the fourth, which is prose, and names every drifted file
-      # at once instead of the first. See RELEASING.md.
+      # Every version location in one check, against package.json as the
+      # source. The suite covers most of them from the other direction; this
+      # also catches CANONICAL_ID.md, which is prose, and names every drifted
+      # file at once instead of the first. See RELEASING.md.
       - name: Every version site agrees with package.json
         run: npm run check-version
 

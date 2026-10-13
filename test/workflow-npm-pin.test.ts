@@ -13,7 +13,7 @@ import { join } from 'node:path';
  * parse, both still run, and the disagreement shows up as a tarball that
  * differs from the one CI verified.
  *
- * So this is the same guard `check-version` puts on the four version sites,
+ * So this is the same guard `check-version` puts on the version sites,
  * applied to the fifth thing this repo keeps in more than one place.
  */
 const repoFile = (rel: string) => readFileSync(join(import.meta.dirname, '..', rel), 'utf8');

@@ -144,6 +144,24 @@ Full install for all three runtimes, including the opencode plugin:
 | [Design decisions and limits](./docs/design.md) | What it deliberately does not do |
 | [`CANONICAL_ID.md`](./CANONICAL_ID.md) | The address format — normative |
 
+## Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace. Its plugin carries a
+`tincan` skill that teaches a Claude Code session how to use Tin Can well:
+finding peers, sending, replying so a question closes, reading outcomes and
+refusals, and the traps. It is versioned with Tin Can, so it describes the
+tools and flags of the release it ships with.
+
+```bash
+claude plugin marketplace add BrutalSystems/tincan
+claude plugin install tincan@tincan
+```
+
+Or from inside a session: `/plugin marketplace add BrutalSystems/tincan`, then
+`/plugin install tincan@tincan`. The plugin adds only the skill. Tin Can itself
+is still installed and registered as an MCP server as shown in
+[Quick start](#quick-start).
+
 ## Keeping it up to date
 
 ```bash

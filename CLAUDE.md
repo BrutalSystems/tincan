@@ -14,7 +14,7 @@ Means the **whole release, including the npm publish**. One command:
 npm version <patch|minor|major> -m "%s — <what changed>"
 ```
 
-That rewrites all five version sites, commits, tags, and pushes commit and tag.
+That rewrites all six version sites, commits, tags, and pushes commit and tag.
 **The pushed `v*` tag is what publishes** — `.github/workflows/publish.yml`
 fires on it and publishes BOTH `@brutalsystems/tincan` and
 `@brutalsystems/tincan-opencode` over OIDC. There is no separate `npm publish`

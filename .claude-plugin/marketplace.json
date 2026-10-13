@@ -1,0 +1,14 @@
+{
+  "name": "tincan",
+  "owner": {
+    "name": "BrutalSystems"
+  },
+  "description": "Tin Can's Claude Code plugin: a skill for messaging other live agent sessions on this machine.",
+  "plugins": [
+    {
+      "name": "tincan",
+      "source": "./plugins/claude-code",
+      "description": "Teaches Claude Code to message other live Claude Code, Codex and opencode sessions on the same machine through Tin Can."
+    }
+  ]
+}

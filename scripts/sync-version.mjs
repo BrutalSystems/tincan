@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One version, four files. package.json is the source; the other three are
+// One version, six files. package.json is the source; the others are
 // derived from it here and nowhere else.
 //
 // They cannot simply read package.json at runtime the way src/version.ts
@@ -11,11 +11,13 @@
 //   - plugins/opencode/tincan-lib/types.ts ships untranspiled and is loaded
 //     by opencode, not by us; it has no reliable path to our package.json.
 //   - CANONICAL_ID.md is prose.
+//   - plugins/claude-code/.claude-plugin/plugin.json is read by Claude Code's
+//     plugin loader, which knows nothing about package.json.
 //
 // So they stay literals, and stop being hand-edited. Two entry points:
 //
 //   node scripts/sync-version.mjs 0.6.0   set every site to 0.6.0
-//   node scripts/sync-version.mjs         set the other three from package.json
+//   node scripts/sync-version.mjs         set the others from package.json
 //                                         (the `npm version` lifecycle case)
 //   node scripts/sync-version.mjs --check report drift, change nothing (CI)
 
@@ -47,6 +49,13 @@ export const VERSION_SITES = [
     // version: they are installed by different tools at different times, so a
     // skew between them is precisely the failure this file exists to prevent.
     file: 'plugins/opencode/package.json',
+    read: (s) => JSON.parse(s).version,
+    write: (s, v) => s.replace(/("version"\s*:\s*)"[^"]*"/, `$1"${v}"`),
+  },
+  {
+    // The Claude Code plugin carries the skill that teaches a session to use
+    // this version's tools and flags, so it is versioned with them.
+    file: 'plugins/claude-code/.claude-plugin/plugin.json',
     read: (s) => JSON.parse(s).version,
     write: (s, v) => s.replace(/("version"\s*:\s*)"[^"]*"/, `$1"${v}"`),
   },
