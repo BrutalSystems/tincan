@@ -10,6 +10,7 @@ import {
   SUBCOMMANDS,
 } from '../src/version.js';
 import { SEND_FLAGS } from '../src/send-cli.js';
+import { MCP_FLAGS, MCP_ACTIONS, parseMcpArgs } from '../src/mcp-cli.js';
 
 describe('version', () => {
   // The fifth version location. package.json, the canonical-id fixture and the
@@ -37,8 +38,12 @@ describe('version', () => {
   // looks like "the command worked and there are no peers" — which is exactly
   // what happened in an opencode session.
   it('rejects arguments it does not understand instead of starting the server', () => {
-    expect(classifyArgv(['mcp', 'peers', 'list'])).toEqual({ kind: 'unknown', arg: 'mcp' });
+    expect(classifyArgv(['peers', 'list'])).toEqual({ kind: 'unknown', arg: 'peers' });
     expect(classifyArgv(['--peers'])).toEqual({ kind: 'unknown', arg: '--peers' });
+    // `mcp` is a subcommand now, but only for install/uninstall/status: the
+    // guessed `mcp peers list` is still refused, one level down.
+    expect(classifyArgv(['mcp', 'peers', 'list']).kind).toBe('mcp');
+    expect(parseMcpArgs(['peers', 'list']).ok).toBe(false);
   });
 
   // Documentation drift is silent: nothing fails when help describes a flag
@@ -63,8 +68,8 @@ describe('version', () => {
         .filter((line) => /^\s+(tincan\b|--|\[)/.test(line))
         .flatMap((line) => line.match(/(?<![\w-])--?[a-z][\w-]*/g) ?? []);
 
-    /** Every flag any entry point accepts: the top-level ones plus send's. */
-    const accepted = (): string[] => [...FLAGS.flatMap((f) => f.flags), ...SEND_FLAGS];
+    /** Every flag any entry point accepts: the top-level ones plus send's and mcp's. */
+    const accepted = (): string[] => [...FLAGS.flatMap((f) => f.flags), ...SEND_FLAGS, ...MCP_FLAGS];
 
     it('documents every flag it accepts', () => {
       const docs = documented();
@@ -89,6 +94,16 @@ describe('version', () => {
       expect(docs).toContain('--idempotency-key');
       expect(docs).toContain('--reply-via');
     });
+
+    it('documents every mcp action, on a usage line', () => {
+      const usage = helpText()
+        .split('\n')
+        .filter((line) => /^\s+tincan mcp /.test(line));
+      for (const action of MCP_ACTIONS) {
+        expect(usage.some((l) => l.includes(`tincan mcp ${action}`)), `${action} missing`).toBe(true);
+      }
+      expect(documented()).toContain('--force');
+    });
   });
 
   describe('the send subcommand', () => {
@@ -99,13 +114,19 @@ describe('version', () => {
       expect(intent.argv).toEqual(['--to', 'muster-59', '--from', 'bd-1', '--message', 'x']);
     });
 
-    it('is the only subcommand, and the others are still refused', () => {
+    it('is one of two subcommands, and the others are still refused', () => {
       // The stance that produced this function has not been dropped: admitting
-      // `send` must not admit the guessed CLI it was written to refuse.
+      // `send` and `mcp` must not admit the guessed CLI it was written to refuse.
       expect(classifyArgv(['peers'])).toEqual({ kind: 'unknown', arg: 'peers' });
-      expect(classifyArgv(['mcp', 'peers', 'list'])).toEqual({ kind: 'unknown', arg: 'mcp' });
       expect(classifyArgv(['message_log'])).toEqual({ kind: 'unknown', arg: 'message_log' });
-      expect(SUBCOMMANDS).toEqual(['send']);
+      expect(SUBCOMMANDS).toEqual(['send', 'mcp']);
+    });
+
+    it('dispatches mcp with its own arguments left unparsed', () => {
+      expect(classifyArgv(['mcp', 'install', '--force'])).toEqual({
+        kind: 'mcp',
+        argv: ['install', '--force'],
+      });
     });
 
     it('names the subcommand when refusing something that is not one', () => {

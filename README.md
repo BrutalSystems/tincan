@@ -70,7 +70,7 @@ Install it, and point one MCP server entry at it:
 
 ```bash
 npm install -g @brutalsystems/tincan
-claude mcp add tincan --scope user -- tincan
+tincan mcp install    # same as: claude mcp add --scope user tincan -- tincan
 ```
 
 Then, from inside a session, find who else is running:
@@ -144,23 +144,37 @@ Full install for all three runtimes, including the opencode plugin:
 | [Design decisions and limits](./docs/design.md) | What it deliberately does not do |
 | [`CANONICAL_ID.md`](./CANONICAL_ID.md) | The address format — normative |
 
-## Claude Code plugin
+## Use with Claude Code
 
-This repository is also a Claude Code plugin marketplace. Its plugin carries a
-`tincan` skill that teaches a Claude Code session how to use Tin Can well:
-finding peers, sending, replying so a question closes, reading outcomes and
-refusals, and the traps. It is versioned with Tin Can, so it describes the
-tools and flags of the release it ships with.
+1. **Install the plugin.** This repository is also a Claude Code plugin
+   marketplace. Its plugin carries a `tincan` skill that teaches a session how
+   to use Tin Can well: finding peers, sending, replying so a question closes,
+   reading outcomes and refusals, and the traps. It is versioned with Tin Can,
+   so it describes the tools and flags of the release it ships with.
 
-```bash
-claude plugin marketplace add BrutalSystems/tincan
-claude plugin install tincan@tincan
-```
+   ```bash
+   claude plugin marketplace add BrutalSystems/tincan
+   claude plugin install tincan@tincan
+   ```
 
-Or from inside a session: `/plugin marketplace add BrutalSystems/tincan`, then
-`/plugin install tincan@tincan`. The plugin adds only the skill. Tin Can itself
-is still installed and registered as an MCP server as shown in
-[Quick start](#quick-start).
+   Or from inside a session: `/plugin marketplace add BrutalSystems/tincan`,
+   then `/plugin install tincan@tincan`.
+
+2. **Register the server.** The plugin adds only the skill. With Tin Can
+   installed (`npm install -g @brutalsystems/tincan`), run:
+
+   ```bash
+   tincan mcp install
+   ```
+
+   It registers Tin Can at Claude Code user scope under the name `tincan`, so
+   its tools are `mcp__tincan__*` in every project. It respects
+   `CLAUDE_CONFIG_DIR`, changes nothing if the same registration is already
+   there, and refuses to replace a different one without `--force`.
+   `tincan mcp status` shows the registration; `tincan mcp uninstall` removes
+   it.
+
+3. **Restart the session.** MCP servers load at startup.
 
 ## Keeping it up to date
 

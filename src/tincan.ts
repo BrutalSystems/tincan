@@ -14,6 +14,7 @@ import {
 import { detectRuntime, buildSide, claudeRegistryDirs, externalSide } from './runtime.js';
 import { withOpencodeHost } from './opencode/host.js';
 import { runSend } from './send-cli.js';
+import { runMcp, runClaude } from './mcp-cli.js';
 import { FileIdempotencyStore, cliIdempotencyDir } from './cli-idempotency.js';
 import { homedir } from 'node:os';
 import { startSelfPointerRefresh, syncSelfPointer } from './claude/self.js';
@@ -56,6 +57,9 @@ async function handleArgv(argv: string[]): Promise<boolean> {
       return true;
     case 'send':
       await serveSend(intent.argv);
+      return true;
+    case 'mcp':
+      await serveMcp(intent.argv);
       return true;
     case 'unknown':
       // stderr, and a non-zero exit: a caller that guessed at a CLI must not
@@ -144,6 +148,29 @@ async function serveSend(argv: string[]): Promise<never> {
    * and confirmed before we get here.
    */
   process.exit(code);
+}
+
+/**
+ * `tincan mcp install | uninstall | status`: register this server with Claude
+ * Code. No transport is connected, so stdout is free, as for `--help`.
+ */
+async function serveMcp(argv: string[]): Promise<void> {
+  let out = '';
+  let err = '';
+  const code = await runMcp(argv, {
+    stdout: (s) => {
+      out += s;
+    },
+    stderr: (s) => {
+      err += s;
+    },
+    env: process.env,
+    home: homedir(),
+    run: runClaude,
+  });
+  await flush(process.stdout, out);
+  await flush(process.stderr, err);
+  process.exitCode = code;
 }
 
 /** Write to a stream and wait for it to be flushed — a pipe's write is async. */
