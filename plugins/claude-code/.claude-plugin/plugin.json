@@ -1,0 +1,12 @@
+{
+  "name": "tincan",
+  "version": "2.4.1",
+  "description": "Teaches Claude Code to message other live Claude Code, Codex and opencode sessions on the same machine through Tin Can.",
+  "author": {
+    "name": "BrutalSystems"
+  },
+  "homepage": "https://github.com/BrutalSystems/tincan#readme",
+  "repository": "https://github.com/BrutalSystems/tincan",
+  "license": "MIT",
+  "keywords": ["tincan", "agents", "agent-messaging", "mcp"]
+}

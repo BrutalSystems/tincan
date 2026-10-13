@@ -13,13 +13,14 @@ const write = (rel: string, body: string) => {
 };
 const read = (rel: string) => readFileSync(join(dir, rel), 'utf8');
 
-/** A repo at `v`, laid out as tincan's four version sites are. */
+/** A repo at `v`, laid out as tincan's version sites are. */
 function repoAt(v: string) {
   write('package.json', `{\n  "name": "@brutalsystems/tincan",\n  "version": "${v}",\n  "type": "module"\n}\n`);
   write('test/fixtures/canonical-id.json', `{\n  "note": "x",\n  "tincan_version": "${v}",\n  "cases": []\n}\n`);
   write('plugins/opencode/tincan-lib/types.ts', `// types\nexport const PLUGIN_VERSION = '${v}';\nexport type X = 1;\n`);
   write('CANONICAL_ID.md', `# Canonical ID\n\n> **Normative for \`@brutalsystems/tincan\` ${v}.**\n\nBody.\n`);
   write('plugins/opencode/package.json', `{\n  "name": "@brutalsystems/tincan-opencode",\n  "version": "${v}",\n  "type": "module"\n}\n`);
+  write('plugins/claude-code/.claude-plugin/plugin.json', `{\n  "name": "tincan",\n  "version": "${v}"\n}\n`);
 }
 
 beforeEach(() => {
@@ -36,6 +37,7 @@ describe('syncVersion', () => {
     expect(JSON.parse(read('test/fixtures/canonical-id.json')).tincan_version).toBe('0.6.0');
     expect(read('plugins/opencode/tincan-lib/types.ts')).toContain("PLUGIN_VERSION = '0.6.0'");
     expect(read('CANONICAL_ID.md')).toContain('`@brutalsystems/tincan` 0.6.0.');
+    expect(JSON.parse(read('plugins/claude-code/.claude-plugin/plugin.json')).version).toBe('0.6.0');
   });
 
   test('covers every site the release procedure lists, with none missing', () => {
@@ -44,6 +46,7 @@ describe('syncVersion', () => {
     expect(VERSION_SITES.map((s) => s.file).sort()).toEqual([
       'CANONICAL_ID.md',
       'package.json',
+      'plugins/claude-code/.claude-plugin/plugin.json',
       'plugins/opencode/package.json',
       'plugins/opencode/tincan-lib/types.ts',
       'test/fixtures/canonical-id.json',
@@ -54,6 +57,7 @@ describe('syncVersion', () => {
     expect(syncVersion(dir, '0.6.0').changed.sort()).toEqual([
       'CANONICAL_ID.md',
       'package.json',
+      'plugins/claude-code/.claude-plugin/plugin.json',
       'plugins/opencode/package.json',
       'plugins/opencode/tincan-lib/types.ts',
       'test/fixtures/canonical-id.json',
@@ -97,6 +101,17 @@ describe('checkVersion', () => {
     write('plugins/opencode/package.json', `{\n  "version": "0.4.0"\n}\n`);
     expect(checkVersion(dir).mismatches).toContainEqual({
       file: 'plugins/opencode/package.json',
+      found: '0.4.0',
+      expected: '0.5.5',
+    });
+  });
+
+  test('catches the Claude Code plugin manifest drifting from the server', () => {
+    // The skill it carries describes this version's tools and flags; a
+    // manifest left behind tells a reader the skill is older than it is.
+    write('plugins/claude-code/.claude-plugin/plugin.json', `{\n  "version": "0.4.0"\n}\n`);
+    expect(checkVersion(dir).mismatches).toContainEqual({
+      file: 'plugins/claude-code/.claude-plugin/plugin.json',
       found: '0.4.0',
       expected: '0.5.5',
     });

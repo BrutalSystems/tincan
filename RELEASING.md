@@ -77,7 +77,7 @@ steps and not one.
 npm version patch -m "%s — <what changed>"     # or minor / major
 ```
 
-That is the whole release. It rewrites **all five** version sites, commits
+That is the whole release. It rewrites **all six** version sites, commits
 them, creates the `v0.5.6` tag, and pushes commit and tag to `origin`, which
 fires `publish.yml` — publishing both `@brutalsystems/tincan` and
 `@brutalsystems/tincan-opencode` from the one run. Watch it:
@@ -86,7 +86,8 @@ fires `publish.yml` — publishing both `@brutalsystems/tincan` and
 gh run watch --repo BrutalSystems/tincan
 ```
 
-The five sites are `package.json`, `plugins/opencode/package.json`,
+The six sites are `package.json`, `plugins/opencode/package.json`,
+`plugins/claude-code/.claude-plugin/plugin.json`,
 `test/fixtures/canonical-id.json`,
 `plugins/opencode/tincan-lib/types.ts` and `CANONICAL_ID.md` line 3, kept in
 step by `scripts/sync-version.mjs` from the `version` lifecycle hook;
@@ -95,12 +96,13 @@ changing anything, and CI runs it on every push.
 
 They are literals rather than runtime reads of package.json for reasons the
 script's header gives: the fixture is a staleness check consumers compare
-against, the plugin ships untranspiled into opencode with no path to our
-package.json, and the third is prose. The program's own version is *not* one
+against, the opencode plugin ships untranspiled into opencode with no path to
+our package.json, the Claude Code plugin manifest is read by Claude Code's
+plugin loader, and `CANONICAL_ID.md` is prose. The program's own version is *not* one
 of them — `src/version.ts` reads package.json at runtime.
 
 **If you need the pieces separately** — a dry run, or a release built by hand:
-`npm run sync-version 0.5.6` rewrites the five sites and nothing else, leaving
+`npm run sync-version 0.5.6` rewrites the six sites and nothing else, leaving
 the commit, tag and push to you. `npm version --no-git-tag-version` bumps
 without committing. Neither publishes; only a pushed `v*` tag does.
 
