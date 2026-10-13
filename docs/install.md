@@ -32,8 +32,13 @@ talk to. None of the references below need a path — the `tincan` command is on
 **Claude Code** (user scope, so it works in every project):
 
 ```bash
-claude mcp add -s user tincan -- tincan
+tincan mcp install
 ```
+
+That runs `claude mcp add --scope user tincan -- tincan` for you, following
+`CLAUDE_CONFIG_DIR`, and is safe to repeat: an identical registration is left
+alone, and a different one is replaced only with `--force`. `tincan mcp status`
+shows what is registered; `tincan mcp uninstall` removes it.
 
 **Codex**, in `~/.codex/config.toml`:
 

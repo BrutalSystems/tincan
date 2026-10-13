@@ -43,10 +43,13 @@ export function helpText(): string {
     'Usage:',
     '  tincan                  run the MCP server on stdio',
     '  tincan send ...         deliver one message to one peer, then exit',
+    '  tincan mcp ...          register tincan with Claude Code, then exit',
     '  tincan --version, -v    print the version and exit',
     '  tincan --help, -h       print this help and exit',
     '',
     sendHelpText(),
+    '',
+    mcpHelpText(),
     '',
     'Docs: https://github.com/BrutalSystems/tincan',
   ].join('\n');
@@ -89,6 +92,32 @@ export function sendHelpText(): string {
 }
 
 /**
+ * The `mcp` section, which is also what `tincan mcp --help` prints on its own.
+ * Lives here rather than in mcp-cli.ts for the reason `sendHelpText` does: one
+ * source for both, and no import cycle back from the dispatcher.
+ */
+export function mcpHelpText(): string {
+  return [
+    'mcp:',
+    '  tincan mcp install [--force]',
+    '  tincan mcp uninstall',
+    '  tincan mcp status',
+    '',
+    '  Registers Tin Can with Claude Code as the user-scope MCP server `tincan`,',
+    '  so its tools are mcp__tincan__* in every project. Uses the `claude` CLI,',
+    '  which must be on PATH, and follows CLAUDE_CONFIG_DIR. Restart a session',
+    '  to load the change.',
+    '',
+    '  install           register it. Already registered the same way: nothing',
+    '                    changes. Registered differently: refused, exit 2.',
+    '  --force           with install, replace a different registration',
+    '  uninstall         remove it. Not registered: nothing to do.',
+    '  status            print the registration; exit 0 only if it is the one',
+    '                    install would write',
+  ].join('\n');
+}
+
+/**
  * Every flag the CLI accepts. The single source of truth for what
  * `classifyArgv` recognises, so that `version.test.ts` can assert `helpText`
  * documents all of them and invents none — `-v` and `-h` were accepted but
@@ -103,10 +132,10 @@ export const FLAGS: ReadonlyArray<{
 ];
 
 /**
- * The one subcommand. Named here rather than inline so `unknownArgText` and the
+ * The subcommands. Named here rather than inline so `unknownArgText` and the
  * help/argv parity test cannot disagree with the dispatcher about what exists.
  */
-export const SUBCOMMANDS = ['send'] as const;
+export const SUBCOMMANDS = ['send', 'mcp'] as const;
 
 /** What the process should do, decided from argv alone. */
 export type ArgvIntent =
@@ -115,10 +144,12 @@ export type ArgvIntent =
   | { kind: 'help' }
   /** `send`'s own arguments, parsed by send-cli rather than here. */
   | { kind: 'send'; argv: string[] }
+  /** `mcp`'s own arguments, parsed by mcp-cli rather than here. */
+  | { kind: 'mcp'; argv: string[] }
   | { kind: 'unknown'; arg: string };
 
 /**
- * Tin Can has exactly one subcommand, and everything else is still refused.
+ * Tin Can has two subcommands, and everything else is still refused.
  *
  * The rule this function was written to enforce has not changed: an
  * unrecognised argument must NOT fall through to starting the server, because a
@@ -129,12 +160,15 @@ export type ArgvIntent =
  *
  * What changed is narrower than it looks. `send` exists because one caller
  * cannot be served by the MCP doorway at all: a program with no harness has
- * nothing to host a stdio server. That is a real gap rather than a guess, and
- * admitting one named subcommand does not admit guessed ones — `tincan peers`
- * is still refused, and refused with the same text as before.
+ * nothing to host a stdio server. `mcp` registers that doorway with Claude
+ * Code, which has to happen before any tool can be called. Both are real gaps
+ * rather than guesses, and admitting them does not admit guessed ones —
+ * `tincan peers` is still refused here, and `tincan mcp peers list` is refused
+ * by `parseMcpArgs`, which knows only install, uninstall and status.
  */
 export function classifyArgv(argv: string[]): ArgvIntent {
   if (argv[0] === 'send') return { kind: 'send', argv: argv.slice(1) };
+  if (argv[0] === 'mcp') return { kind: 'mcp', argv: argv.slice(1) };
   for (const arg of argv) {
     for (const flag of FLAGS) {
       if (flag.flags.includes(arg)) return { kind: flag.kind };
@@ -149,10 +183,11 @@ export function unknownArgText(arg: string): string {
   return [
     `tincan: unrecognised argument '${arg}'`,
     '',
-    'tincan is an MCP server with one subcommand, `tincan send`. There is no',
-    '`tincan peers` and no `tincan mcp ...`. Peers are listed by calling the',
-    '`peers` tool from inside an agent session that has tincan configured as an',
-    'MCP server; sending is the one thing that also works from outside.',
+    'tincan is an MCP server with two subcommands: `tincan send` delivers one',
+    'message from outside a session, and `tincan mcp install|uninstall|status`',
+    'registers the server with Claude Code. There is no `tincan peers`. Peers',
+    'are listed by calling the `peers` tool from inside an agent session that',
+    'has tincan configured as an MCP server.',
     '',
     `Subcommands: ${SUBCOMMANDS.join(', ')}.`,
     "Run 'tincan --help' for the flags it accepts.",

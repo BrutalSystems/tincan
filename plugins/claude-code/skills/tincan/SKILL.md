@@ -18,10 +18,14 @@ runtimes and config dirs, and carries `in_reply_to`/`answers`. Claude Code's
 own path to other sessions in the same config dir is not recorded in
 `message_log`.
 
-No `tincan` tools in this session? It is not registered:
-`npm install -g @brutalsystems/tincan`, then
-`claude mcp add -s user tincan -- tincan`, then restart the session (MCP
-servers load at startup).
+**No `mcp__tincan__*` tools in this session?** Tin Can is not registered.
+Offer to run `tincan mcp install` (it registers the server at user scope as
+`tincan`; needs `npm install -g @brutalsystems/tincan` first if `tincan` is not
+on PATH). **Ask the user before running it; never run it unasked.** Then tell
+them to restart the session, since MCP servers load at startup.
+`tincan mcp status` shows the current registration. If install reports a
+different `tincan` already registered, show them both and let them decide on
+`--force`.
 
 ## Find, then send
 
@@ -123,7 +127,8 @@ tincan send --to <peer> --from <sender-name> --message '<text>' \
   how to reach you instead.
 - `tincan send --help` exiting 0 is the capability check for `send`. Don't
   parse `--version` for it.
-- There is **no `tincan peers` command**. Listing peers is MCP-only.
+- There is **no `tincan peers` command**. Listing peers is MCP-only. The only
+  other subcommand is `tincan mcp install|uninstall|status`, for registration.
 
 ## Traps
 
