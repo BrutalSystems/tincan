@@ -88,6 +88,11 @@ export function sendHelpText(): string {
     '  rather than the exit code: 0 accepted, 2 rejected, 1 failed, 64 bad usage.',
     '  `accepted` means the peer\'s harness took the message, NOT that it was',
     '  read or acted on. Diagnostics go to stderr.',
+    '',
+    '  To the seated chief of staff (~/.local/state/my-handler/seat), a message',
+    '  is filed in its cos-mail mailbox instead (method `cos-mail`), except',
+    '  SCOTTY-/HANDOFF- lines and --from cos-mail. Off: TINCAN_MAIL_ROUTING=off,',
+    '  or touch ~/.tincan/mail-routing-off. See docs/mail-routing.md.',
   ].join('\n');
 }
 
