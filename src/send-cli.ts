@@ -286,6 +286,9 @@ export async function runSend(
 
   io.stdout(`${sendCliLine(result)}\n`);
   if (result.detail !== undefined) io.stderr(`${result.detail}\n`);
+  // Not on stdout: the one JSON line keeps its fields. This is how a CLI sender
+  // learns its message went to the chief of staff's mailbox instead (#26).
+  if (result.notice !== undefined) io.stderr(`${result.notice}\n`);
   // A single recipient always carries an outcome; `outcome` is optional on the
   // type only because a fan-out reports per recipient instead, and `send` has
   // no fan-out. Treated as failed rather than assumed, because guessing

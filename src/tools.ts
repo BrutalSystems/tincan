@@ -958,7 +958,7 @@ export function createTools(
       // Filed, or the reason it could not be — in which case it is delivered.
       const fileInMailbox = async (
         envelopeId: string,
-      ): Promise<{ mailId?: string; error?: string }> => {
+      ): Promise<{ mailId?: string; pinged?: boolean; error?: string }> => {
         const sid = selfId === undefined ? undefined : 'thread_id' in selfId ? selfId.thread_id : selfId.session_id;
         const replyTo =
           side.selfRuntime === 'external'
@@ -976,7 +976,12 @@ export function createTools(
           urgent: args.urgent,
           key: `tincan:${envelopeId}`,
         });
-        return filed.ok ? { ...(filed.mailId !== undefined && { mailId: filed.mailId }) } : { error: filed.error };
+        return filed.ok
+          ? {
+              ...(filed.mailId !== undefined && { mailId: filed.mailId }),
+              ...(filed.pinged !== undefined && { pinged: filed.pinged }),
+            }
+          : { error: filed.error };
       };
 
       // Sequential, in the order given: the log stays deterministic and a
@@ -1032,8 +1037,11 @@ export function createTools(
         let routingFailed: string | undefined;
         if (toMailbox(target.side)) {
           const filed = await fileInMailbox(envelope.id);
-          if (filed.error === undefined) {
-            const n = filed.mailId === undefined ? '' : ` #${filed.mailId}`;
+          const n = filed.mailId === undefined ? '' : ` #${filed.mailId}`;
+          if (filed.error === undefined && args.urgent && filed.pinged === false) {
+            // Filed, but cos-mail's ping did not reach the session: deliver it too.
+            routingFailed = `filed as urgent mail${n}, but cos-mail's ping did not land`;
+          } else if (filed.error === undefined) {
             outcome = {
               delivered: true,
               method: 'cos-mail',
@@ -1060,8 +1068,9 @@ export function createTools(
             outcome = {
               ...outcome,
               notice:
-                `Could not file in the chief of staff's mailbox (${routingFailed}), so it was ` +
-                `delivered directly.` + (outcome.notice === undefined ? '' : ` ${outcome.notice}`),
+                `Mailbox routing to the chief of staff did not complete (${routingFailed}), ` +
+                `so it was delivered directly.` +
+                (outcome.notice === undefined ? '' : ` ${outcome.notice}`),
             };
           }
         }

@@ -8,6 +8,7 @@ import {
   parseSendArgs,
   exitCodeFor,
   sendCliLine,
+  runSend,
   USAGE_EXIT,
   MAX_FROM_LENGTH,
 } from '../src/send-cli.js';
@@ -499,5 +500,26 @@ describe('send --help, the capability probe', () => {
     if (!r.ok) return;
     expect(r.help).toBeUndefined();
     expect(r.args?.message).toBe('run --help first');
+  });
+});
+
+describe('a notice reaches a CLI sender', () => {
+  test('on stderr, with the JSON line on stdout unchanged (#26: "went to the mailbox")', async () => {
+    let out = '';
+    let err = '';
+    const code = await runSend(['--to', 'chief', '--from', 'nightly-job', '--message', 'done'], {
+      stdout: (s) => (out += s),
+      stderr: (s) => (err += s),
+      send: async () => ({
+        outcome: 'accepted',
+        method: 'cos-mail',
+        message_id: 'msg_1',
+        peer_state: 'idle',
+        notice: 'chief is the seated chief of staff, so this went to its mailbox (cos-mail #3)',
+      }),
+    });
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual({ outcome: 'accepted', message_id: 'msg_1', peer_state: 'idle' });
+    expect(err).toMatch(/went to its mailbox \(cos-mail #3\)/);
   });
 });

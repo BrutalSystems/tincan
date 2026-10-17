@@ -19,7 +19,8 @@
  *
  * An urgent message is mailed as urgent, and cos-mail sends its one-line
  * "mail: N urgent — cos-mail read" ping, which comes back through here and is
- * delivered by the last exception.
+ * delivered by the last exception. If that ping did not land, the message is
+ * delivered directly as well: urgent mail nobody is told about is not urgent.
  *
  * cos-mail is CALLED, not imitated. It appends under an `fcntl.flock` on
  * `mail.jsonl.lock`, which Node cannot take, and it also keeps the activity feed
@@ -61,7 +62,13 @@ export interface MailItem {
   key: string;
 }
 
-export type FileResult = { ok: true; mailId?: string } | { ok: false; error: string };
+/**
+ * `pinged` is set for urgent mail only: whether cos-mail's ping reached the
+ * seat. False means filed but not announced, so the caller delivers it too.
+ */
+export type FileResult =
+  | { ok: true; mailId?: string; pinged?: boolean }
+  | { ok: false; error: string };
 
 export interface MailRouting {
   /** The seated chief of staff, or undefined when nobody is seated or routing is off. */
@@ -163,19 +170,31 @@ export function mailRoutingFromEnv(
         return undefined;
       }
     },
-    file(item) {
+    async file(item) {
       const bin = env.TINCAN_COS_MAIL || 'cos-mail';
-      return new Promise((resolve) => {
-        execFile(bin, cosMailArgs(item), { timeout: 20_000 }, (err, stdout, stderr) => {
-          if (err) {
-            const why = String(stderr || err.message).trim().split('\n').pop() ?? '';
-            resolve({ ok: false, error: `${bin}: ${why.slice(0, 200)}` });
-            return;
-          }
-          const m = /mail #(\d+)/.exec(String(stdout));
-          resolve({ ok: true, ...(m?.[1] !== undefined && { mailId: m[1] }) });
+      const run = (): Promise<FileResult> =>
+        new Promise((resolve) => {
+          execFile(bin, cosMailArgs(item), { timeout: 10_000 }, (err, stdout, stderr) => {
+            if (err) {
+              const why = String(stderr || err.message).trim().split('\n').pop() ?? '';
+              resolve({ ok: false, error: `${bin}: ${why.slice(0, 200)}` });
+              return;
+            }
+            const out = String(stdout);
+            const m = /mail #(\d+)/.exec(out);
+            resolve({
+              ok: true,
+              ...(m?.[1] !== undefined && { mailId: m[1] }),
+              // cos-mail exits 0 when its ping fails; only "pinged <name>" says it landed.
+              ...(item.urgent && { pinged: /^pinged /m.test(out) }),
+            });
+          });
         });
-      });
+      // Once more under the same --key: a first try that filed the item and then
+      // stalled (on its ping, say) answers "already sent" rather than filing it
+      // twice, so a timeout is not mistaken for nothing filed.
+      const first = await run();
+      return first.ok ? first : run();
     },
   };
 }

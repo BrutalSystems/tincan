@@ -40,7 +40,9 @@ handoffs. It is matched by the session id in the seat's canonical id, not by nam
 
 An **urgent** message (`urgent: true`) is filed as urgent mail; cos-mail then
 pings the seat with its one line, "mail: N urgent — cos-mail read", which comes
-through exception 3.
+through exception 3. cos-mail exits 0 even when that ping fails, so Tin Can
+reads its output: no `pinged <name>` line means the message is delivered
+directly as well.
 
 Nobody seated, an unreadable seat file, or routing off: delivered as before.
 
@@ -49,8 +51,14 @@ Nobody seated, an unreadable seat file, or routing off: delivered as before.
 Tin Can **calls** cos-mail rather than writing `mail.jsonl` itself: cos-mail
 appends under an `fcntl` lock Node cannot take, and also keeps the activity feed
 and ledger. If the call fails — cos-mail not on `PATH`, a refusal (text over its
-8000-character limit), a timeout (20 s) — the message is delivered directly, and
-the result's `notice` says why. Routing never loses a message.
+8000-character limit), a timeout (10 s) — it is tried once more under the same
+`--key`, so a first try that filed the item and then stalled answers "already
+sent" instead of filing it twice. If that fails too, the message is delivered
+directly, and the result's `notice` says why. Routing never loses a message.
+
+`tincan send` prints the `notice` on stderr; the JSON line on stdout keeps its
+four fields. A CLI sender is external — it has no session id or canonical id —
+so its mail carries its `--from` name and, if given, `--reply-via` in the text.
 
 ## Turning it off
 

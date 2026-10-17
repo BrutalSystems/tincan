@@ -211,7 +211,7 @@ describe('send_peer to the seated chief of staff', () => {
 
   test('an urgent message is filed as urgent mail (cos-mail sends the ping)', async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(SEAT, { ok: true, mailId: '7', pinged: true });
     const r = await createTools(side, log, undefined, mail).send_peer({
       peer: 'mikewilliams-aa',
       message: 'BLOCKED: prod is down',
@@ -220,6 +220,20 @@ describe('send_peer to the seated chief of staff', () => {
     expect(delivered).toEqual([]);
     expect(filed[0]).toMatchObject({ kind: 'BLOCKED', urgent: true });
     expect(r.notice).toMatch(/urgent, and it was pinged/);
+  });
+
+  test("urgent mail whose ping did not land is delivered directly as well", async () => {
+    const { side, delivered } = makeSide();
+    const { mail, filed } = fakeMail(SEAT, { ok: true, mailId: '7', pinged: false });
+    const r = await createTools(side, log, undefined, mail).send_peer({
+      peer: 'mikewilliams-aa',
+      message: 'BLOCKED: prod is down',
+      urgent: true,
+    });
+    expect(filed).toHaveLength(1);
+    expect(delivered).toHaveLength(1);
+    expect(r.method).toBe('inbox');
+    expect(r.notice).toMatch(/urgent mail #7, but cos-mail's ping did not land.*delivered directly/);
   });
 
   test("cos-mail's own ping is delivered, or urgent mail would never reach the session", async () => {
@@ -282,7 +296,7 @@ describe('send_peer to the seated chief of staff', () => {
     expect(delivered).toHaveLength(1);
     expect(r.outcome).toBe('accepted');
     expect(r.method).toBe('inbox');
-    expect(r.notice).toMatch(/Could not file .*cos-mail: not found.*delivered directly/);
+    expect(r.notice).toMatch(/did not complete \(cos-mail: not found\).*delivered directly/);
   });
 
   test('a fan-out mails the chief of staff and delivers to the rest', async () => {
@@ -352,7 +366,8 @@ describe('mailRoutingFromEnv', () => {
       urgent: true,
       key: 'tincan:msg_1',
     });
-    expect(res).toEqual({ ok: true, mailId: '42' });
+    // Urgent, and the fake printed no "pinged" line: reported as not pinged.
+    expect(res).toEqual({ ok: true, mailId: '42', pinged: false });
     expect(readFileSync(argvFile, 'utf8').trim().split('\n')).toEqual([
       'send', WORKER_ID, 'DONE', 'shipped',
       '--from', 'tincan-6c',
@@ -361,6 +376,26 @@ describe('mailRoutingFromEnv', () => {
       '--key', 'tincan:msg_1',
       '--urgent',
     ]);
+  });
+
+  test('a failed first try is retried under the same key, so a stalled filing is not filed twice', async () => {
+    const calls = join(dir, 'calls');
+    const fake = join(dir, 'flaky-cos-mail');
+    // First call: "files" and dies. Second: what cos-mail says for a key it already has.
+    writeFileSync(
+      fake,
+      `#!/bin/sh\necho "$@" >> '${calls}'\n` +
+        `if [ "$(wc -l < '${calls}')" -eq 1 ]; then exit 1; fi\n` +
+        `echo "mail #9: already sent (key tincan:msg_2)"\n`,
+    );
+    chmodSync(fake, 0o755);
+    const r = mailRoutingFromEnv(env({ TINCAN_COS_MAIL: fake }), dir);
+    const res = await r.file({ to: 'x', kind: 'STATUS', text: 't', from: 'x', urgent: false, key: 'tincan:msg_2' });
+    expect(res).toEqual({ ok: true, mailId: '9' });
+    const lines = readFileSync(calls, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe(lines[1]);
+    expect(lines[1]).toContain('--key tincan:msg_2');
   });
 
   test('a missing cos-mail is a failure to file, not a throw', async () => {
@@ -425,4 +460,50 @@ describe('mailRoutingFromEnv', () => {
       key: 'tincan:msg_real',
     });
   });
+
+  test.skipIf(realCosMail === '')(
+    'urgent: the real cos-mail files it urgent and pings the seat through tincan send --from cos-mail',
+    async () => {
+      writeSeat();
+      const pingArgs = join(dir, 'ping-argv');
+      const fakeTincan = join(dir, 'fake-tincan');
+      writeFileSync(
+        fakeTincan,
+        `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${pingArgs}'\necho '{"outcome":"accepted"}'\n`,
+      );
+      chmodSync(fakeTincan, 0o755);
+      const mailFile = join(dir, 'mail.jsonl');
+      const r = mailRoutingFromEnv(env({ TINCAN_COS_MAIL: realCosMail }), dir);
+      const saved = { ...process.env };
+      Object.assign(process.env, {
+        COS_MAIL: mailFile,
+        COS_ACTIVITY: join(dir, 'activity.jsonl'),
+        COS_LEDGER: join(dir, 'ledger.json'),
+        XDG_STATE_HOME: stateHome(),
+        COS_MAIL_TINCAN: fakeTincan,
+        CLAUDE_CODE_SESSION_ID: WORKER_ID,
+      });
+      let res: FileResult;
+      try {
+        res = await r.file({
+          to: WORKER_ID,
+          kind: 'BLOCKED',
+          text: 'prod is down',
+          from: 'tincan-6c',
+          sessionId: WORKER_ID,
+          urgent: true,
+          key: 'tincan:msg_urgent',
+        });
+      } finally {
+        process.env = saved;
+      }
+      expect(res).toEqual({ ok: true, mailId: '1', pinged: true });
+      expect(JSON.parse(readFileSync(mailFile, 'utf8').trim())).toMatchObject({ urgent: true });
+      const argv = readFileSync(pingArgs, 'utf8').trim().split('\n');
+      expect(argv.slice(0, 5)).toEqual(['send', '--to', SEAT.canonicalId, '--from', 'cos-mail']);
+      expect(argv[6]).toMatch(/^mail: 1 urgent — cos-mail read$/);
+      // ...and that ping, from `cos-mail`, is one routing delivers: see
+      // "cos-mail's own ping is delivered" above.
+    },
+  );
 });
