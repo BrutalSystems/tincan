@@ -8,9 +8,11 @@ import { slugify, type RuntimeName, type SenderKind } from './naming.js';
 
 /**
  * How the message reached the peer: the Codex app-server's experimental queue,
- * the Claude Code inbox socket, or an opencode prompt (Task 3).
+ * the Claude Code inbox socket, or an opencode prompt (Task 3). `cos-mail` is
+ * not delivery to the peer at all: the message was filed in the seated chief of
+ * staff's mailbox instead (see mail-routing.ts).
  */
-export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt_async';
+export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt_async' | 'cos-mail';
 
 export interface EnvelopeParty {
   /**

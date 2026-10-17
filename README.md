@@ -139,6 +139,7 @@ Full install for all three runtimes, including the opencode plugin:
 | [Install](./docs/install.md) | All three runtimes, the opencode plugin, environment |
 | [Peers and names](./docs/peers.md) | Who you can see, and what you can type as an address |
 | [The message log](./docs/log.md) | What is recorded, rotation, and damage reporting |
+| [Mail routing](./docs/mail-routing.md) | Messages to a seated chief of staff go to its `cos-mail` mailbox; how to turn it off |
 | [Troubleshooting](./docs/troubleshooting.md) | Symptoms and what they mean |
 | [How it works](./docs/how-it-works.md) | The delivery mechanism for each runtime |
 | [Design decisions and limits](./docs/design.md) | What it deliberately does not do |

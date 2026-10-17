@@ -25,6 +25,7 @@ import { MessageLog, type LogRecord, type LogIntegrity } from './log.js';
 import { IdempotencyStore, IDEMPOTENCY_WINDOW_MS, type PriorSend } from './idempotency.js';
 import { VERSION } from './version.js';
 import type { PeerState } from './claude/discover.js';
+import { kindOf, mailRoutingFromEnv, routesToMailbox, type MailRouting } from './mail-routing.js';
 
 export interface SidePeer {
   /** The peer's own runtime. A peer list may hold more than one. */
@@ -482,7 +483,13 @@ export interface KeyStore {
   record(key: string, send: Omit<PriorSend, 'at'>): void;
 }
 
-export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
+export function createTools(
+  side: Side,
+  log: MessageLog,
+  keys?: KeyStore,
+  // Read live from the seat file and cos-mail on every send; tests pass their own.
+  mail: MailRouting = mailRoutingFromEnv(),
+) {
   // One guard per peer runtime, so a Codex peer's tight budget does not
   // throttle a Claude peer sharing the same listing.
   const guards = new Map<RuntimeName, Guard>();
@@ -925,6 +932,53 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
       const broadcastId = fanOut && targets.length > 1 ? newBroadcastId() : undefined;
       const results: FanOutResult[] = [];
 
+      // #26: a message to the seated chief of staff is filed in its mailbox
+      // rather than cut into its conversation. Read once per call, like self.
+      const seat = mail.seat();
+      const original =
+        seat !== undefined && args.in_reply_to !== undefined
+          ? log.findMessage(args.in_reply_to)
+          : undefined;
+      const toMailbox = (t: SidePeer): boolean => {
+        const durable = durableIdOf(t);
+        return routesToMailbox({
+          seat,
+          targetId: 'thread_id' in durable ? durable.thread_id : durable.session_id,
+          text: args.message,
+          fromRuntime: side.selfRuntime,
+          fromName: selfName,
+          ...(original !== undefined && {
+            original: {
+              fromId: original.from.session_id ?? original.from.thread_id,
+              expectReply: original.expect_reply,
+            },
+          }),
+        });
+      };
+      // Filed, or the reason it could not be — in which case it is delivered.
+      const fileInMailbox = async (
+        envelopeId: string,
+      ): Promise<{ mailId?: string; error?: string }> => {
+        const sid = selfId === undefined ? undefined : 'thread_id' in selfId ? selfId.thread_id : selfId.session_id;
+        const replyTo =
+          side.selfRuntime === 'external'
+            ? undefined
+            : selfAddressOf(side.selfRuntime, selfName, selfId, side.selfCwd).canonical_id;
+        const filed = await mail.file({
+          to: sid ?? selfName,
+          kind: kindOf(args.message),
+          // cos-mail keeps one line per item; a sender with no reply path says where to answer.
+          text:
+            side.replyVia === undefined ? args.message : `${args.message} (reply via: ${side.replyVia})`,
+          from: selfName,
+          ...(sid !== undefined && { sessionId: sid }),
+          ...(replyTo !== undefined && { replyTo }),
+          urgent: args.urgent,
+          key: `tincan:${envelopeId}`,
+        });
+        return filed.ok ? { ...(filed.mailId !== undefined && { mailId: filed.mailId }) } : { error: filed.error };
+      };
+
       // Sequential, in the order given: the log stays deterministic and a
       // fan-out cannot stampede three harnesses at once.
       for (const target of targets) {
@@ -974,14 +1028,43 @@ export function createTools(side: Side, log: MessageLog, keys?: KeyStore) {
         log.appendMessage(envelope, false, delivery);
         guardFor(target.side.runtime).record(target.canonicalId, args.message);
 
-        const outcome = await side.deliver(
-          self,
-          selfName,
-          target.side,
-          envelope.id,
-          renderEnvelope(envelope),
-          args.urgent,
-        );
+        let outcome: DeliveryOutcome | undefined;
+        let routingFailed: string | undefined;
+        if (toMailbox(target.side)) {
+          const filed = await fileInMailbox(envelope.id);
+          if (filed.error === undefined) {
+            const n = filed.mailId === undefined ? '' : ` #${filed.mailId}`;
+            outcome = {
+              delivered: true,
+              method: 'cos-mail',
+              notice:
+                `${target.display} is the seated chief of staff, so this went to its mailbox ` +
+                `(cos-mail${n}), not into its session; it reads mail when it is ready.` +
+                (args.urgent ? ` Filed as urgent, and it was pinged.` : '') +
+                ` Next time use cos-mail send directly.`,
+            };
+          } else {
+            routingFailed = filed.error;
+          }
+        }
+        if (outcome === undefined) {
+          outcome = await side.deliver(
+            self,
+            selfName,
+            target.side,
+            envelope.id,
+            renderEnvelope(envelope),
+            args.urgent,
+          );
+          if (routingFailed !== undefined) {
+            outcome = {
+              ...outcome,
+              notice:
+                `Could not file in the chief of staff's mailbox (${routingFailed}), so it was ` +
+                `delivered directly.` + (outcome.notice === undefined ? '' : ` ${outcome.notice}`),
+            };
+          }
+        }
 
         log.appendOutcome(
           envelope.id,
