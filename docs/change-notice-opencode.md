@@ -1,6 +1,6 @@
 # Tin Can — Change Notice: opencode Support
 
-> For the agent maintaining Tin Can (`~/Source/brutalsystems/tincan`).
+> For whoever maintains Tin Can.
 >
 > Owner: Mike Williams · **Rev 2, 2026-09-20**
 >

@@ -1,8 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { MessageLog } from '../src/log.js';
 import { buildEnvelope } from '../src/envelope.js';
 import { CODEX_LIMITS, CLAUDE_LIMITS } from '../src/guard.js';
@@ -10,34 +9,35 @@ import { createTools, type Side, type SidePeer } from '../src/tools.js';
 import {
   kindOf,
   mailRoutingFromEnv,
-  parseSeat,
+  parseRecipient,
+  readConfig,
   routingOff,
   type FileResult,
   type MailItem,
   type MailRouting,
-  type Seat,
+  type Recipient,
 } from '../src/mail-routing.js';
 
-const SEAT_ID = '757a3805-184a-499e-86f0-c041ee195d30';
-const SEAT_LINE = `mikewilliams-aa.d30 claude-code:mikewilliams-aa.${SEAT_ID} 39324\n`;
-const WORKER_ID = 'ccaba4c6-4b0d-43ae-b68a-bc99b6f5c836';
+const RECIPIENT_ID = '11111111-2222-4333-8444-555555555555';
+const RECIPIENT_LINE = `lead-a1.555 claude-code:lead-a1.${RECIPIENT_ID} 4242\n`;
+const SENDER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 let dir: string;
 let log: MessageLog;
 
-const chief = (): SidePeer => ({
+const lead = (): SidePeer => ({
   runtime: 'claude-code',
-  rawName: 'mikewilliams-aa',
-  uuid: SEAT_ID,
-  cwd: '/Users/mike',
+  rawName: 'lead-a1',
+  uuid: RECIPIENT_ID,
+  cwd: '/src/lead',
   state: 'idle',
   canReply: true,
 });
 const other = (): SidePeer => ({
   runtime: 'claude-code',
-  rawName: 'claude-fleet',
-  uuid: 'dc1c1161-9bc9-4679-805d-48b7df247408',
-  cwd: '/src/fleet',
+  rawName: 'other-b2',
+  uuid: '99999999-8888-4777-8666-555555555555',
+  cwd: '/src/other',
   state: 'idle',
   canReply: true,
 });
@@ -48,11 +48,11 @@ function makeSide(over: Partial<Side> = {}) {
     selfRuntime: 'claude-code',
     resolveSelf: async () => ({ sessionId: undefined }),
     selfName: async () => 'tincan-6c',
-    selfDurableId: async () => ({ session_id: WORKER_ID }),
+    selfDurableId: async () => ({ session_id: SENDER_ID }),
     selfCwd: '/src/tincan',
     peerRuntimes: ['claude-code'],
     limitsFor: (r) => (r === 'codex' ? CODEX_LIMITS : CLAUDE_LIMITS),
-    listPeers: async () => ({ peers: [chief(), other()] }),
+    listPeers: async () => ({ peers: [lead(), other()] }),
     deliver: async (_self, _name, p, _id, text) => {
       delivered.push(`${p.rawName}: ${text}`);
       return { delivered: true, method: 'inbox' as const };
@@ -62,11 +62,14 @@ function makeSide(over: Partial<Side> = {}) {
   return { side, delivered };
 }
 
-/** A router with a fixed seat that records what it filed. */
-function fakeMail(seat: Seat | undefined, result: FileResult = { ok: true, mailId: '7' }) {
+/** A router with a fixed recipient that records what it filed. */
+function fakeMail(recipient: Recipient | undefined, result: FileResult = { ok: true, mailId: '7' }) {
   const filed: MailItem[] = [];
   const mail: MailRouting = {
-    seat: () => seat,
+    recipient: () => recipient,
+    commandName: () => 'test-inbox',
+    deliverPrefixes: () => ['HANDOFF-'],
+    commandSender: () => 'test-inbox',
     file: async (item) => {
       filed.push(item);
       return result;
@@ -75,7 +78,7 @@ function fakeMail(seat: Seat | undefined, result: FileResult = { ok: true, mailI
   return { mail, filed };
 }
 
-const SEAT = parseSeat(SEAT_LINE)!;
+const RECIPIENT = parseRecipient(RECIPIENT_LINE)!;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'tincan-mail-'));
@@ -83,18 +86,18 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-describe('parseSeat', () => {
+describe('parseRecipient', () => {
   test('reads the name and canonical id, and takes the durable id from the canonical id', () => {
-    expect(SEAT).toEqual({
-      name: 'mikewilliams-aa.d30',
-      canonicalId: `claude-code:mikewilliams-aa.${SEAT_ID}`,
-      id: SEAT_ID,
+    expect(RECIPIENT).toEqual({
+      name: 'lead-a1.555',
+      canonicalId: `claude-code:lead-a1.${RECIPIENT_ID}`,
+      id: RECIPIENT_ID,
     });
   });
 
-  test('an empty or one-field seat file seats nobody', () => {
-    expect(parseSeat('')).toBeUndefined();
-    expect(parseSeat('only-a-name\n')).toBeUndefined();
+  test('an empty or one-field recipient file names nobody', () => {
+    expect(parseRecipient('')).toBeUndefined();
+    expect(parseRecipient('only-a-name\n')).toBeUndefined();
   });
 });
 
@@ -112,27 +115,27 @@ describe('kindOf', () => {
   });
 });
 
-describe('send_peer to the seated chief of staff', () => {
+describe('send_peer to the configured mail recipient', () => {
   test('files it in the mailbox and does not deliver it into the session', async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'DONE: PR #50 merged',
     });
 
     expect(delivered).toEqual([]);
     expect(r.outcome).toBe('accepted');
-    expect(r.method).toBe('cos-mail');
-    expect(r.notice).toMatch(/mailbox \(cos-mail #7\)/);
+    expect(r.method).toBe('mailbox');
+    expect(r.notice).toMatch(/mailbox \(test-inbox #7\)/);
     expect(filed).toEqual([
       {
-        to: WORKER_ID,
+        to: SENDER_ID,
         kind: 'DONE',
         text: 'DONE: PR #50 merged',
         from: 'tincan-6c',
-        sessionId: WORKER_ID,
-        replyTo: `claude-code:tincan-6c.${WORKER_ID}`,
+        sessionId: SENDER_ID,
+        replyTo: `claude-code:tincan-6c.${SENDER_ID}`,
         urgent: false,
         key: `tincan:${r.message_id}`,
       },
@@ -141,9 +144,9 @@ describe('send_peer to the seated chief of staff', () => {
 
   test('a message to anyone else is delivered as before', async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'claude-fleet',
+      peer: 'other-b2',
       message: 'hello',
     });
     expect(r.method).toBe('inbox');
@@ -151,13 +154,21 @@ describe('send_peer to the seated chief of staff', () => {
     expect(delivered).toHaveLength(1);
   });
 
-  test.each(['SCOTTY-UPDATE: hand off now', 'HANDOFF-ACK ready', '  SCOTTY-HANDOFF x'])(
-    'the handoff protocol line %j is delivered',
+  test('text with an unconfigured prefix is still filed', async () => {
+    const { side, delivered } = makeSide();
+    const { mail, filed } = fakeMail(RECIPIENT);
+    await createTools(side, log, undefined, mail).send_peer({ peer: 'lead-a1', message: 'RELAY-x' });
+    expect(filed).toHaveLength(1);
+    expect(delivered).toEqual([]);
+  });
+
+  test.each(['HANDOFF-ACK ready', '  HANDOFF-READY x'])(
+    'a configured deliver-prefix line %j is delivered',
     async (message) => {
       const { side, delivered } = makeSide();
-      const { mail, filed } = fakeMail(SEAT);
+      const { mail, filed } = fakeMail(RECIPIENT);
       const r = await createTools(side, log, undefined, mail).send_peer({
-        peer: 'mikewilliams-aa',
+        peer: 'lead-a1',
         message,
       });
       expect(r.method).toBe('inbox');
@@ -166,12 +177,12 @@ describe('send_peer to the seated chief of staff', () => {
     },
   );
 
-  const fromChief = (id: string, expectReply: boolean) =>
+  const fromLead = (id: string, expectReply: boolean) =>
     log.appendMessage(
       buildEnvelope({
         id,
-        from: { runtime: 'claude-code', name: 'mikewilliams-aa', session_id: SEAT_ID },
-        to: { runtime: 'claude-code', name: 'tincan-6c', session_id: WORKER_ID },
+        from: { runtime: 'claude-code', name: 'lead-a1', session_id: RECIPIENT_ID },
+        to: { runtime: 'claude-code', name: 'tincan-6c', session_id: SENDER_ID },
         method: 'inbox',
         expect_reply: expectReply,
         reply_tool: true,
@@ -180,12 +191,12 @@ describe('send_peer to the seated chief of staff', () => {
       true,
     );
 
-  test('a reply to a question the chief of staff is waiting on is delivered', async () => {
-    fromChief('msg_question', true);
+  test('a reply to a question the recipient is waiting on is delivered', async () => {
+    fromLead('msg_question', true);
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'STATUS is the default',
       in_reply_to: 'msg_question',
       answers: true,
@@ -196,56 +207,56 @@ describe('send_peer to the seated chief of staff', () => {
   });
 
   test('a reply to a message that asked nothing still goes to the mailbox', async () => {
-    fromChief('msg_fyi', false);
+    fromLead('msg_fyi', false);
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'ack',
       in_reply_to: 'msg_fyi',
     });
-    expect(r.method).toBe('cos-mail');
+    expect(r.method).toBe('mailbox');
     expect(filed).toHaveLength(1);
     expect(delivered).toEqual([]);
   });
 
-  test('an urgent message is filed as urgent mail (cos-mail sends the ping)', async () => {
+  test('an urgent message is filed as urgent mail (test-inbox notifies)', async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT, { ok: true, mailId: '7', pinged: true });
+    const { mail, filed } = fakeMail(RECIPIENT, { ok: true, mailId: '7', notified: true });
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'BLOCKED: prod is down',
       urgent: true,
     });
     expect(delivered).toEqual([]);
     expect(filed[0]).toMatchObject({ kind: 'BLOCKED', urgent: true });
-    expect(r.notice).toMatch(/urgent, and it was pinged/);
+    expect(r.notice).toMatch(/urgent, and it was notified/);
   });
 
-  test("urgent mail whose ping did not land is delivered directly as well", async () => {
+  test("urgent mail whose notification was not reported is delivered directly as well", async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT, { ok: true, mailId: '7', pinged: false });
+    const { mail, filed } = fakeMail(RECIPIENT, { ok: true, mailId: '7', notified: false });
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'BLOCKED: prod is down',
       urgent: true,
     });
     expect(filed).toHaveLength(1);
     expect(delivered).toHaveLength(1);
     expect(r.method).toBe('inbox');
-    expect(r.notice).toMatch(/urgent mail #7, but cos-mail's ping did not land.*delivered directly/);
+    expect(r.notice).toMatch(/urgent mail #7, but test-inbox did not report notifying the recipient.*delivered directly/);
   });
 
-  test("cos-mail's own ping is delivered, or urgent mail would never reach the session", async () => {
+  test("the inbox command's own notification is delivered, or urgent mail would never reach the session", async () => {
     const { side, delivered } = makeSide({
       selfRuntime: 'external',
-      selfName: async () => 'cos-mail',
+      selfName: async () => 'test-inbox',
       selfDurableId: async () => undefined,
     });
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
-      message: 'mail: 1 urgent — cos-mail read',
+      peer: 'lead-a1',
+      message: 'mail: 1 urgent',
     });
     expect(r.method).toBe('inbox');
     expect(filed).toEqual([]);
@@ -259,9 +270,9 @@ describe('send_peer to the seated chief of staff', () => {
       selfDurableId: async () => undefined,
       replyVia: 'file an issue',
     });
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'backup finished',
     });
     expect(delivered).toEqual([]);
@@ -273,11 +284,11 @@ describe('send_peer to the seated chief of staff', () => {
     expect(filed[0]).not.toHaveProperty('replyTo');
   });
 
-  test('nobody seated (or routing off): delivered as before', async () => {
+  test('no recipient (or routing off): delivered as before', async () => {
     const { side, delivered } = makeSide();
     const { mail, filed } = fakeMail(undefined);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'DONE',
     });
     expect(r.method).toBe('inbox');
@@ -285,103 +296,156 @@ describe('send_peer to the seated chief of staff', () => {
     expect(delivered).toHaveLength(1);
   });
 
-  test('when cos-mail cannot file it, it is delivered, and the sender is told why', async () => {
+  test('when test-inbox cannot file it, it is delivered, and the sender is told why', async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT, { ok: false, error: 'cos-mail: not found' });
+    const { mail, filed } = fakeMail(RECIPIENT, { ok: false, error: 'test-inbox: not found' });
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peer: 'mikewilliams-aa',
+      peer: 'lead-a1',
       message: 'DONE',
     });
     expect(filed).toHaveLength(1);
     expect(delivered).toHaveLength(1);
     expect(r.outcome).toBe('accepted');
     expect(r.method).toBe('inbox');
-    expect(r.notice).toMatch(/did not complete \(cos-mail: not found\).*delivered directly/);
+    expect(r.notice).toMatch(/did not complete \(test-inbox: not found\).*delivered directly/);
   });
 
-  test('a fan-out mails the chief of staff and delivers to the rest', async () => {
+  test('a fan-out mails the recipient and delivers to the rest', async () => {
     const { side, delivered } = makeSide();
-    const { mail, filed } = fakeMail(SEAT);
+    const { mail, filed } = fakeMail(RECIPIENT);
     const r = await createTools(side, log, undefined, mail).send_peer({
-      peers: ['mikewilliams-aa', 'claude-fleet'],
+      peers: ['lead-a1', 'other-b2'],
       message: 'heads up',
     });
-    expect(r.results?.map((x) => x.method)).toEqual(['cos-mail', 'inbox']);
+    expect(r.results?.map((x) => x.method)).toEqual(['mailbox', 'inbox']);
     expect(filed).toHaveLength(1);
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatch(/^claude-fleet: /);
+    expect(delivered[0]).toMatch(/^other-b2: /);
   });
 });
 
 describe('mailRoutingFromEnv', () => {
-  const stateHome = () => join(dir, 'state');
-  const writeSeat = () => {
-    mkdirSync(join(stateHome(), 'my-handler'), { recursive: true });
-    writeFileSync(join(stateHome(), 'my-handler', 'seat'), SEAT_LINE);
+  const home = () => join(dir, 'tincan');
+  const writeRecipient = (path = join(home(), 'mail-recipient')) => {
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, RECIPIENT_LINE);
   };
-  const env = (over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
-    XDG_STATE_HOME: stateHome(),
-    TINCAN_HOME: join(dir, 'tincan'),
-    ...over,
-  });
+  const writeConfig = (config: unknown) => {
+    mkdirSync(home(), { recursive: true });
+    writeFileSync(join(home(), 'mail-routing.json'), JSON.stringify(config));
+  };
+  const env = (over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ TINCAN_HOME: home(), ...over });
 
-  test('reads the seat live from $XDG_STATE_HOME/my-handler/seat', () => {
+  test('with no configuration, the recipient is read live from $TINCAN_HOME/mail-recipient', () => {
     const r = mailRoutingFromEnv(env(), dir);
-    expect(r.seat()).toBeUndefined();
-    writeSeat();
-    expect(r.seat()?.id).toBe(SEAT_ID);
+    expect(r.recipient()).toBeUndefined();
+    writeRecipient();
+    expect(r.recipient()?.id).toBe(RECIPIENT_ID);
   });
 
-  test('TINCAN_MAIL_ROUTING=off seats nobody', () => {
-    writeSeat();
+  test('defaults: tincan-mailbox, no deliver prefixes, the command as its own sender', () => {
+    expect(readConfig(env(), dir)).toEqual({
+      recipientFile: join(home(), 'mail-recipient'),
+      command: 'tincan-mailbox',
+      commandSender: 'tincan-mailbox',
+      deliverPrefixes: [],
+    });
+  });
+
+  test('mail-routing.json sets the recipient file, command, sender and prefixes; ~ is the home dir', () => {
+    writeConfig({
+      recipientFile: '~/state/recipient',
+      command: '/opt/bin/my-inbox',
+      deliverPrefixes: ['HANDOFF-', 7, ''],
+    });
+    expect(readConfig(env(), dir)).toEqual({
+      recipientFile: join(dir, 'state', 'recipient'),
+      command: '/opt/bin/my-inbox',
+      commandSender: 'my-inbox',
+      deliverPrefixes: ['HANDOFF-'],
+    });
+    const r = mailRoutingFromEnv(env(), dir);
+    expect(r.recipient()).toBeUndefined();
+    writeRecipient(join(dir, 'state', 'recipient'));
+    expect(r.recipient()?.id).toBe(RECIPIENT_ID);
+    expect(r.commandName()).toBe('my-inbox');
+    expect(r.commandSender()).toBe('my-inbox');
+    expect(r.deliverPrefixes()).toEqual(['HANDOFF-']);
+  });
+
+  test('a malformed mail-routing.json is all defaults, not a throw', () => {
+    mkdirSync(home(), { recursive: true });
+    writeFileSync(join(home(), 'mail-routing.json'), '{nope');
+    expect(readConfig(env(), dir).command).toBe('tincan-mailbox');
+  });
+
+  test('$TINCAN_MAIL_ROUTING_CONFIG points at another file', () => {
+    const other = join(dir, 'elsewhere.json');
+    writeFileSync(other, JSON.stringify({ command: 'elsewhere-inbox' }));
+    expect(readConfig(env({ TINCAN_MAIL_ROUTING_CONFIG: other }), dir).command).toBe('elsewhere-inbox');
+  });
+
+  test('TINCAN_MAIL_ROUTING=off names nobody', () => {
+    writeRecipient();
     expect(routingOff(env({ TINCAN_MAIL_ROUTING: 'off' }), dir)).toBe(true);
-    expect(mailRoutingFromEnv(env({ TINCAN_MAIL_ROUTING: 'off' }), dir).seat()).toBeUndefined();
+    expect(mailRoutingFromEnv(env({ TINCAN_MAIL_ROUTING: 'off' }), dir).recipient()).toBeUndefined();
   });
 
-  test('$TINCAN_HOME/mail-routing-off seats nobody, with no restart', () => {
-    writeSeat();
+  test('$TINCAN_HOME/mail-routing-off names nobody, with no restart', () => {
+    writeRecipient();
     const r = mailRoutingFromEnv(env(), dir);
-    expect(r.seat()).toBeDefined();
-    mkdirSync(join(dir, 'tincan'), { recursive: true });
-    writeFileSync(join(dir, 'tincan', 'mail-routing-off'), '');
-    expect(r.seat()).toBeUndefined();
+    expect(r.recipient()).toBeDefined();
+    writeFileSync(join(home(), 'mail-routing-off'), '');
+    expect(r.recipient()).toBeUndefined();
   });
 
-  test('files through the cos-mail it is given, and reads back the mail number', async () => {
+  test('files through the configured command, and reads back the mail number', async () => {
     const argvFile = join(dir, 'argv');
-    const fake = join(dir, 'fake-cos-mail');
+    const fake = join(dir, 'fake-inbox');
     writeFileSync(
       fake,
       `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${argvFile}'\necho "mail #42: DONE from tincan-6c"\n`,
     );
     chmodSync(fake, 0o755);
-    const r = mailRoutingFromEnv(env({ TINCAN_COS_MAIL: fake }), dir);
+    writeConfig({ command: fake });
+    const r = mailRoutingFromEnv(env(), dir);
     const res = await r.file({
-      to: WORKER_ID,
+      to: SENDER_ID,
       kind: 'DONE',
       text: 'shipped',
       from: 'tincan-6c',
-      sessionId: WORKER_ID,
-      replyTo: `claude-code:tincan-6c.${WORKER_ID}`,
+      sessionId: SENDER_ID,
+      replyTo: `claude-code:tincan-6c.${SENDER_ID}`,
       urgent: true,
       key: 'tincan:msg_1',
     });
-    // Urgent, and the fake printed no "pinged" line: reported as not pinged.
-    expect(res).toEqual({ ok: true, mailId: '42', pinged: false });
+    // Urgent, and the fake printed no "notified" line: reported as not notified.
+    expect(res).toEqual({ ok: true, mailId: '42', notified: false });
     expect(readFileSync(argvFile, 'utf8').trim().split('\n')).toEqual([
-      'send', WORKER_ID, 'DONE', 'shipped',
+      'send', SENDER_ID, 'DONE', 'shipped',
       '--from', 'tincan-6c',
-      '--session-id', WORKER_ID,
-      '--reply-to', `claude-code:tincan-6c.${WORKER_ID}`,
+      '--session-id', SENDER_ID,
+      '--reply-to', `claude-code:tincan-6c.${SENDER_ID}`,
       '--key', 'tincan:msg_1',
       '--urgent',
     ]);
   });
 
+  test.each(['notified lead-a1', 'pinged lead-a1'])('urgent mail whose command prints %j was notified', async (line) => {
+    const fake = join(dir, 'notifying-inbox');
+    writeFileSync(fake, `#!/bin/sh\necho "mail #3"\necho "${line}"\n`);
+    chmodSync(fake, 0o755);
+    writeConfig({ command: fake });
+    const res = await mailRoutingFromEnv(env(), dir).file({
+      to: 'x', kind: 'BLOCKED', text: 't', from: 'x', urgent: true, key: 'k',
+    });
+    expect(res).toEqual({ ok: true, mailId: '3', notified: true });
+  });
+
   test('a failed first try is retried under the same key, so a stalled filing is not filed twice', async () => {
     const calls = join(dir, 'calls');
-    const fake = join(dir, 'flaky-cos-mail');
-    // First call: "files" and dies. Second: what cos-mail says for a key it already has.
+    const fake = join(dir, 'flaky-inbox');
+    // First call: "files" and dies. Second: what the command says for a key it already has.
     writeFileSync(
       fake,
       `#!/bin/sh\necho "$@" >> '${calls}'\n` +
@@ -389,7 +453,8 @@ describe('mailRoutingFromEnv', () => {
         `echo "mail #9: already sent (key tincan:msg_2)"\n`,
     );
     chmodSync(fake, 0o755);
-    const r = mailRoutingFromEnv(env({ TINCAN_COS_MAIL: fake }), dir);
+    writeConfig({ command: fake });
+    const r = mailRoutingFromEnv(env(), dir);
     const res = await r.file({ to: 'x', kind: 'STATUS', text: 't', from: 'x', urgent: false, key: 'tincan:msg_2' });
     expect(res).toEqual({ ok: true, mailId: '9' });
     const lines = readFileSync(calls, 'utf8').trim().split('\n');
@@ -398,112 +463,10 @@ describe('mailRoutingFromEnv', () => {
     expect(lines[1]).toContain('--key tincan:msg_2');
   });
 
-  test('a missing cos-mail is a failure to file, not a throw', async () => {
-    const r = mailRoutingFromEnv(env({ TINCAN_COS_MAIL: join(dir, 'nope') }), dir);
+  test('a missing command is a failure to file, not a throw', async () => {
+    writeConfig({ command: join(dir, 'nope') });
+    const r = mailRoutingFromEnv(env(), dir);
     const res = await r.file({ to: 'x', kind: 'STATUS', text: 't', from: 'x', urgent: false, key: 'k' });
     expect(res.ok).toBe(false);
   });
-
-  // The real cos-mail, against a throwaway state dir: proves the item is in its
-  // own format. Skipped where it is not installed (CI).
-  const realCosMail = (() => {
-    try {
-      return execFileSync('sh', ['-c', 'command -v cos-mail'], { encoding: 'utf8' }).trim();
-    } catch {
-      return '';
-    }
-  })();
-  test.skipIf(realCosMail === '')('the real cos-mail writes the item in its own format', async () => {
-    const mailFile = join(dir, 'mail.jsonl');
-    const r = mailRoutingFromEnv(
-      env({
-        TINCAN_COS_MAIL: realCosMail,
-        PATH: process.env.PATH,
-      }),
-      dir,
-    );
-    // cos-mail reads its paths from its own environment, which execFile inherits.
-    const saved = { ...process.env };
-    Object.assign(process.env, {
-      COS_MAIL: mailFile,
-      COS_ACTIVITY: join(dir, 'activity.jsonl'),
-      COS_LEDGER: join(dir, 'ledger.json'),
-      XDG_STATE_HOME: stateHome(),
-      COS_MAIL_TINCAN: 'true',
-    });
-    try {
-      const res = await r.file({
-        to: WORKER_ID,
-        kind: 'STATUS',
-        text: 'hello chief',
-        from: 'tincan-6c',
-        sessionId: WORKER_ID,
-        replyTo: `claude-code:tincan-6c.${WORKER_ID}`,
-        urgent: false,
-        key: 'tincan:msg_real',
-      });
-      expect(res).toEqual({ ok: true, mailId: '1' });
-    } finally {
-      process.env = saved;
-    }
-    expect(existsSync(mailFile)).toBe(true);
-    const item = JSON.parse(readFileSync(mailFile, 'utf8').trim());
-    expect(item).toMatchObject({
-      id: 1,
-      from: 'tincan-6c',
-      session_id: WORKER_ID,
-      reply_to: `claude-code:tincan-6c.${WORKER_ID}`,
-      kind: 'STATUS',
-      text: 'hello chief',
-      urgent: false,
-      read: false,
-      key: 'tincan:msg_real',
-    });
-  });
-
-  test.skipIf(realCosMail === '')(
-    'urgent: the real cos-mail files it urgent and pings the seat through tincan send --from cos-mail',
-    async () => {
-      writeSeat();
-      const pingArgs = join(dir, 'ping-argv');
-      const fakeTincan = join(dir, 'fake-tincan');
-      writeFileSync(
-        fakeTincan,
-        `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${pingArgs}'\necho '{"outcome":"accepted"}'\n`,
-      );
-      chmodSync(fakeTincan, 0o755);
-      const mailFile = join(dir, 'mail.jsonl');
-      const r = mailRoutingFromEnv(env({ TINCAN_COS_MAIL: realCosMail }), dir);
-      const saved = { ...process.env };
-      Object.assign(process.env, {
-        COS_MAIL: mailFile,
-        COS_ACTIVITY: join(dir, 'activity.jsonl'),
-        COS_LEDGER: join(dir, 'ledger.json'),
-        XDG_STATE_HOME: stateHome(),
-        COS_MAIL_TINCAN: fakeTincan,
-        CLAUDE_CODE_SESSION_ID: WORKER_ID,
-      });
-      let res: FileResult;
-      try {
-        res = await r.file({
-          to: WORKER_ID,
-          kind: 'BLOCKED',
-          text: 'prod is down',
-          from: 'tincan-6c',
-          sessionId: WORKER_ID,
-          urgent: true,
-          key: 'tincan:msg_urgent',
-        });
-      } finally {
-        process.env = saved;
-      }
-      expect(res).toEqual({ ok: true, mailId: '1', pinged: true });
-      expect(JSON.parse(readFileSync(mailFile, 'utf8').trim())).toMatchObject({ urgent: true });
-      const argv = readFileSync(pingArgs, 'utf8').trim().split('\n');
-      expect(argv.slice(0, 5)).toEqual(['send', '--to', SEAT.canonicalId, '--from', 'cos-mail']);
-      expect(argv[6]).toMatch(/^mail: 1 urgent — cos-mail read$/);
-      // ...and that ping, from `cos-mail`, is one routing delivers: see
-      // "cos-mail's own ping is delivered" above.
-    },
-  );
 });

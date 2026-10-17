@@ -109,10 +109,10 @@ describe('a freshly started session', () => {
       env({
         listThreads: async () => [],
         liveThreads: async () =>
-          new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', { cwd: '/Users/mike/Source/brutalsystems' }]]),
+          new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', { cwd: '/Users/dev/Source/brutalsystems' }]]),
       }),
     );
-    expect(peers[0]!.cwd).toBe('/Users/mike/Source/brutalsystems');
+    expect(peers[0]!.cwd).toBe('/Users/dev/Source/brutalsystems');
   });
 
   test('prefers thread/list metadata once the thread has one', async () => {

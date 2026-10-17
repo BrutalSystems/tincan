@@ -28,11 +28,11 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('messagesPath', () => {
   test('defaults to ~/.tincan/messages.jsonl', () => {
-    expect(messagesPath({}, '/home/mike')).toBe('/home/mike/.tincan/messages.jsonl');
+    expect(messagesPath({}, '/home/dev')).toBe('/home/dev/.tincan/messages.jsonl');
   });
 
   test('honours TINCAN_HOME', () => {
-    expect(messagesPath({ TINCAN_HOME: '/elsewhere' }, '/home/mike')).toBe(
+    expect(messagesPath({ TINCAN_HOME: '/elsewhere' }, '/home/dev')).toBe(
       '/elsewhere/messages.jsonl',
     );
   });
@@ -413,7 +413,7 @@ describe('record chaining', () => {
    * #23. The log records what a session SENT. That a receiver can see what it
    * was sent is not something Tin Can does — it is a coincidence of the log
    * being machine-global: the sender's record sits in the same file the
-   * receiver reads. Ferry ends that, because the sender's record stays on the
+   * receiver reads. A cross-machine relay ends that, because the sender's record stays on the
    * sender's disk.
    *
    * The rule, settled before the code (see the issue): exactly one record per
@@ -432,7 +432,7 @@ describe('record chaining', () => {
     const incoming = () =>
       buildEnvelope({
         id: 'msg_in1',
-        from: { runtime: 'claude-code', name: 'ferry', session_id: 'sid-remote', machine: 'homemac' },
+        from: { runtime: 'claude-code', name: 'relay', session_id: 'sid-remote', machine: 'remote-mac' },
         to: { runtime: 'claude-code', name: 'billing-api', session_id: 'sid-mine' },
         method: 'inbox',
         reply_tool: true,
@@ -467,7 +467,7 @@ describe('record chaining', () => {
     test('is addressed to us by the same durable id an outgoing record uses', () => {
       const rec = log.appendIncoming(incoming());
       expect(rec.to.session_id).toBe('sid-mine');
-      expect(rec.from.machine).toBe('homemac');
+      expect(rec.from.machine).toBe('remote-mac');
     });
 
     test('does not disturb existing reads, which never asked about direction', () => {
@@ -797,7 +797,7 @@ describe('rotation', () => {
 // A send is logged BEFORE it is attempted, so a crash in between leaves a
 // message record with no outcome record. That read identically to a delivery
 // that failed — reporting a guess as a fact. "We do not know" is the honest
-// answer, and it is the one Ferry's own crash probe arrived at independently.
+// answer, and it is the one a cross-machine relay's own crash probe arrived at independently.
 describe('outcome on a log record', () => {
   test('accepted once the outcome record lands', () => {
     log.appendMessage(env('msg_1'), false);

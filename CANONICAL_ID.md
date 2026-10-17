@@ -288,7 +288,7 @@ sessions; the send was a reply, so `reply_misrouted` caught it, but a new
 message would have gone through.
 
 This is not an exotic collision. It happens whenever a short name and a longer
-one built on it coexist — `muster` / `muster-b1`, `ferry` / `ferry-9b`.
+one built on it coexist — `muster` / `muster-b1`, `relay` / `relay-9b`.
 
 **It is kept because it cannot be fixed from the listing alone.** The hazard is
 indistinguishable from the behaviour directly above it in this document: `auth`

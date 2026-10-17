@@ -2,9 +2,9 @@
 
 ## Vocabulary — these are instructions, not topics to discuss
 
-Mike uses these words to mean specific actions. When he says one, **do it.**
-Do not ask which bump, do not ask whether to publish, do not offer to do it —
-the asking is the thing he does not want.
+In this repo these words mean specific actions. When a maintainer says one,
+**do it.** Do not ask which bump, do not ask whether to publish, do not offer to
+do it.
 
 ### "cut" / "cut a release"
 
@@ -76,13 +76,14 @@ assert otherwise. Birddog is the same (no install scripts, no dependencies at
 all). Only muster genuinely needs an entry, because its `postinstall` builds
 node-pty.
 
-It is Mike's config, not ours: report what it should say, don't write it.
+It is the user's own config, not this repo's: report what it should say, don't
+write it.
 
 ### "...and update globally"
 
 Means: **watch the run, then install the published version on this machine**,
-so Mike can `cd` into any local path and run the `tincan` CLI at the version
-just shipped.
+so the `tincan` CLI on `PATH`, from any directory, is the version just
+shipped.
 
 ```bash
 gh run watch --repo BrutalSystems/tincan --exit-status   # wait for the publish

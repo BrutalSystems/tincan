@@ -507,19 +507,19 @@ describe('a notice reaches a CLI sender', () => {
   test('on stderr, with the JSON line on stdout unchanged (#26: "went to the mailbox")', async () => {
     let out = '';
     let err = '';
-    const code = await runSend(['--to', 'chief', '--from', 'nightly-job', '--message', 'done'], {
+    const code = await runSend(['--to', 'lead', '--from', 'nightly-job', '--message', 'done'], {
       stdout: (s) => (out += s),
       stderr: (s) => (err += s),
       send: async () => ({
         outcome: 'accepted',
-        method: 'cos-mail',
+        method: 'mailbox',
         message_id: 'msg_1',
         peer_state: 'idle',
-        notice: 'chief is the seated chief of staff, so this went to its mailbox (cos-mail #3)',
+        notice: 'lead is the configured mail recipient, so this went to its mailbox (my-inbox #3)',
       }),
     });
     expect(code).toBe(0);
     expect(JSON.parse(out)).toEqual({ outcome: 'accepted', message_id: 'msg_1', peer_state: 'idle' });
-    expect(err).toMatch(/went to its mailbox \(cos-mail #3\)/);
+    expect(err).toMatch(/went to its mailbox \(my-inbox #3\)/);
   });
 });

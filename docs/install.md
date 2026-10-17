@@ -277,8 +277,8 @@ cp -r plugins/opencode/tincan-lib ~/.config/opencode/plugin/
 - `TINCAN_HOME` — where the log lives, and where the opencode plugin keeps its
   own registry and log. Default `~/.tincan`.
 - `CODEX_HOME` — honoured for locating Codex state. Default `~/.codex`.
-- `TINCAN_MAIL_ROUTING=off`, `TINCAN_COS_MAIL`, `XDG_STATE_HOME` — mail routing
-  to a seated chief of staff; see [Mail routing](./mail-routing.md).
+- `TINCAN_MAIL_ROUTING=off`, `TINCAN_MAIL_ROUTING_CONFIG` — mail routing to a
+  configured recipient; see [Mail routing](./mail-routing.md).
 
 ## Prerequisites
 

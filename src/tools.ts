@@ -487,7 +487,7 @@ export function createTools(
   side: Side,
   log: MessageLog,
   keys?: KeyStore,
-  // Read live from the seat file and cos-mail on every send; tests pass their own.
+  // Read live from the mail-routing configuration on every send; tests pass their own.
   mail: MailRouting = mailRoutingFromEnv(),
 ) {
   // One guard per peer runtime, so a Codex peer's tight budget does not
@@ -932,17 +932,22 @@ export function createTools(
       const broadcastId = fanOut && targets.length > 1 ? newBroadcastId() : undefined;
       const results: FanOutResult[] = [];
 
-      // #26: a message to the seated chief of staff is filed in its mailbox
-      // rather than cut into its conversation. Read once per call, like self.
-      const seat = mail.seat();
+      // #26: a message to the configured mail recipient is filed in its mailbox
+      // rather than cut into its session. Read once per call, like self.
+      const recipient = mail.recipient();
+      const deliverPrefixes = recipient === undefined ? [] : mail.deliverPrefixes();
+      const commandSender = recipient === undefined ? '' : mail.commandSender();
+      const inbox = recipient === undefined ? '' : mail.commandName();
       const original =
-        seat !== undefined && args.in_reply_to !== undefined
+        recipient !== undefined && args.in_reply_to !== undefined
           ? log.findMessage(args.in_reply_to)
           : undefined;
       const toMailbox = (t: SidePeer): boolean => {
         const durable = durableIdOf(t);
         return routesToMailbox({
-          seat,
+          recipient,
+          deliverPrefixes,
+          commandSender,
           targetId: 'thread_id' in durable ? durable.thread_id : durable.session_id,
           text: args.message,
           fromRuntime: side.selfRuntime,
@@ -958,7 +963,7 @@ export function createTools(
       // Filed, or the reason it could not be — in which case it is delivered.
       const fileInMailbox = async (
         envelopeId: string,
-      ): Promise<{ mailId?: string; pinged?: boolean; error?: string }> => {
+      ): Promise<{ mailId?: string; notified?: boolean; error?: string }> => {
         const sid = selfId === undefined ? undefined : 'thread_id' in selfId ? selfId.thread_id : selfId.session_id;
         const replyTo =
           side.selfRuntime === 'external'
@@ -967,7 +972,7 @@ export function createTools(
         const filed = await mail.file({
           to: sid ?? selfName,
           kind: kindOf(args.message),
-          // cos-mail keeps one line per item; a sender with no reply path says where to answer.
+          // One line per item; a sender with no reply path says where to answer.
           text:
             side.replyVia === undefined ? args.message : `${args.message} (reply via: ${side.replyVia})`,
           from: selfName,
@@ -979,7 +984,7 @@ export function createTools(
         return filed.ok
           ? {
               ...(filed.mailId !== undefined && { mailId: filed.mailId }),
-              ...(filed.pinged !== undefined && { pinged: filed.pinged }),
+              ...(filed.notified !== undefined && { notified: filed.notified }),
             }
           : { error: filed.error };
       };
@@ -1038,18 +1043,18 @@ export function createTools(
         if (toMailbox(target.side)) {
           const filed = await fileInMailbox(envelope.id);
           const n = filed.mailId === undefined ? '' : ` #${filed.mailId}`;
-          if (filed.error === undefined && args.urgent && filed.pinged === false) {
-            // Filed, but cos-mail's ping did not reach the session: deliver it too.
-            routingFailed = `filed as urgent mail${n}, but cos-mail's ping did not land`;
+          if (filed.error === undefined && args.urgent && filed.notified === false) {
+            // Filed, but the recipient was not notified: deliver it too.
+            routingFailed = `filed as urgent mail${n}, but ${inbox} did not report notifying the recipient`;
           } else if (filed.error === undefined) {
             outcome = {
               delivered: true,
-              method: 'cos-mail',
+              method: 'mailbox',
               notice:
-                `${target.display} is the seated chief of staff, so this went to its mailbox ` +
-                `(cos-mail${n}), not into its session; it reads mail when it is ready.` +
-                (args.urgent ? ` Filed as urgent, and it was pinged.` : '') +
-                ` Next time use cos-mail send directly.`,
+                `${target.display} is the configured mail recipient, so this went to its mailbox ` +
+                `(${inbox}${n}), not into its session; it reads mail when it is ready.` +
+                (args.urgent ? ` Filed as urgent, and it was notified.` : '') +
+                ` Next time use ${inbox} send directly.`,
             };
           } else {
             routingFailed = filed.error;
@@ -1068,7 +1073,7 @@ export function createTools(
             outcome = {
               ...outcome,
               notice:
-                `Mailbox routing to the chief of staff did not complete (${routingFailed}), ` +
+                `Mailbox routing to the mail recipient did not complete (${routingFailed}), ` +
                 `so it was delivered directly.` +
                 (outcome.notice === undefined ? '' : ` ${outcome.notice}`),
             };

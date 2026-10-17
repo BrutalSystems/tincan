@@ -8,11 +8,11 @@ import { slugify, type RuntimeName, type SenderKind } from './naming.js';
 
 /**
  * How the message reached the peer: the Codex app-server's experimental queue,
- * the Claude Code inbox socket, or an opencode prompt (Task 3). `cos-mail` is
- * not delivery to the peer at all: the message was filed in the seated chief of
- * staff's mailbox instead (see mail-routing.ts).
+ * the Claude Code inbox socket, or an opencode prompt (Task 3). `mailbox` is
+ * not delivery to the peer at all: the message was filed with the configured
+ * inbox command instead (see mail-routing.ts).
  */
-export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt_async' | 'cos-mail';
+export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt_async' | 'mailbox';
 
 export interface EnvelopeParty {
   /**
@@ -33,7 +33,7 @@ export interface EnvelopeParty {
    * the explicit direction.
    *
    * Nothing populates this yet. It exists so that the canonical id in the
-   * rendered tag is already the right SHAPE when Ferry starts carrying messages
+   * rendered tag is already the right SHAPE when a relay starts carrying messages
    * across machines — at which point the transport fills this in and the
    * envelope format does not have to change underneath anyone.
    */

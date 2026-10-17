@@ -19,6 +19,15 @@ or two, so an install that races it fetches the previous version or 404s.
 
 ## Before you start
 
+**Turn on the pre-push check once per clone:** `git config core.hooksPath
+.githooks`. This repository is public, and a release publishes its commit and
+tag messages and the npm package. `scripts/check-public.sh` blocks a push whose
+new lines, commit messages or ref names contain a personal home path, an email
+address or a credential, or match any pattern in your own local terms list
+(`$PUBLIC_TERMS_FILE`, else `git config public.termsFile`, else
+`~/.config/public-terms.txt`; never committed). Run it by hand with
+`scripts/check-public.sh --tree` or `--range A..B`.
+
 **For the normal release: push access to this repository, and nothing else.**
 Publishing runs in CI and authenticates over OIDC, so there is no npm account,
 no token and no local login in the release path — see
@@ -29,7 +38,7 @@ The prerequisites below apply only to
 unavailable:
 
 - Publish rights on the `@brutalsystems` npm scope.
-- `NPM_TOKEN` in Keep (`keep unlock NPM_TOKEN`) — a **granular** token scoped
+- `NPM_TOKEN` from your secret manager — a **granular** token scoped
   to `@brutalsystems`, not a classic account-wide one. Or skip the token and
   authenticate interactively.
 
@@ -306,23 +315,15 @@ cannot ship, whether from CI or a laptop.
 Still supported, and the fallback when CI is unavailable. Everything below
 assumes you have done steps 1-4 already.
 
-**On Mike's machine, use Keep for unattended publishing.** `keep` is a shell
-function loaded by interactive zsh. Unlock only the npm token in a subshell:
-
-```bash
-zsh -ic '(keep unlock NPM_TOKEN && npm publish --//registry.npmjs.org/:_authToken="$NPM_TOKEN" --no-progress)'
-```
-
-Use this flow before interactive authentication. Never print the token or write
-it to a file; the subshell discards the exported value when publishing finishes.
-
 **Interactive** — prompts for a one-time password:
 
 ```bash
 npm publish
 ```
 
-**With a token** — no prompt, and the token never touches a file:
+**With a token** — no prompt, and the token never touches a file. Supply
+`NPM_TOKEN` from your secret manager for this one command only, and never print
+it:
 
 ```bash
 npm publish --//registry.npmjs.org/:_authToken="$NPM_TOKEN"

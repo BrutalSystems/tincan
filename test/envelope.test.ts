@@ -8,7 +8,7 @@ const metaLine = (rendered: string): string =>
 const base = () =>
   buildEnvelope({
     id: 'msg_01J8TEST',
-    from: { runtime: 'claude-code', name: 'billing-api', cwd: '/Users/mike/src/billing' },
+    from: { runtime: 'claude-code', name: 'billing-api', cwd: '/Users/dev/src/billing' },
     to: { runtime: 'codex', name: 'auth-refactor', thread_id: '019b63ce-0000-0000-0000-000000000000' },
     method: 'thread/queue/add',
     expect_reply: true,
@@ -34,7 +34,7 @@ describe('renderEnvelope', () => {
    * slug and may be stale.
    */
   test('names the sender working directory so the receiver can see where the question came from', () => {
-    expect(metaLine(renderEnvelope(base()))).toContain('cwd="/Users/mike/src/billing"');
+    expect(metaLine(renderEnvelope(base()))).toContain('cwd="/Users/dev/src/billing"');
   });
 
   /**
@@ -59,9 +59,9 @@ describe('renderEnvelope', () => {
   test('keeps a working directory that contains a space, rather than mangling it', () => {
     const e = buildEnvelope({
       ...base(),
-      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/Users/mike/My Projects/billing' },
+      from: { runtime: 'claude-code', name: 'billing-api', cwd: '/Users/dev/My Projects/billing' },
     });
-    expect(metaLine(renderEnvelope(e))).toContain('cwd="/Users/mike/My Projects/billing"');
+    expect(metaLine(renderEnvelope(e))).toContain('cwd="/Users/dev/My Projects/billing"');
   });
 
   /** An external sender may have no cwd; an empty attribute is worse than none. */
@@ -109,7 +109,7 @@ describe('renderEnvelope', () => {
    * the recipient to assemble them. That recipe is fragile in one direction and
    * impossible in another. Fragile locally: it only works while the name in
    * `from=` is already slug-shaped, which was not guaranteed until #40. And
-   * impossible across a machine boundary, which is what Ferry brings: a bare
+   * impossible across a machine boundary, which is what a cross-machine relay brings: a bare
    * name is defined to mean THIS machine (`wantsMachine` in resolvePeer), so a
    * remote sender's name either refuses as unknown or lands on a local peer
    * that merely shares its prefix. canonical_id carries the machine and is
@@ -131,12 +131,12 @@ describe('renderEnvelope', () => {
     expect(metaLine(renderEnvelope(e))).toContain('canonical_id="codex:auth-refactor.th-42"');
   });
 
-  test('qualifies the canonical id with @machine, which is the whole point across a Ferry boundary', () => {
+  test('qualifies the canonical id with @machine, which is the whole point across a machine boundary', () => {
     const e = buildEnvelope({
       ...base(),
       from: {
         runtime: 'claude-code',
-        name: 'ferry',
+        name: 'relay',
         cwd: '/src/f',
         session_id: 'sid-7',
         machine: 'Home Mac',
@@ -144,7 +144,7 @@ describe('renderEnvelope', () => {
     });
     // Slugified like every other machine component, so the address the
     // recipient reads back is the address resolvePeer accepts.
-    expect(metaLine(renderEnvelope(e))).toContain('canonical_id="claude-code:ferry.sid-7@home-mac"');
+    expect(metaLine(renderEnvelope(e))).toContain('canonical_id="claude-code:relay.sid-7@home-mac"');
   });
 
   test('omits the canonical id when the sender has no durable id, rather than emitting a half one', () => {
@@ -226,7 +226,7 @@ describe('buildEnvelope', () => {
     const e: Envelope = base();
     expect(e.from.runtime).toBe('claude-code');
     expect(e.from.name).toBe('billing-api');
-    expect(e.from.cwd).toBe('/Users/mike/src/billing');
+    expect(e.from.cwd).toBe('/Users/dev/src/billing');
     expect(e.to.runtime).toBe('codex');
     expect(e.to.thread_id).toBe('019b63ce-0000-0000-0000-000000000000');
     expect(e.method).toBe('thread/queue/add');
@@ -385,7 +385,7 @@ describe('renderEnvelope leads with the sender text', () => {
     const rendered = renderEnvelope(base());
     expect(rendered).toContain(
       '<peer_message from="billing-api" runtime="claude-code" ' +
-        'cwd="/Users/mike/src/billing" id="msg_01J8TEST" />',
+        'cwd="/Users/dev/src/billing" id="msg_01J8TEST" />',
     );
     expect(rendered).not.toContain('</peer_message>');
   });

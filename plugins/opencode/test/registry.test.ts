@@ -9,12 +9,12 @@ const info: SessionInfo = {
   id: 'ses_f41a2b3c4ffeExampleSess01Z',
   slug: 'nimble-wizard',
   title: 'auth refactor',
-  directory: '/Users/mike/Source/billing',
+  directory: '/Users/dev/Source/billing',
   version: '1.18.31',
 };
 
 const ctx: RecordContext = {
-  socket: '/Users/mike/.tincan/peers/opencode/inst-a91f.sock',
+  socket: '/Users/dev/.tincan/peers/opencode/inst-a91f.sock',
   instance_id: 'inst-a91f',
   pid: 41233,
   plugin_version: '1.0.0',
@@ -31,9 +31,9 @@ describe('composeRecord', () => {
       session_id: 'ses_f41a2b3c4ffeExampleSess01Z',
       slug: 'nimble-wizard',
       title: 'auth refactor',
-      directory: '/Users/mike/Source/billing',
+      directory: '/Users/dev/Source/billing',
       state: 'idle',
-      socket: '/Users/mike/.tincan/peers/opencode/inst-a91f.sock',
+      socket: '/Users/dev/.tincan/peers/opencode/inst-a91f.sock',
       instance_id: 'inst-a91f',
       pid: 41233,
       plugin_version: '1.0.0',

@@ -128,7 +128,7 @@ describe('selfNameFor', () => {
       selfNameFor('claude-code', {
         registryDirs: () => [join(dir, 'sessions')],
         pid: 1,
-        cwd: '/Users/mike/Source/My Project',
+        cwd: '/Users/dev/Source/My Project',
         env: {},
       }),
     ).toBe('my-project');
@@ -186,7 +186,7 @@ describe('self-name resolution timing', () => {
     // for the rest of its life.
     let titled = false;
     const resolve = async () => (titled ? 'respond-to-greeting' : undefined);
-    const cached = makeSelfNameResolver(resolve, '/Users/mike/Source/brutalsystems/tincan');
+    const cached = makeSelfNameResolver(resolve, '/Users/dev/Source/brutalsystems/tincan');
 
     expect(await cached()).toBe('tincan'); // before the first turn
     titled = true;
@@ -236,7 +236,7 @@ describe('codexSelfNameOf', () => {
   });
 
   test('falls back to the directory name when the thread has no title', () => {
-    expect(codexSelfNameOf(null, '/Users/mike/Source/brutalsystems')).toBe('brutalsystems');
+    expect(codexSelfNameOf(null, '/Users/dev/Source/brutalsystems')).toBe('brutalsystems');
   });
 });
 
