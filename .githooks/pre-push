@@ -1,4 +1,5 @@
 #!/bin/sh
 # Enable with: git config core.hooksPath .githooks
 # Blocks a push that matches a private or generic pattern; see scripts/check-public.sh.
-exec "$(git rev-parse --show-toplevel)/scripts/check-public.sh"
+top=$(git rev-parse --show-toplevel) || { echo "pre-push: cannot find the repository root" >&2; exit 2; }
+exec "$top/scripts/check-public.sh" --remote "$@"

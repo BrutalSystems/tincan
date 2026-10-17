@@ -1,5 +1,5 @@
 /**
- * Direct messages to a configured recipient go to a configured mailbox (#26).
+ * Direct messages to a configured recipient go to a configured mailbox.
  *
  * Some setups have one session that should not be interrupted by every message
  * addressed to it — a session in conversation with a human, say, where each
@@ -46,6 +46,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { slugify } from './naming.js';
 
 /** What the router needs to know about the recipient. */
 export interface Recipient {
@@ -187,7 +188,8 @@ export function readConfig(env: NodeJS.ProcessEnv, home: string = homedir()): Ma
   return {
     recipientFile: expandHome(str(raw.recipientFile) ?? join(tincanHome(env, home), 'mail-recipient'), home),
     command: expandHome(command, home),
-    commandSender: str(raw.commandSender) ?? basename(command),
+    // A `tincan send --from` name must be slug-shaped, so derive one: `mailbox.py` -> `mailbox`.
+    commandSender: str(raw.commandSender) ?? slugify(basename(command).replace(/\.[^.]*$/, '')),
     deliverPrefixes: Array.isArray(raw.deliverPrefixes)
       ? raw.deliverPrefixes.filter((p): p is string => typeof p === 'string' && p.length > 0)
       : [],

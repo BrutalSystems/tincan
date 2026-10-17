@@ -8,7 +8,7 @@ command**. Tin Can then files direct messages to the recipient with the inbox
 command instead of delivering them, and the recipient reads its mailbox when it
 is ready.
 
-It is off unless configured: with no recipient file, nothing changes (#26).
+It is off unless configured: with no recipient file, nothing changes.
 
 ## Configuration
 

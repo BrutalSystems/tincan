@@ -3,12 +3,13 @@
 # personal home paths, email addresses, credentials, and any terms in a local,
 # uncommitted list.
 #
-#   scripts/check-public.sh                 as a pre-push hook: reads git's ref lines on stdin
-#   scripts/check-public.sh --range A..B    checks the commits in A..B
-#   scripts/check-public.sh --tree [REV]    checks every tracked file at REV (default HEAD)
+#   scripts/check-public.sh --remote NAME [URL]   as a pre-push hook: reads git's ref lines on stdin
+#   scripts/check-public.sh --range A..B          checks the commits in A..B
+#   scripts/check-public.sh --tree [REV]          checks every tracked file at REV (default HEAD)
 #
-# Checked: added diff lines, commit messages and pushed ref names (--range and
-# hook), or file contents (--tree).
+# Checked: added diff lines (merges against their first parent), added and
+# renamed paths, commit messages, and, as the hook, pushed ref names and
+# annotated tag messages; or, with --tree, every path and file.
 #
 # Patterns: the generic ones below, plus the local terms file, one extended
 # regex per line, `#` comments and blank lines ignored, matched
@@ -55,12 +56,21 @@ allowed="$work/allowed"
 cat >"$allowed" <<'EOF'
 ^(/Users|/home)/(example|dev|user|username|you|me|x|other|someone|alice|bob|runner|[a-z]|\$[A-Za-z_]+|<[^>]*>)$
 @(example\.(com|org|net)|users\.noreply\.github\.com)$
+@[1-9]x\.(png|jpe?g|webp|gif|svg)$
 ^(noreply@anthropic\.com|noreply@github\.com|npm-oidc-no-reply@github\.com|git@github\.com)$
 EOF
 
 terms="$work/terms"
 : >"$terms"
-explicit=${PUBLIC_TERMS_FILE:-$(git config --get public.termsFile 2>/dev/null || true)}
+explicit=${PUBLIC_TERMS_FILE:-}
+if [ -z "$explicit" ]; then
+  # Exit 1 is "not set"; anything else is git failing, which must not pass.
+  explicit=$(git config --get public.termsFile)
+  case $? in
+    0 | 1) ;;
+    *) echo "check-public: git config failed reading public.termsFile" >&2; exit 2 ;;
+  esac
+fi
 if [ -n "$explicit" ]; then
   src=${explicit/#\~/$HOME}
   [ -r "$src" ] || { echo "check-public: terms file not readable: $src" >&2; exit 2; }
@@ -86,13 +96,17 @@ done
 text="$work/text"
 : >"$text"
 
-add_range() { # $1 = rev-list arguments
+add_range() { # rev-list arguments
   # Added lines only, from every commit, so a term added and removed again in
-  # the same push is still caught; plus each full commit message.
-  git log --format=%B $1 >>"$text" \
-    || { echo "check-public: git log failed for $1" >&2; exit 2; }
-  git log --no-color --no-ext-diff -p --format= $1 >"$work/patch" \
-    || { echo "check-public: git log -p failed for $1" >&2; exit 2; }
+  # the same push is still caught; a merge is diffed against its first parent,
+  # so text written while resolving it is seen too. Plus each full commit
+  # message and every path a commit adds or renames to.
+  git log --format=%B "$@" >>"$text" \
+    || { echo "check-public: git log failed for $*" >&2; exit 2; }
+  git log --no-color --no-ext-diff --diff-merges=first-parent --name-only --diff-filter=ACR --format= "$@" >>"$text" \
+    || { echo "check-public: git log --name-only failed for $*" >&2; exit 2; }
+  git log --no-color --no-ext-diff --diff-merges=first-parent -p --format= "$@" >"$work/patch" \
+    || { echo "check-public: git log -p failed for $*" >&2; exit 2; }
   "$GREP" -E '^\+' "$work/patch" | "$GREP" -vE '^\+\+\+ ' >>"$text"
   local s=("${PIPESTATUS[@]}")
   [ "${s[0]}" -le 1 ] && [ "${s[1]}" -le 1 ] || exit 2
@@ -103,25 +117,39 @@ case "${1:-}" in
     [ -n "${2:-}" ] || { echo "usage: $0 --range A..B" >&2; exit 2; }
     add_range "$2"
     ;;
-  --tree)
-    rev=${2:-HEAD}
-    git grep -I -h -e '' "$rev" -- >"$text" 2>"$work/err"
-    [ $? -le 1 ] || { echo "check-public: git grep failed: $(cat "$work/err")" >&2; exit 2; }
-    ;;
-  '')
-    # pre-push: "<local ref> <local sha> <remote ref> <remote sha>" per line.
+  --remote)
+    # Only as the hook: git passes the remote's name and URL, then ref lines on stdin.
+    shift
+    remote=${1:-}
     while read -r lref lsha rref rsha; do
       [ "$lsha" = "$ZERO" ] && continue # a deletion publishes nothing new
       printf '%s\n%s\n' "$lref" "$rref" >>"$text"
-      if [ "$rsha" = "$ZERO" ]; then
-        add_range "$lsha --not --remotes"
-      else
+      # An annotated tag carries its own message, which a release publishes.
+      if [ "$(git cat-file -t "$lsha" 2>/dev/null)" = tag ]; then
+        git cat-file tag "$lsha" | sed '1,/^$/d' >>"$text" \
+          || { echo "check-public: could not read tag $lref" >&2; exit 2; }
+      fi
+      if [ "$rsha" != "$ZERO" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
         add_range "$rsha..$lsha"
+      elif [ -n "$remote" ] && git remote get-url "$remote" >/dev/null 2>&1; then
+        # A new ref: everything not already on THIS remote. Another remote's
+        # history may be private, so it does not count as published.
+        add_range "$lsha" --not --remotes="$remote"
+      else
+        # Pushing to a bare URL: nothing is known to be there already.
+        add_range "$lsha"
       fi
     done
     ;;
+  --tree)
+    rev=${2:-HEAD}
+    git ls-tree -r --name-only "$rev" >"$text" \
+      || { echo "check-public: git ls-tree failed for $rev" >&2; exit 2; }
+    git grep -I -h -e '' "$rev" -- >>"$text" 2>"$work/err"
+    [ $? -le 1 ] || { echo "check-public: git grep failed: $(cat "$work/err")" >&2; exit 2; }
+    ;;
   *)
-    echo "usage: $0 [--range A..B | --tree [REV]]" >&2
+    echo "usage: $0 [--range A..B | --tree [REV] | --remote NAME [URL] < pre-push input]" >&2
     exit 2
     ;;
 esac

@@ -932,7 +932,7 @@ export function createTools(
       const broadcastId = fanOut && targets.length > 1 ? newBroadcastId() : undefined;
       const results: FanOutResult[] = [];
 
-      // #26: a message to the configured mail recipient is filed in its mailbox
+      // A message to the configured mail recipient is filed in its mailbox
       // rather than cut into its session. Read once per call, like self.
       const recipient = mail.recipient();
       const deliverPrefixes = recipient === undefined ? [] : mail.deliverPrefixes();

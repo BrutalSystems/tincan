@@ -373,6 +373,11 @@ describe('mailRoutingFromEnv', () => {
     expect(r.deliverPrefixes()).toEqual(['HANDOFF-']);
   });
 
+  test('the default sender is a usable --from name, derived from the command', () => {
+    writeConfig({ command: '/opt/bin/My_Mailbox.py' });
+    expect(readConfig(env(), dir).commandSender).toBe('my-mailbox');
+  });
+
   test('a malformed mail-routing.json is all defaults, not a throw', () => {
     mkdirSync(home(), { recursive: true });
     writeFileSync(join(home(), 'mail-routing.json'), '{nope');

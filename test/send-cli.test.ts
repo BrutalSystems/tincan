@@ -504,7 +504,7 @@ describe('send --help, the capability probe', () => {
 });
 
 describe('a notice reaches a CLI sender', () => {
-  test('on stderr, with the JSON line on stdout unchanged (#26: "went to the mailbox")', async () => {
+  test('on stderr, with the JSON line on stdout unchanged ("went to the mailbox")', async () => {
     let out = '';
     let err = '';
     const code = await runSend(['--to', 'lead', '--from', 'nightly-job', '--message', 'done'], {
