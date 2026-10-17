@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .githooks
+# Blocks a push that matches a private or generic pattern; see scripts/check-public.sh.
+exec "$(git rev-parse --show-toplevel)/scripts/check-public.sh"
