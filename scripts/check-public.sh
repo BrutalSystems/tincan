@@ -26,7 +26,7 @@
 # Uses /usr/bin/grep, not a `grep` from PATH or a shell function: it must
 # honour \b, which some greps (macOS `git grep -E`) silently ignore.
 
-set -u
+set -u -o pipefail
 GREP=/usr/bin/grep
 [ -x "$GREP" ] || GREP=/bin/grep
 [ -x "$GREP" ] || { echo "check-public: no system grep at /usr/bin/grep or /bin/grep" >&2; exit 2; }
@@ -114,30 +114,45 @@ add_range() { # rev-list arguments
 
 case "${1:-}" in
   --range)
-    [ -n "${2:-}" ] || { echo "usage: $0 --range A..B" >&2; exit 2; }
+    # A revision range, not an option that could make git log check nothing.
+    case "${2:-}" in
+      '' | -*) echo "usage: $0 --range A..B" >&2; exit 2 ;;
+    esac
     add_range "$2"
     ;;
   --remote)
     # Only as the hook: git passes the remote's name and URL, then ref lines on stdin.
     shift
     remote=${1:-}
-    while read -r lref lsha rref rsha; do
+    # `|| [ -n "$lref" ]` keeps a last line that has no newline.
+    while read -r lref lsha rref rsha || [ -n "${lref:-}" ]; do
+      [ -n "${rsha:-}" ] || { echo "check-public: malformed pre-push line: $lref" >&2; exit 2; }
       [ "$lsha" = "$ZERO" ] && continue # a deletion publishes nothing new
       printf '%s\n%s\n' "$lref" "$rref" >>"$text"
-      # An annotated tag carries its own message, which a release publishes.
-      if [ "$(git cat-file -t "$lsha" 2>/dev/null)" = tag ]; then
-        git cat-file tag "$lsha" | sed '1,/^$/d' >>"$text" \
+      # An annotated tag carries its own message, which a release publishes;
+      # a tag of a tag carries one more. Peel down to the commit.
+      obj=$lsha
+      while [ "$(git cat-file -t "$obj")" = tag ]; do
+        git cat-file tag "$obj" >"$work/tag" \
           || { echo "check-public: could not read tag $lref" >&2; exit 2; }
-      fi
-      if [ "$rsha" != "$ZERO" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
-        add_range "$rsha..$lsha"
+        sed '1,/^$/d' "$work/tag" >>"$text"
+        obj=$(sed -n 's/^object //p;q' "$work/tag")
+      done
+      [ "$(git cat-file -t "$obj")" = commit ] \
+        || { echo "check-public: $lref does not point at a commit; refusing to guess what it publishes" >&2; exit 2; }
+      if [ "$rsha" != "$ZERO" ]; then
+        # The remote's old tip must be known here, or "what is new" cannot be
+        # worked out; stale tracking refs are no substitute.
+        git cat-file -e "$rsha^{commit}" 2>/dev/null \
+          || { echo "check-public: $rref on the remote is at $rsha, which is not here; fetch first" >&2; exit 2; }
+        add_range "$rsha..$obj"
       elif [ -n "$remote" ] && git remote get-url "$remote" >/dev/null 2>&1; then
         # A new ref: everything not already on THIS remote. Another remote's
         # history may be private, so it does not count as published.
-        add_range "$lsha" --not --remotes="$remote"
+        add_range "$obj" --not --remotes="$remote"
       else
         # Pushing to a bare URL: nothing is known to be there already.
-        add_range "$lsha"
+        add_range "$obj"
       fi
     done
     ;;

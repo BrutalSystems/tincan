@@ -378,6 +378,17 @@ describe('mailRoutingFromEnv', () => {
     expect(readConfig(env(), dir).commandSender).toBe('my-mailbox');
   });
 
+  test.each([['.mailbox'], ['通知.py']])('a command named %j still gets a usable default sender', (name) => {
+    writeConfig({ command: `/opt/bin/${name}` });
+    expect(readConfig(env(), dir).commandSender).toBe('tincan-mailbox');
+  });
+
+  test('a long command name is cut to the 64 characters --from allows', () => {
+    writeConfig({ command: `/opt/bin/${'a'.repeat(63)}-bcd` });
+    const sender = readConfig(env(), dir).commandSender;
+    expect(sender).toBe('a'.repeat(63));
+  });
+
   test('a malformed mail-routing.json is all defaults, not a throw', () => {
     mkdirSync(home(), { recursive: true });
     writeFileSync(join(home(), 'mail-routing.json'), '{nope');

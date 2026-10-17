@@ -1681,14 +1681,14 @@ describe('externalSide', () => {
       const side = externalSide('bd-8bcbebb485fa', ctxFor(home), {}, { sweep: { socketDirs: [] } });
       const result = await createTools(side, log).send_peer({
         peer: 'nimble-wizard',
-        message: 'disk 91% on st-eks',
+        message: 'disk 91% on build-01',
       });
 
       expect(result.outcome).toBe('accepted');
       expect(result.message_id).toMatch(/^msg_/);
 
       const wire = instance.rawLines.join('\n');
-      expect(wire).toContain('disk 91% on st-eks');
+      expect(wire).toContain('disk 91% on build-01');
       expect(wire).toContain('runtime=\\"external\\"');
       expect(wire).toContain('from=\\"bd-8bcbebb485fa\\"');
       // The whole point of having no durable id: no address is offered that

@@ -11,7 +11,7 @@ exactly as the MCP tool does, because it *is* the MCP tool's code path with a
 different caller.
 
 ```console
-$ tincan send --to muster-59 --from birddog --message 'disk 91% on st-eks'
+$ tincan send --to muster-59 --from birddog --message 'disk 91% on build-01'
 {"outcome":"accepted","message_id":"msg_9f2e…","peer_state":"busy"}
 ```
 

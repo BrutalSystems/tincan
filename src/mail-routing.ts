@@ -169,6 +169,16 @@ const expandHome = (p: string, home: string): string =>
   p === '~' ? home : p.startsWith('~/') ? join(home, p.slice(2)) : p;
 
 /**
+ * The command's base name as a usable `--from` name: slug-shaped and at most
+ * the CLI's 64 characters, or the default command's name when nothing usable
+ * is left (`.mailbox`, a name with no ASCII letters or digits).
+ */
+function senderFor(command: string): string {
+  const slug = slugify(basename(command).replace(/\.[^.]*$/, '')).slice(0, 64).replace(/-+$/, '');
+  return slug === '' ? DEFAULT_COMMAND : slug;
+}
+
+/**
  * Reads the configuration, filling in defaults. A missing file is all
  * defaults; an unreadable or malformed one is too, rather than a throw on
  * every send — and with the default recipient file absent, that means off.
@@ -189,7 +199,7 @@ export function readConfig(env: NodeJS.ProcessEnv, home: string = homedir()): Ma
     recipientFile: expandHome(str(raw.recipientFile) ?? join(tincanHome(env, home), 'mail-recipient'), home),
     command: expandHome(command, home),
     // A `tincan send --from` name must be slug-shaped, so derive one: `mailbox.py` -> `mailbox`.
-    commandSender: str(raw.commandSender) ?? slugify(basename(command).replace(/\.[^.]*$/, '')),
+    commandSender: str(raw.commandSender) ?? senderFor(command),
     deliverPrefixes: Array.isArray(raw.deliverPrefixes)
       ? raw.deliverPrefixes.filter((p): p is string => typeof p === 'string' && p.length > 0)
       : [],

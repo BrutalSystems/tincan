@@ -525,7 +525,7 @@ describe('an external sender', () => {
         method: 'inbox',
         expect_reply: false,
         reply_tool: false,
-        text: 'disk 91% on st-eks',
+        text: 'disk 91% on build-01',
         ...over,
       } as Parameters<typeof buildEnvelope>[0]),
     );
