@@ -234,6 +234,7 @@ export function sendCliLine(result: SendPeerResult): string {
   if (result.refusal !== undefined) line.refusal = result.refusal;
   if (result.message_id !== undefined) line.message_id = result.message_id;
   if (result.peer_state !== undefined) line.peer_state = result.peer_state;
+  if (result.method === 'pull-inbox') { line.method = result.method; if (result.inbox_state !== undefined) line.inbox_state = result.inbox_state; }
   return JSON.stringify(line);
 }
 

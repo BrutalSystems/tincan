@@ -114,6 +114,7 @@ export interface NoticeRecord {
  * peer to name, which is the point of the record.
  */
 export interface UnsentRecord {
+  body_omitted?: true;
   id: string;
   at: string;
   kind: 'unsent';
@@ -500,6 +501,7 @@ export class MessageLog {
     text: string,
     /** #24. Both or neither; see {@link UnsentRecord.to_id}. */
     replay?: { until: string; toId: string },
+    bodyOmitted = false,
   ): UnsentRecord {
     const rec: UnsentRecord = {
       id,
@@ -507,6 +509,7 @@ export class MessageLog {
       kind: 'unsent',
       from,
       to_address: toAddress,
+      ...(bodyOmitted && { body_omitted: true as const }),
       reason,
       text,
       ...(replay !== undefined && { replay_until: replay.until, to_id: replay.toId }),

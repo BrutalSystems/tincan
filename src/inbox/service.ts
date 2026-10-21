@@ -86,5 +86,5 @@ export class InboxService {
   return {message_id:e.id,inbox_state:eligible?'queued':'quarantined',duplicate:false};
  }
  async enqueue(args:EnqueueArgs){return this.change(args.receiver,(s,events)=>{const result=this.insert(s,args);if(!result.duplicate)events.push([result.message_id,result.inbox_state]);return result;});}
- async preflight(args:EnqueueArgs):Promise<void>{await this.change(args.receiver,s=>{this.insert(structuredClone(s),args);});}
+ async preflight(args:EnqueueArgs):Promise<EnqueueResult>{return this.change(args.receiver,s=>this.insert(structuredClone(s),args));}
 }

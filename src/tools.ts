@@ -1,5 +1,21 @@
 /** The three tools (§7), identical on both sides. */
 import { z } from 'zod';
+import { InboxService, inboxFromEnv } from './inbox/service.js';
+import { InboxError, type InboxIdentity, type PolicyView, type EnqueueArgs, type EnqueueResult } from './inbox/types.js';
+import { parseInboxIdentity, senderNamespace } from './inbox/identity.js';
+import { OMITTED_BODY, requestFingerprint, strictAuditEnvelope } from './inbox/audit.js';
+
+function strictIdentity(runtime: SenderKind, id: string | undefined): InboxIdentity | undefined {
+  if (id === undefined || runtime === 'external') return undefined;
+  try { return parseInboxIdentity(`${runtime}:session.${id}`); } catch { return undefined; }
+}
+function inboxFailure(error: unknown): Pick<SendPeerResult, 'outcome' | 'refusal' | 'detail'> {
+  const code = error instanceof InboxError ? error.code : 'storage_failed';
+  const refusal: Refusal = code === 'queue_full' ? 'inbox_full' : code === 'policy_changed' ? 'inbox_policy_changed' : code === 'commit_unknown' ? 'inbox_commit_unknown' : code === 'key_reused' ? 'key_reused' : 'inbox_unavailable';
+  return { outcome: ['queue_full','policy_changed','key_reused'].includes(code) ? 'rejected' : 'failed', refusal,
+    detail: code === 'commit_unknown' ? 'Inbox insertion may have committed. Retry only with the same idempotency key and payload; without a key, a retry may duplicate it.' : `Strict inbox ${code}. No native delivery was attempted.` };
+}
+
 import { basename } from 'node:path';
 import {
   assertNever,
@@ -292,6 +308,7 @@ export type Refusal =
   // reason `peers` tells callers to re-read names rather than cache them.
   | 'duplicate_peer_moved'
   | GuardReason
+  | 'inbox_full' | 'inbox_policy_changed' | 'inbox_commit_unknown' | 'inbox_unavailable'
   | 'delivery_failed';
 
 /**
@@ -307,6 +324,7 @@ export type Outcome = 'accepted' | 'rejected' | 'failed';
 
 /** One recipient's outcome within a fan-out. */
 export interface FanOutResult {
+  inbox_state?: 'queued' | 'quarantined';
   peer: string;
   outcome: Outcome;
   message_id?: string;
@@ -317,6 +335,7 @@ export interface FanOutResult {
 }
 
 export interface SendPeerResult {
+  inbox_state?: 'queued' | 'quarantined';
   /** Absent for a fan-out, which reports per recipient plus counts instead. */
   outcome?: Outcome;
   /** Fan-out only: how many were addressed, and how many the harness took. */
@@ -496,6 +515,7 @@ export function createTools(
   keys?: KeyStore,
   // Read live from the mail-routing configuration on every send; tests pass their own.
   mail: MailRouting = mailRoutingFromEnv(),
+  pullInbox: InboxService = inboxFromEnv(process.env, { audit: (id, state, at) => log.appendInboxEvent(id, state, at) }),
 ) {
   // One guard per peer runtime, so a Codex peer's tight budget does not
   // throttle a Claude peer sharing the same listing.
@@ -663,14 +683,47 @@ export function createTools(
       const addresses = args.peers ?? [args.peer as string];
       const fanOut = args.peers !== undefined;
 
+      // One resolution for the whole call: the exclusion in listPeers, the
+      // envelope's `from=`, and the wire's `message_from` must all name the
+      // same session. See SelfRef.
+      const self = await side.resolveSelf();
+      const selfName = await side.selfName(self);
+      // Resolved once per call, beside the name, so the two cannot disagree
+      // about who we are.
+      const selfId = (await side.selfDurableId?.(self)) ?? undefined;
+      if (side.requireSelfIdentity && selfId === undefined) {
+        return {
+          outcome: 'rejected',
+          refusal: 'self_unknown',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+          detail: 'Cannot identify the sending Codex thread. The host must supply MCP threadId metadata or have a unique ancestor lock holder. Nothing was sent.',
+        };
+      }
+
+      const sender = strictIdentity(side.selfRuntime, selfId === undefined ? undefined : 'thread_id' in selfId ? selfId.thread_id : selfId.session_id);
+      const namespace = senderNamespace(sender, side.selfRuntime === 'external' ? selfName : undefined);
+      const scopedKey = args.idempotency_key === undefined ? undefined : JSON.stringify([namespace, args.idempotency_key]);
       // Before resolution, deliberately. A retry under the same key must still
       // answer "already sent" when the peer has exited in the meantime —
       // resolving first would report peer_unreachable, which is true of the
       // peer and false about the message.
       if (args.idempotency_key !== undefined) {
-        const prior = idempotency.lookup(args.idempotency_key);
-        if (prior !== undefined) {
-          const sameCall = prior.peerArg === addresses.join(', ') && prior.text === args.message;
+        const prior = idempotency.lookup(scopedKey!);
+        let queueAuthoritative = false;
+        if (prior?.strict && !fanOut && prior.peerArg === addresses.join(', ') && prior.fingerprint === requestFingerprint(args)) {
+          try {
+            const current = await named(self);
+            const resolved = resolvePeer(current.named, args.peer!, () => false);
+            if (resolved.ok) {
+              const target = (resolved.peer as NamedPeer & {side:SidePeer}).side;
+              const d = durableIdOf(target);
+              const who = strictIdentity(target.runtime, 'thread_id' in d ? d.thread_id : d.session_id);
+              queueAuthoritative = who !== undefined && (await pullInbox.inspect(who)).enabled;
+            }
+          } catch (e) { return inboxFailure(e); }
+        }
+        if (prior !== undefined && !queueAuthoritative) {
+          const sameCall = prior.peerArg === addresses.join(', ') && (prior.fingerprint !== undefined ? prior.fingerprint === requestFingerprint(args) : prior.text === args.message);
           // Only for a genuine repeat: a spent key is a caller bug regardless of
           // what the peer did, and saying "moved" there would send them looking
           // in the wrong place.
@@ -695,6 +748,7 @@ export function createTools(
             ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
             // The distinction reaches the wire, not just the prose.
             refusal: sameCall ? 'duplicate_send' : 'key_reused',
+            ...(prior.strict && { method: 'pull-inbox' as const, inbox_state: prior.inbox_state }),
             // Named in both cases, and it means different things: under
             // `duplicate_send` it is YOUR message, already sent; under
             // `key_reused` it is the unrelated message the key is spent on,
@@ -711,23 +765,7 @@ export function createTools(
         }
       }
 
-      // One resolution for the whole call: the exclusion in listPeers, the
-      // envelope's `from=`, and the wire's `message_from` must all name the
-      // same session. See SelfRef.
-      const self = await side.resolveSelf();
       const { named: list, diagnostic } = await named(self);
-      const selfName = await side.selfName(self);
-      // Resolved once per call, beside the name, so the two cannot disagree
-      // about who we are.
-      const selfId = (await side.selfDurableId?.(self)) ?? undefined;
-      if (side.requireSelfIdentity && selfId === undefined) {
-        return {
-          outcome: 'rejected',
-          refusal: 'self_unknown',
-          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
-          detail: 'Cannot identify the sending Codex thread. The host must supply MCP threadId metadata or have a unique ancestor lock holder. Nothing was sent.',
-        };
-      }
 
       /**
        * Record a send that never became a message (#23, #24).
@@ -757,13 +795,22 @@ export function createTools(
         return 'thread_id' in durable ? durable.thread_id : durable.session_id;
       };
 
-      const recordUnsent = (address: string, reason: Refusal, resolvedFor?: SidePeer): string => {
+      const recordUnsent = async (address: string, reason: Refusal, resolvedFor?: SidePeer): Promise<string> => {
         const id = newMessageId();
         const toId = intendedId(resolvedFor);
+        let omitBody = false;
+        try {
+          const ids = new Set<string>();
+          if (toId !== undefined) ids.add(toId);
+          if (resolvedFor !== undefined) { const d = durableIdOf(resolvedFor); ids.add('thread_id' in d ? d.thread_id : d.session_id); }
+          try { ids.add(parseInboxIdentity(address).id); } catch { /* A display address supplies no durable identity. */ }
+          for (const id of ids) if ((await pullInbox.inspectId(id)).some(p => p.enabled)) omitBody = true;
+        } catch { omitBody = true; }
+
         // Both or neither: a shelf life with nobody to deliver to cannot be
         // acted on, and it would read as a promise the log cannot keep.
         const replay =
-          args.replay_for_minutes !== undefined && toId !== undefined
+          args.replay_for_minutes !== undefined && toId !== undefined && !omitBody
             ? {
                 until: new Date(Date.now() + args.replay_for_minutes * 60_000).toISOString(),
                 toId,
@@ -774,8 +821,9 @@ export function createTools(
           { runtime: side.selfRuntime, name: selfName, cwd: self.cwd ?? side.selfCwd, ...(selfId ?? {}) },
           address,
           reason,
-          args.message,
+          omitBody ? OMITTED_BODY : args.message,
           replay,
+          omitBody,
         );
         return id;
       };
@@ -827,7 +875,7 @@ export function createTools(
             // record. `unknown` is the one that may mean "that session is
             // gone", which is exactly what a returning session looks for.
             ...(resolved.reason === 'unknown'
-              ? { message_id: recordUnsent(address, 'peer_unknown') }
+              ? { message_id: await recordUnsent(address, 'peer_unknown') }
               : {}),
             refusal: resolved.reason === 'unknown' ? 'peer_unknown' : 'peer_ambiguous',
             detail:
@@ -904,7 +952,7 @@ export function createTools(
             refusal: 'peer_changed',
             // The session the caller meant is gone — someone tried to reach
             // it and could not, which is the case #24 is about.
-            message_id: recordUnsent(only.display, 'peer_changed', only.side),
+            message_id: await recordUnsent(only.display, 'peer_changed', only.side),
             peer_state: only.side.state,
             detail:
               `"${addresses[0]}" now resolves to session ${actual}, not ${args.expect_id} — ` +
@@ -914,13 +962,21 @@ export function createTools(
         }
       }
 
-      const gone = targets.find((t) => t.side.state === 'unreachable');
+      const policies = new Map<string, PolicyView>();
+      try {
+        for (const t of targets) {
+          const d = durableIdOf(t.side);
+          const receiver = strictIdentity(t.side.runtime, 'thread_id' in d ? d.thread_id : d.session_id);
+          policies.set(t.canonicalId, receiver === undefined ? { enabled: false } : await pullInbox.inspect(receiver));
+        }
+      } catch (e) { return { ...inboxFailure(e), ...(fanOut && { requested: targets.length, accepted: 0, results: [] }) }; }
+      const gone = targets.find((t) => t.side.state === 'unreachable' && !policies.get(t.canonicalId)?.enabled);
       if (gone !== undefined) {
         return {
           outcome: 'rejected',
           ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
           refusal: 'peer_unreachable',
-          message_id: recordUnsent(gone.display, 'peer_unreachable', gone.side),
+          message_id: await recordUnsent(gone.display, 'peer_unreachable', gone.side),
           peer_state: 'unreachable',
           detail:
             `${gone.display} is not accepting input (gone, ephemeral, or a subagent thread).` +
@@ -928,10 +984,68 @@ export function createTools(
         };
       }
 
+      const broadcastId = fanOut && targets.length > 1 ? newBroadcastId() : undefined;
+      const envelopeFor = (target: NamedPeer & { side: SidePeer }) => {
+        const others = targets.filter((t) => t !== target).map((t) => t.display);
+        return buildEnvelope({
+          id: newMessageId(),
+          from: {
+            runtime: side.selfRuntime,
+            name: selfName,
+            cwd: self.cwd ?? side.selfCwd,
+            // Spread, not two optional fields: the arm returns whichever key
+            // its runtime uses, and neither is invented when it returns
+            // nothing.
+            ...(selfId ?? {}),
+          },
+          // `!== false`, not `=== true`: only the Claude arm sets the field, and
+          // a Codex or opencode peer leaving it undefined must keep today's
+          // wording.
+          reply_tool: target.side.canReply !== false,
+          // From the side, not from the tool arguments. A session always has a
+          // reply path and must never be able to claim otherwise, so this is
+          // not something a model can set — only the external side supplies it.
+          ...(side.replyVia !== undefined && { reply_via: side.replyVia }),
+          to: {
+            runtime: target.side.runtime,
+            name: target.display,
+            cwd: target.side.cwd,
+            // Ask which key this runtime's durable id uses, rather than
+            // hardcoding Codex's. `thread_id` alone meant a Claude Code or
+            // opencode recipient was recorded by display name only — the name
+            // that goes stale, and the one thing `expect_id` refuses to trust.
+            ...durableIdOf(target.side),
+          },
+          method: policies.get(target.canonicalId)?.enabled ? 'pull-inbox' : methodFor(target.side.runtime),
+          expect_reply: args.expect_reply,
+          ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
+          ...(args.answers && { answers: true }),
+          ...(others.length > 0 && { also_sent_to: others }),
+          ...(broadcastId !== undefined && { broadcast_id: broadcastId }),
+          text: args.message,
+        });
+
+      };
+      const envelopes = new Map(targets.map(t => [t.canonicalId, envelopeFor(t)]));
+      const pullArgs = new Map<string, EnqueueArgs>();
+      const duplicates = new Set<string>();
+      try {
+        for (const t of targets) {
+          const policy = policies.get(t.canonicalId)!;
+          if (!policy.enabled) continue;
+          const entry: EnqueueArgs = { receiver: policy.receiver, generation: policy.generation,
+            envelope: envelopes.get(t.canonicalId)!, sender, namespace, key: args.idempotency_key, urgent: args.urgent };
+          pullArgs.set(t.canonicalId, entry);
+          const preflight = await pullInbox.preflight(entry);
+          if (preflight.duplicate) { duplicates.add(t.canonicalId); entry.envelope.id = preflight.message_id; }
+        }
+      } catch (e) { return { ...inboxFailure(e), ...(fanOut && { requested: targets.length, accepted: 0, results: [] }) }; }
+
       // Checked for every recipient before any is recorded: a guard refusal is
       // knowable in advance, so it refuses the whole call rather than leaving a
       // fan-out half delivered.
       for (const t of targets) {
+        if (duplicates.has(t.canonicalId)) continue;
         const verdict = guardFor(t.side.runtime).check(t.canonicalId, args.message);
         if (!verdict.ok) {
           const id = newMessageId();
@@ -947,7 +1061,6 @@ export function createTools(
         }
       }
 
-      const broadcastId = fanOut && targets.length > 1 ? newBroadcastId() : undefined;
       const results: FanOutResult[] = [];
 
       // A message to the configured mail recipient is filed in its mailbox
@@ -1010,50 +1123,33 @@ export function createTools(
       // Sequential, in the order given: the log stays deterministic and a
       // fan-out cannot stampede three harnesses at once.
       for (const target of targets) {
-        const others = targets.filter((t) => t !== target).map((t) => t.display);
-        const envelope = buildEnvelope({
-          id: newMessageId(),
-          from: {
-            runtime: side.selfRuntime,
-            name: selfName,
-            cwd: self.cwd ?? side.selfCwd,
-            // Spread, not two optional fields: the arm returns whichever key
-            // its runtime uses, and neither is invented when it returns
-            // nothing.
-            ...(selfId ?? {}),
-          },
-          // `!== false`, not `=== true`: only the Claude arm sets the field, and
-          // a Codex or opencode peer leaving it undefined must keep today's
-          // wording.
-          reply_tool: target.side.canReply !== false,
-          // From the side, not from the tool arguments. A session always has a
-          // reply path and must never be able to claim otherwise, so this is
-          // not something a model can set — only the external side supplies it.
-          ...(side.replyVia !== undefined && { reply_via: side.replyVia }),
-          to: {
-            runtime: target.side.runtime,
-            name: target.display,
-            cwd: target.side.cwd,
-            // Ask which key this runtime's durable id uses, rather than
-            // hardcoding Codex's. `thread_id` alone meant a Claude Code or
-            // opencode recipient was recorded by display name only — the name
-            // that goes stale, and the one thing `expect_id` refuses to trust.
-            ...durableIdOf(target.side),
-          },
-          method: methodFor(target.side.runtime),
-          expect_reply: args.expect_reply,
-          ...(args.in_reply_to !== undefined && { in_reply_to: args.in_reply_to }),
-          ...(args.answers && { answers: true }),
-          ...(others.length > 0 && { also_sent_to: others }),
-          ...(broadcastId !== undefined && { broadcast_id: broadcastId }),
-          text: args.message,
-        });
+        const envelope = envelopes.get(target.canonicalId)!;
+        const pull = pullArgs.get(target.canonicalId);
 
         const delivery: 'queue' | 'steer' =
           args.urgent && runtimeSupportsUrgent(target.side.runtime) ? 'steer' : 'queue';
 
+        if (pull !== undefined) {
+          // Strict audit omits bodies at the sink. A committed store write is
+          // authoritative even if audit append later becomes unavailable.
+          try { if (!duplicates.has(target.canonicalId)) log.appendMessage(envelope, false, 'queue'); } catch { /* store remains authoritative */ }
+          try {
+            const stored = await pullInbox.enqueue(pull);
+            if (!stored.duplicate) guardFor(target.side.runtime).record(target.canonicalId, args.message);
+            try { log.appendOutcome(stored.message_id, true); } catch { /* never inject or retry because logging failed */ }
+            results.push({ peer: target.display, outcome: 'accepted', method: 'pull-inbox', message_id: stored.message_id,
+              inbox_state: stored.inbox_state, notice: `Stored in the strict inbox (${stored.inbox_state}). The receiver collects on its own schedule; it was not awakened. Accepted does not mean read.` });
+          } catch (e) {
+            const failure = inboxFailure(e);
+            // An uncertain commit has no false failure outcome in the audit.
+            if (failure.refusal !== 'inbox_commit_unknown') { try { log.appendOutcome(envelope.id, false, failure.detail); } catch { /* no fallback */ } }
+            results.push({ peer: target.display, outcome: failure.outcome!, refusal: failure.refusal, detail: failure.detail, message_id: envelope.id, method: 'pull-inbox' });
+          }
+          continue;
+        }
+
         // Log before delivering, so a crash mid-send still leaves a record (§8.6).
-        log.appendMessage(envelope, false, delivery);
+        log.appendMessage(pullArgs.size > 0 ? strictAuditEnvelope(envelope) : envelope, false, delivery);
         guardFor(target.side.runtime).record(target.canonicalId, args.message);
 
         let outcome: DeliveryOutcome | undefined;
@@ -1129,11 +1225,12 @@ export function createTools(
         const landedTarget = targets.find((t) => t.display === landed[0]!.peer);
         const landedId =
           landedTarget === undefined ? undefined : durableIdOf(landedTarget.side);
-        idempotency.record(args.idempotency_key, {
+        idempotency.record(scopedKey!, {
           messageId: landed[0]!.message_id!,
           peer: landed.map((r) => r.peer).join(', '),
           peerArg: addresses.join(', '),
-          text: args.message,
+          text: landed.some(r => r.method === 'pull-inbox') ? OMITTED_BODY : args.message,
+          ...(landed.some(r => r.method === 'pull-inbox') && { strict: true as const, fingerprint: requestFingerprint(args), inbox_state: landed[0]!.inbox_state }),
           ...(landedId !== undefined && {
             toId: 'thread_id' in landedId ? landedId.thread_id : landedId.session_id,
           }),
@@ -1153,6 +1250,7 @@ export function createTools(
       const only = results[0]!;
       return {
         outcome: only.outcome,
+        ...(only.inbox_state !== undefined && { inbox_state: only.inbox_state }),
         ...(only.method !== undefined && { method: only.method }),
         peer_state: only.refusal === 'peer_unreachable' ? 'unreachable' : targets[0]!.side.state,
         message_id: only.message_id,
