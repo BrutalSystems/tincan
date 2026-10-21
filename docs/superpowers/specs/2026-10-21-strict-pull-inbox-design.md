@@ -99,6 +99,10 @@ explicitly. Reads are non-destructive: callers persist their returned cursor;
 omitting it starts at the beginning of retained eligible content. Repeating a
 read may return the same IDs. Do not automatically advance a server-side read
 pointer: a committed advance followed by a lost response would hide messages.
+The MCP tool description and CLI help must explicitly warn that cursor-less
+polls return retained messages again, tell callers to pass `next_cursor` on the
+next poll, and require deduplication by message ID rather than treating every
+returned item as new.
 Document saving the cursor in durable task state rather than conversation memory.
 Fetch does not mean understanding, action, acknowledgement, or an answer.
 Messages expire after a fixed 24 hours from insertion in version one; expired
@@ -176,12 +180,21 @@ than assuming no receiver has opted in. A genuinely absent root preserves the
 legacy default. Explicit disable retains a disabled record; policy-file deletion
 is not a supported way to disable strict mode.
 
-Serialize each receiver's enable, disable, send, grant, revoke, release, read and
-expiry operations with a cross-process lock. Routing checks and delivery commit
-share that lock, including native sends to not-yet-enabled receivers, so enable
-cannot race a checked-but-not-yet-injected send. A native send already completed
-before enable cannot be recalled. Locks live separately from receiver marker
-directories, and lookup-only operations must not accidentally enable strict mode.
+Serialize each receiver's enable, disable, strict queue insertion, grant, revoke,
+release, read and expiry operations with a cross-process lock. Revalidate policy
+and generation under that lock before inserting. A send that selected strict
+delivery cannot fall back to native delivery if the policy changes before commit;
+return a policy-changed refusal instead. Native sends to receivers without strict
+mode do not acquire an inbox lock, and no inbox lock is held across native
+transport calls.
+
+Enable applies to sends whose policy check observes the committed enabled state.
+Policy checks starting after enable commits must observe it; do not use stale
+policy caches. A send that selected native delivery before that commit may still
+land afterward. `enable` and `status` must explain this in-flight exception.
+Enabling cannot recall or drain already selected native sends. Locks live
+separately from receiver marker directories, and lookup-only operations must not
+accidentally enable strict mode.
 Use atomic replacement for versioned state, commit
 before success, and bounded lock waits. Do not reclaim a lock on age alone;
 verify owner process lifetime or return a recoverable locked error. An uncertain
@@ -204,6 +217,14 @@ increase total stored size beyond bounded metadata. Status reports retained item
 and byte counts, eligible/quarantined/released counts, and next expiry. Fetch
 does not free capacity; operators may explicitly drop items before expiry. Do not
 infer successful receipt from a cursor to compact accepted bodies automatically.
+
+A possible later extension is explicit acknowledgement of a previously returned
+cursor, allowing acknowledged items to be compacted without advancing on fetch.
+It is not part of version one. Its design must validate receiver and generation,
+handle reissued availability sequences, and keep acknowledgement distinct from
+understanding or answering. A lost fetch response would leave items unacknowledged
+and available for retry. This could relieve capacity pressure without relying on
+operator drops, but needs its own API and retention review.
 
 Inbox message IDs and sender-scoped idempotency keys are checked within the
 same transaction as insertion. Retain key records until message expiry. Do not
@@ -278,7 +299,9 @@ Write failing tests before implementation. Required coverage includes:
 - Concurrent writers, capacity reservation, retry deduplication, atomic write
   failure, corruption and lock recovery; no native delivery on any strict path.
 - Urgent, expected-reply, prefix, mailbox failure, broadcast and missed-log paths.
-- Enable/native-send races, strict unreachable receivers, bare-ID policy lookup,
+- Enable/native-send ordering, including permitted in-flight native completion
+  and no inbox locks on native transport calls; strict unreachable receivers,
+  bare-ID policy lookup,
   and quarantined answer assertions that must not mark a question answered.
 - Quarantine bodies absent from agent-visible logs and all ordinary retrieval.
 - MCP and CLI exercising the same store, including multi-request identity tests
@@ -294,6 +317,9 @@ Peer review amendments: corrected missed-log handling and liveness ordering;
 preserved log compatibility; specified missing identities, external/runtime
 restrictions, per-item release semantics, capacity, and sender-scoped retry
 behavior. Added transport visibility and a routing/enable concurrency boundary.
+Follow-up review narrowed that boundary to policy-check ordering, avoiding lock
+waits on ordinary native sends. Cursor-repeat guidance is mandatory in tool help;
+explicit acknowledgement for capacity reclamation remains a possible extension.
 
 Three suggestions are intentionally deferred or declined:
 
