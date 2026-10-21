@@ -1,6 +1,6 @@
 {
   "name": "tincan",
-  "version": "2.6.1",
+  "version": "3.0.0",
   "description": "Teaches Claude Code to message other live Claude Code, Codex and opencode sessions on the same machine through Tin Can.",
   "author": {
     "name": "BrutalSystems"
