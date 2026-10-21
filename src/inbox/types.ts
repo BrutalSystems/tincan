@@ -3,7 +3,7 @@ import type { RuntimeName } from '../naming.js';
 export type InboxIdentity = { runtime: RuntimeName; id: string };
 export type ItemState = 'quarantined' | 'eligible' | 'released';
 export type PolicyView = { enabled: false } | { enabled: true; generation: string; receiver: InboxIdentity };
-export type InboxItem = { envelope: Envelope; state: ItemState; expiresAt: number; sequence?: number; urgent: boolean };
+export type InboxItem = { envelope: Envelope; state: ItemState; expiresAt: number; sequence?: number; urgent: boolean; sender?: InboxIdentity };
 export type InboxKeyRecord = { namespace: string; keyHash: string; fingerprint: string; messageId: string; expiresAt: number };
 export type InboxSnapshot = { version: 1; enabled: boolean; generation: string; receiver: InboxIdentity; grants: InboxIdentity[]; nextSequence: number; items: InboxItem[]; keys: InboxKeyRecord[] };
 export type ReadArgs = { cursor?: string; limit?: number };
