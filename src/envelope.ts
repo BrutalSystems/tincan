@@ -12,7 +12,7 @@ import { slugify, type RuntimeName, type SenderKind } from './naming.js';
  * not delivery to the peer at all: the message was filed with the configured
  * inbox command instead (see mail-routing.ts).
  */
-export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt_async' | 'mailbox';
+export type DeliveryMethod = 'thread/queue/add' | 'inbox' | 'opencode/prompt_async' | 'mailbox' | 'pull-inbox';
 
 export interface EnvelopeParty {
   /**
