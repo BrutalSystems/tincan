@@ -152,3 +152,22 @@ describe('addresses carry a machine, and canonical ids are unique', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('canonical addresses survive renames', () => {
+  const id = '00000000-0000-0000-0000-000000000aaa';
+  const peers = assignNames([p('codex', 'New name', id), p('codex', 'Old name', '00000000-0000-0000-0000-000000000bbb')]);
+  test('routes by the full durable id even when another peer took the old name', () => {
+    const result = resolvePeer(peers, `codex:old-name.${id}`);
+    expect(result.ok && result.peer.uuid).toBe(id);
+  });
+  test('never weakens the runtime, full id or machine boundary', () => {
+    for (const address of [`claude-code:old-name.${id}`, `codex:old-name.${id.slice(0,-1)}`, `codex:old-name.${id}@elsewhere`]) {
+      expect(resolvePeer(peers, address).ok).toBe(false);
+    }
+  });
+  test('preserves the remote machine when resolving a renamed peer', () => {
+    const remote = assignNames([{...p('codex', 'New name', id), machine: 'build-box'}]);
+    expect(resolvePeer(remote, `codex:old-name.${id}@build-box`).ok).toBe(true);
+    expect(resolvePeer(remote, `codex:old-name.${id}`).ok).toBe(false);
+  });
+});

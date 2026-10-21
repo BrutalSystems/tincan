@@ -165,8 +165,8 @@ export function createCodexEnv(opts: CodexEnvOptions = {}): CodexEnv {
         locks.map(async (file) => {
           const threadId = file.replace(/\.lock$/, '');
           // A lock file outlives its process; only a real holder means a live
-          // session. The holder's cwd names the session for a thread that has
-          // not taken a turn yet and so has no thread/list metadata.
+          // session. The holder's cwd is process metadata only: shared daemons
+          // can own threads in several different project directories.
           const pid = await run('lsof', ['-t', join(lockDir, file)], env);
           const holder = pid.split('\n')[0]?.trim();
           if (!holder) return;

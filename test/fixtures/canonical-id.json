@@ -585,6 +585,26 @@
         "ok": true,
         "canonicalId": "claude-code:muster-b1.22222222-2222-4222-8222-222222222222"
       }
+    },
+    {
+      "case": "a canonical reply survives a rename even when the old name is reused",
+      "peers": [
+        {
+          "runtime": "codex",
+          "rawName": "New name",
+          "uuid": "00000000-0000-0000-0000-000000000aaa"
+        },
+        {
+          "runtime": "codex",
+          "rawName": "Old name",
+          "uuid": "00000000-0000-0000-0000-000000000bbb"
+        }
+      ],
+      "input": "codex:old-name.00000000-0000-0000-0000-000000000aaa",
+      "expect": {
+        "ok": true,
+        "canonicalId": "codex:new-name.00000000-0000-0000-0000-000000000aaa"
+      }
     }
   ]
 }

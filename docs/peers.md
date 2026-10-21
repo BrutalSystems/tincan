@@ -162,7 +162,8 @@ both get suffixed, exactly as two same-runtime peers would.
   a session named exactly `muster` exits, `muster` is nobody's name and matches
   its neighbour `muster-b1` instead — delivered, and reported as sent. When your
   code already holds a session's durable id, address it by `canonical_id`, which
-  is matched exactly and refuses rather than landing on a stranger. See
+  matches runtime, full durable id, and machine exactly. Its slug may change
+  without breaking replies; a missing id refuses rather than landing on a stranger. See
   [CANONICAL_ID.md](../CANONICAL_ID.md), known defect 4.
 - A peer on another machine carries `@<machine>`: `auth-refactor@m4pro`. A peer
   on this one carries nothing, so every address in use keeps meaning what it
@@ -203,3 +204,20 @@ than caching a name, and key durable records on the thread or session id.
 > defects preserved in 0.1.0. Building a tool that must produce addresses Tin Can
 > resolves? Read that and copy
 > [`test/fixtures/canonical-id.json`](../test/fixtures/canonical-id.json).
+
+### Codex sender identity
+
+Codex supplies `threadId` in MCP tool-call metadata. Tin Can resolves the
+sender's id, title and cwd together for each request, including concurrent
+requests. Tool arguments cannot override that identity. Older hosts without
+this metadata can use a unique ancestor lock holder; a process holding more
+than one thread is ambiguous. Sends with no established identity are refused
+as `self_unknown`, rather than advertising a guessed reply address.
+
+Before thread metadata exists, the peer's cwd is empty and the display label
+uses `codex` with its short id. A shared daemon's process cwd is not used as
+the thread's project. Unreachable fresh threads still need their first turn.
+
+Already-running Tin Can servers retain their loaded code until restarted.
+Older messages with incorrect sender ids cannot be repaired by the new
+resolver; confirm the intended thread from a fresh peer listing.

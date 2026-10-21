@@ -185,8 +185,14 @@ Input is trimmed and lowercased, then matched in two passes against the peer
 listing, with one host-local check between them.
 
 **Pass 1 — exact.** Matches if the input equals the peer's display form, its
-qualified form, or its canonical id. One match resolves. More than one is
-refused as ambiguous.
+qualified form, or the runtime, full durable id, and machine in its canonical
+address. The slug in a canonical address is descriptive: an old slug still
+resolves after a rename, even if another session has taken that name. Runtime,
+full id, and machine must all match; neither truncated ids nor a different
+machine resolve. One match resolves. More than one is refused as ambiguous.
+
+This rename-tolerant resolution was introduced in 3.0.0. The emitted address syntax is unchanged. Consumers that implement
+resolution should adopt the added rename cases in the fixture when upgrading.
 
 **Self check**, only if pass 1 found nothing. If the input names the session
 Tin Can is itself running in, the result is refused as `self`. See
@@ -300,10 +306,11 @@ whole premise. Any rule that refuses the second refuses the first: removing the
 prefix pass is verifiable in one edit, and it fails
 `resolve > unambiguous prefix resolves` alongside the defect's own case.
 
-**The form that cannot misroute is `canonical_id`.** Pass 2 matches against the
+**Use `canonical_id` to avoid name-based misrouting.** Pass 2 matches against the
 slug and the qualified form, never against `canonicalId`, so a canonical id can
 never prefix-match a stranger — it resolves to the session it names or refuses
-as unknown:
+as unknown. This assumes the sender advertised its correct durable id; an
+address cannot repair incorrect sender identity.
 
 ```
 muster gone , resolve("muster")                        -> OK, muster-b1

@@ -1,11 +1,23 @@
 /**
  * Working out which Codex thread is hosting us.
  *
- * Codex sets no thread-id environment variable for MCP servers, so the host
- * would otherwise have to identify itself by working directory — wrong the
- * moment two Codex sessions share one. But the hosting process holds that
- * thread's writer lock, and we are its descendant.
+ * Tool-call metadata is authoritative. Process ancestry is only a fallback
+ * for older hosts with exactly one thread at the nearest lock holder.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/** MCP metadata, isolated across concurrent requests; never tool arguments. */
+export const codexRequestContext = new AsyncLocalStorage<Record<string, unknown> | undefined>();
+
+export function requestThreadId(): string | undefined {
+  const meta = codexRequestContext.getStore();
+  if (meta === undefined || !Object.hasOwn(meta, 'threadId')) return undefined;
+  const id = meta.threadId;
+  if (typeof id !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) {
+    throw new Error('Invalid Codex MCP threadId metadata; refusing to guess the sender.');
+  }
+  return id.toLowerCase();
+}
 
 /** Ancestor pids, nearest first. */
 export function pickSelfThreadId(
@@ -13,9 +25,9 @@ export function pickSelfThreadId(
   ancestors: number[],
 ): string | undefined {
   for (const pid of ancestors) {
-    for (const [threadId, holder] of holders) {
-      if (holder === pid) return threadId;
-    }
+    const matches = [...holders].filter(([, holder]) => holder === pid);
+    if (matches.length > 1) return undefined;
+    if (matches.length === 1) return matches[0]![0];
   }
   return undefined;
 }

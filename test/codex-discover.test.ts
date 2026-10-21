@@ -104,7 +104,7 @@ describe('a freshly started session', () => {
     expect(diagnostic).toMatch(/first turn|no rollout/i);
   });
 
-  test('takes its working directory from the process holding the lock', async () => {
+  test('leaves cwd unknown until thread metadata exists', async () => {
     const { peers } = await listCodexPeers(
       env({
         listThreads: async () => [],
@@ -112,7 +112,7 @@ describe('a freshly started session', () => {
           new Map([['01a0b995-2fbc-7671-9901-77f1832cb3b1', { cwd: '/Users/dev/Source/brutalsystems' }]]),
       }),
     );
-    expect(peers[0]!.cwd).toBe('/Users/dev/Source/brutalsystems');
+    expect(peers[0]!.cwd).toBe('');
   });
 
   test('prefers thread/list metadata once the thread has one', async () => {

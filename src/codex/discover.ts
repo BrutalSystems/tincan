@@ -77,7 +77,7 @@ export async function listCodexPeers(env: CodexEnv): Promise<CodexListing> {
   // is a real peer — just not always a reachable one.
   const reasons: string[] = [];
   const peers = await Promise.all(
-    [...live.entries()].map(async ([id, info]) => {
+    [...live.keys()].map(async (id) => {
       const t = byId.get(id);
       const read = await env.readThread(id);
       const state = reachability(read, t, reasons);
@@ -85,7 +85,8 @@ export async function listCodexPeers(env: CodexEnv): Promise<CodexListing> {
         uuid: id,
         threadId: id,
         rawName: t?.name ?? null,
-        cwd: t?.cwd ?? info.cwd ?? '',
+        // A shared daemon's cwd is not the thread's project directory.
+        cwd: t?.cwd ?? '',
         state,
       };
     }),

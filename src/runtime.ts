@@ -17,7 +17,7 @@ import { VERSION } from './version.js';
 import { sendToInbox, type InboxAuth } from './claude/client.js';
 import { listCodexPeers, type CodexEnv } from './codex/discover.js';
 import { createCodexEnv, parentPidLookup } from './codex/cli.js';
-import { pickSelfThreadId, ancestorPids } from './codex/self.js';
+import { pickSelfThreadId, ancestorPids, requestThreadId } from './codex/self.js';
 import { listOpencodeSessions, type OpencodeSession } from './opencode/discover.js';
 import { sendToInstance } from './opencode/client.js';
 import { selfSessionId, parseOpencodePid } from './opencode/self.js';
@@ -163,6 +163,8 @@ function findSessionName(
 }
 
 export interface SideDeps {
+  /** Inject the Codex transport without accessing live sessions in tests. */
+  codex?: CodexEnv;
   /**
    * Test seam. Production sweeps socketDirCandidates, which always includes
    * the real /tmp/cc-socks — so without this a test sweeps whatever sessions
@@ -738,32 +740,28 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
       // Claude side is deliberate — see the README. Unlike the opencode host,
       // a Codex thread has no opencode session of its own to exclude, so
       // opencode peers need no self-filtering here.
-      const codexForSelf = createCodexEnv();
+      const codexForSelf = deps.codex ?? createCodexEnv();
       const registryDir = opencodeRegistryDir(env);
-      let selfThread: string | undefined;
-      const selfName = makeSelfNameResolver(
-        () => codexThreadName(codexForSelf, ctx, env),
-        ctx.cwd,
-        { ttlMs: deps.selfNameTtlMs },
-      );
       const peerRuntimes: RuntimeName[] = ['codex', 'claude-code', 'opencode'];
 
       return {
         ...common,
-        resolveSelf: async () => NO_SESSION,
-        selfName,
-        // Cached for the process: unlike a thread's TITLE, its id does not
-        // change, so there is nothing here for a rename to invalidate.
-        selfDurableId: async () => {
-          selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
-          return selfThread === undefined ? undefined : { thread_id: selfThread };
+        requireSelfIdentity: true,
+        resolveSelf: async () => {
+          const id = requestThreadId() ?? await selfThreadId_(codexForSelf, ctx, env);
+          const thread = id === undefined ? undefined : (await codexForSelf.listThreads()).find(t => t.id === id);
+          return {
+            sessionId: id,
+            name: slugify(thread?.name ?? '') || 'thread',
+            cwd: thread?.cwd ?? '',
+          };
         },
+        selfName: async self => self.name ?? 'codex',
+        selfDurableId: async self => self.sessionId === undefined ? undefined : { thread_id: self.sessionId },
         peerRuntimes,
         limitsFor,
 
-        async listPeers() {
-          selfThread ??= await selfThreadId_(codexForSelf, ctx, env);
-
+        async listPeers(self) {
           const [codexListing, claudeListing, opencodeListing] = await Promise.all([
             listCodex(codexForSelf),
             claudePeersWithSweep(
@@ -777,7 +775,7 @@ export function buildSide(runtime: RuntimeName, ctx: HostContext, deps: SideDeps
           ]);
 
           const codexPeers = codexListing.peers
-            .filter((p) => p.threadId !== selfThread) // never list ourselves
+            .filter((p) => p.threadId !== self.sessionId) // never list ourselves
             .map(toCodexSidePeer);
 
           // #5. The same filter the opencode arm has carried since 0.5.0.
@@ -1079,25 +1077,8 @@ async function selfThreadId_(
 }
 
 /**
- * Caches only a real answer. A Codex thread has no title until its first turn,
- * but the MCP server starts before that and resolves its own name for the
- * startup diagnostic — caching that fallback left a session calling itself by
- * its directory for the rest of its life.
- */
-/**
- * How long a resolved self-name is trusted before it is looked up again.
- *
- * This cache used to be permanent, which made a rename unobservable: a Codex
- * thread renamed mid-session announced its OLD name in every `from=` for the
- * life of the MCP process. A peer replying to that name got `peer_unknown` —
- * and in a real Muster -> opencode -> Tin Can run, the replying model then
- * chose a different session from the candidate list and sent the reply to a
- * stranger.
- *
- * A window rather than a per-call lookup because resolving costs a CLI round
- * trip on the Codex arm, and `selfName` is called on every `peers` and every
- * `send_peer`. Ten seconds keeps that off the hot path while making a rename
- * visible long before a human could act on it.
+ * Cache duration for registry-based self names. Codex resolves its name from
+ * the request's thread id instead, so concurrent threads never share a cache.
  */
 export const SELF_NAME_TTL_MS = 10_000;
 
@@ -1113,39 +1094,13 @@ export function makeSelfNameResolver(
   return async () => {
     if (cached !== undefined && now() - at < ttlMs) return cached;
     const name = await resolve();
-    // A fallback is still never cached: a Codex thread has no title until its
-    // first turn, and caching the directory name there left a session calling
-    // itself by its directory forever. Returning it without storing means the
-    // real name is picked up as soon as it exists.
+    // Never cache a fallback: the registry may acquire a name after startup.
     if (name === undefined || name === '') return basename(cwd) || 'codex';
     cached = name;
     at = now();
     return cached;
   };
 }
-
-/**
- * The slugified title of the Codex thread hosting us, or undefined if it does
- * not have one yet. Undefined rather than a fallback, so the caller can decide
- * whether the answer is worth caching.
- */
-async function codexThreadName(
-  codex: CodexEnv,
-  ctx: HostContext,
-  env: NodeJS.ProcessEnv,
-): Promise<string | undefined> {
-  try {
-    const id = await selfThreadId_(codex, ctx, env);
-    if (id === undefined) return undefined;
-    const threads = await codex.listThreads();
-    const raw = threads.find((t) => t.id === id)?.name;
-    const slug = raw === undefined || raw === null ? '' : slugify(raw);
-    return slug === '' ? undefined : slug;
-  } catch {
-    return undefined;
-  }
-}
-
 
 /**
  * The name a Codex-hosted tincan puts in `from=`. Slugified, because that is

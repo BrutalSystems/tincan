@@ -140,6 +140,18 @@ export function assignNames(peers: PeerBase[]): NamedPeer[] {
   });
 }
 
+/** Match an address's immutable identity; the slug is descriptive only. */
+export function matchesCanonicalIdentity(
+  input: string,
+  runtime: RuntimeName,
+  uuid: string,
+  machine?: string,
+): boolean {
+  const match = /^(claude-code|codex|opencode):[a-z0-9-]+\.([^@]+)(?:@([a-z0-9-]+))?$/.exec(input.toLowerCase());
+  return match !== null && match[1] === runtime && match[2] === uuid.toLowerCase()
+    && (match[3] ?? '') === (machine ? slugify(machine) : '');
+}
+
 /**
  * Resolve an address, in three stages: an exact peer, then ourselves, then a
  * peer by prefix.
@@ -183,7 +195,8 @@ export function resolvePeer(
   peers = eligible;
 
   const exact = peers.filter(
-    (p) => p.display.toLowerCase() === q || qualified(p) === q || p.canonicalId.toLowerCase() === q,
+    (p) => p.display.toLowerCase() === q || qualified(p) === q
+      || matchesCanonicalIdentity(q, p.runtime, p.uuid, p.machine),
   );
   if (exact.length === 1) return { ok: true, peer: exact[0]! };
   if (exact.length > 1) return { ok: false, reason: 'ambiguous', candidates: exact.map(qualified) };

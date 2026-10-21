@@ -64,3 +64,9 @@ describe('ancestorPids', () => {
     expect(got.length).toBeLessThan(10);
   });
 });
+
+test('does not guess between threads held by a shared ancestor', () => {
+  const shared = new Map([['thread-a', 100], ['thread-b', 100], ['outer', 200]]);
+  expect(pickSelfThreadId(shared, [100, 200])).toBeUndefined();
+  expect(pickSelfThreadId(new Map([...shared].reverse()), [100, 200])).toBeUndefined();
+});

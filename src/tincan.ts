@@ -12,6 +12,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { detectRuntime, buildSide, claudeRegistryDirs, externalSide } from './runtime.js';
+import { codexRequestContext } from './codex/self.js';
 import { withOpencodeHost } from './opencode/host.js';
 import { runSend } from './send-cli.js';
 import { runMcp, runClaude } from './mcp-cli.js';
@@ -230,7 +231,7 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: definitions }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request) => codexRequestContext.run(request.params._meta, async () => {
     const { name, arguments: args = {} } = request.params;
     // Belt to the interval's braces, and free: any tool call is a moment we
     // know we are alive, so it is a moment to confirm the registration still
@@ -260,7 +261,7 @@ async function main(): Promise<void> {
       diag(`${name} failed: ${message}`);
       return { content: [{ type: 'text', text: message }], isError: true };
     }
-  });
+  }));
 
   diag(
     `hosted in ${runtime} as "${await side.selfName(await side.resolveSelf())}"; ` +

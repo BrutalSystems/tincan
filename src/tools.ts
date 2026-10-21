@@ -5,6 +5,7 @@ import {
   assertNever,
   assignNames,
   resolvePeer,
+  matchesCanonicalIdentity,
   slugify,
   suffixOf,
   LABEL,
@@ -94,11 +95,14 @@ export interface DeliveryOutcome {
  */
 export interface SelfRef {
   /**
-   * The host session's own id where the runtime can name it — opencode today.
-   * `undefined` on the hosts that identify themselves from the environment
-   * instead, and on opencode when the caller file cannot be read.
+   * The host session's own id where resolved per request (Codex and opencode).
+   * Other hosts use their runtime-specific identity lookup. An unresolved
+   * identity stays undefined rather than being guessed.
    */
   sessionId: string | undefined;
+  /** Codex metadata captured together for this request. */
+  name?: string;
+  cwd?: string;
 }
 
 /**
@@ -118,6 +122,8 @@ export interface Side {
    * external sender, so it never appears in a listing.
    */
   selfRuntime: SenderKind;
+  /** Hosts with ambiguous process ancestry must not send without an identity. */
+  requireSelfIdentity?: boolean;
   /**
    * Where a reply should go, for a sender that cannot receive one. Set only by
    * the external side, and deliberately not a `send_peer` argument: a session
@@ -239,6 +245,7 @@ export type SendPeerArgs = z.input<typeof sendPeerSchema>;
 export type MessageLogArgs = z.input<typeof messageLogSchema>;
 
 export type Refusal =
+  | 'self_unknown'
   | 'peer_unknown'
   | 'peer_ambiguous'
   // Distinct from peer_unknown: the peer exists, it is us. A caller branching
@@ -534,9 +541,12 @@ export function createTools(
               side.selfRuntime,
               await side.selfName(selfRef),
               await side.selfDurableId?.(selfRef),
-              side.selfCwd,
+              selfRef.cwd ?? side.selfCwd,
             );
       const notes: string[] = [];
+      if (side.requireSelfIdentity && self?.thread_id === undefined) {
+        notes.push('Sender identity is unknown: Codex must supply MCP threadId metadata when its process holds several threads. Sending is disabled until identity can be established.');
+      }
 
       // No scoping note. There was one for as long as the Claude arm listed
       // its own kind only from other config dirs: an empty list that does not
@@ -710,6 +720,14 @@ export function createTools(
       // Resolved once per call, beside the name, so the two cannot disagree
       // about who we are.
       const selfId = (await side.selfDurableId?.(self)) ?? undefined;
+      if (side.requireSelfIdentity && selfId === undefined) {
+        return {
+          outcome: 'rejected',
+          refusal: 'self_unknown',
+          ...(fanOut && { requested: addresses.length, accepted: 0, results: [] }),
+          detail: 'Cannot identify the sending Codex thread. The host must supply MCP threadId metadata or have a unique ancestor lock holder. Nothing was sent.',
+        };
+      }
 
       /**
        * Record a send that never became a message (#23, #24).
@@ -753,7 +771,7 @@ export function createTools(
             : undefined;
         log.appendUnsent(
           id,
-          { runtime: side.selfRuntime, name: selfName, cwd: side.selfCwd, ...(selfId ?? {}) },
+          { runtime: side.selfRuntime, name: selfName, cwd: self.cwd ?? side.selfCwd, ...(selfId ?? {}) },
           address,
           reason,
           args.message,
@@ -968,7 +986,7 @@ export function createTools(
         const replyTo =
           side.selfRuntime === 'external'
             ? undefined
-            : selfAddressOf(side.selfRuntime, selfName, selfId, side.selfCwd).canonical_id;
+            : selfAddressOf(side.selfRuntime, selfName, selfId, self.cwd ?? side.selfCwd).canonical_id;
         const filed = await mail.file({
           to: sid ?? selfName,
           kind: kindOf(args.message),
@@ -998,7 +1016,7 @@ export function createTools(
           from: {
             runtime: side.selfRuntime,
             name: selfName,
-            cwd: side.selfCwd,
+            cwd: self.cwd ?? side.selfCwd,
             // Spread, not two optional fields: the arm returns whichever key
             // its runtime uses, and neither is invented when it returns
             // nothing.
@@ -1146,6 +1164,7 @@ export function createTools(
       rawArgs: MessageLogArgs,
     ): Promise<{ records: LogRecord[]; integrity?: LogIntegrity; scope_note?: string }> {
       const args = messageLogSchema.parse(rawArgs);
+      const self = await side.resolveSelf();
 
       // #24. Matching is by durable id alone: a session that cannot name its
       // own is not handed a backlog matched on anything weaker, because the
@@ -1153,7 +1172,7 @@ export function createTools(
       // its predecessor's name would collect its predecessor's mail.
       let missed: { toId: string; now: number } | undefined;
       if (args.missed) {
-        const durable = await side.selfDurableId?.(await side.resolveSelf());
+        const durable = await side.selfDurableId?.(self);
         const toId =
           durable === undefined
             ? undefined
@@ -1189,13 +1208,20 @@ export function createTools(
       // Either end matching, not just the sender: peers in different projects
       // messaging each other is much of the point, and such a message belongs
       // in both scopes.
-      const here = side.selfCwd.replace(/\/+$/, '');
+      const here = (self.cwd ?? side.selfCwd).replace(/\/+$/, '');
+      if (here === '' && !args.all_projects && missed === undefined) {
+        return {
+          records: [],
+          integrity,
+          scope_note: 'Project directory is unknown until thread metadata is available. No project-scoped records are shown. Pass all_projects: true to explicitly read the machine-wide log.',
+        };
+      }
       const mine = (r: LogRecord): boolean => {
         if (!('from' in r) || !('to' in r)) return true; // notices, drops, checkpoints
         const ends = [r.from.cwd, r.to.cwd].map((c) => (c ?? '').replace(/\/+$/, ''));
         return ends.includes(here);
       };
-      const records = args.all_projects ? all : all.filter(mine);
+      const records = args.all_projects || (here === '' && missed !== undefined) ? all : all.filter(mine);
 
       // A session whose cwd does not match what was recorded — a symlinked
       // path, a moved checkout — would otherwise see an empty log and
@@ -1253,6 +1279,8 @@ function isSelfAddress(
    * `--from` it passed being blamed, so the refusal would be doubly opaque.
    */
   if (selfRuntime === 'external') return false;
+  const durable = selfId === undefined ? undefined : 'thread_id' in selfId ? selfId.thread_id : selfId.session_id;
+  if (durable !== undefined && matchesCanonicalIdentity(query, selfRuntime, durable)) return true;
   const name = selfName.toLowerCase();
   // #45: the qualified name `peers` reports as `self.name` must read as us, or
   // a session sending to its own reported address is told `peer_unknown`.
