@@ -681,9 +681,10 @@ export function createTools(
           const { named: list } = await named(await side.resolveSelf());
           const resolved = resolvePeer(list, args.peer as string, () => false);
           if (!resolved.ok) return undefined;
-          const now = durableIdOf((resolved.peer as NamedPeer & { side: SidePeer }).side);
+          const target = (resolved.peer as NamedPeer & { side: SidePeer }).side;
+          const now = durableIdOf(target);
           const nowId = 'thread_id' in now ? now.thread_id : now.session_id;
-          return nowId === prior.toId ? undefined : nowId;
+          return nowId === prior.toId && (prior.toRuntime === undefined || prior.toRuntime === target.runtime) ? undefined : nowId;
         } catch {
           // A listing that throws must not turn a duplicate into an error: the
           // pre-existing answer is still the safe one.
@@ -719,6 +720,7 @@ export function createTools(
       // answer "already sent" when the peer has exited in the meantime —
       // resolving first would report peer_unreachable, which is true of the
       // peer and false about the message.
+      let retrySnapshot: Awaited<ReturnType<typeof named>> | undefined;
       if (args.idempotency_key !== undefined) {
         const prior = idempotency.lookup(scopedKey!);
         let queueAuthoritative = false;
@@ -730,7 +732,8 @@ export function createTools(
               const target = (resolved.peer as NamedPeer & {side:SidePeer}).side;
               const d = durableIdOf(target);
               const who = strictIdentity(target.runtime, 'thread_id' in d ? d.thread_id : d.session_id);
-              queueAuthoritative = who !== undefined && (await pullInbox.inspect(who)).enabled;
+              queueAuthoritative = who !== undefined && prior.toId === who.id && prior.toRuntime === who.runtime && (await pullInbox.inspect(who)).enabled;
+              if (queueAuthoritative) retrySnapshot = current;
             }
           } catch (e) { return inboxFailure(e); }
         }
@@ -777,7 +780,7 @@ export function createTools(
         }
       }
 
-      const { named: list, diagnostic } = await named(self);
+      const { named: list, diagnostic } = retrySnapshot ?? await named(self);
 
       /**
        * Record a send that never became a message (#23, #24).
@@ -815,7 +818,20 @@ export function createTools(
           const ids = new Set<string>();
           if (toId !== undefined) ids.add(toId);
           if (resolvedFor !== undefined) { const d = durableIdOf(resolvedFor); ids.add('thread_id' in d ? d.thread_id : d.session_id); }
-          try { ids.add(parseInboxIdentity(address).id); } catch { /* A display address supplies no durable identity. */ }
+          // An early failing sibling must not expose a broadcast's strict body.
+          // Resolution trims addresses, so canonical inspection must do so too.
+          for (const intended of addresses) {
+            try { ids.add(parseInboxIdentity(intended.trim()).id); } catch { /* display address */ }
+            const resolved = resolvePeer(list, intended, () => false);
+            const candidates = resolved.ok ? [resolved.peer] : resolved.candidates.flatMap(candidate => {
+              const match = resolvePeer(list, candidate, () => false);
+              return match.ok ? [match.peer] : [];
+            });
+            for (const candidate of candidates) {
+              const d = durableIdOf((candidate as NamedPeer & { side: SidePeer }).side);
+              ids.add('thread_id' in d ? d.thread_id : d.session_id);
+            }
+          }
           for (const id of ids) if ((await pullInbox.inspectId(id)).some(p => p.enabled)) omitBody = true;
         } catch { omitBody = true; }
 
@@ -1154,7 +1170,7 @@ export function createTools(
           } catch (e) {
             const failure = inboxFailure(e);
             // An uncertain commit has no false failure outcome in the audit.
-            if (failure.refusal !== 'inbox_commit_unknown') { try { log.appendOutcome(envelope.id, false, failure.detail); } catch { /* no fallback */ } }
+            if (failure.refusal !== 'inbox_commit_unknown' && !duplicates.has(target.canonicalId)) { try { log.appendOutcome(envelope.id, false, failure.detail); } catch { /* no fallback */ } }
             results.push({ peer: target.display, outcome: failure.outcome!, refusal: failure.refusal, detail: failure.detail, message_id: envelope.id, method: 'pull-inbox' });
           }
           continue;
@@ -1241,10 +1257,11 @@ export function createTools(
           messageId: landed[0]!.message_id!,
           peer: landed.map((r) => r.peer).join(', '),
           peerArg: addresses.join(', '),
-          text: landed.some(r => r.method === 'pull-inbox') ? OMITTED_BODY : args.message,
-          ...(landed.some(r => r.method === 'pull-inbox') && { strict: true as const, fingerprint: requestFingerprint(args), inbox_state: landed[0]!.inbox_state }),
+          text: pullArgs.size > 0 ? OMITTED_BODY : args.message,
+          ...(pullArgs.size > 0 && { strict: true as const, fingerprint: requestFingerprint(args), inbox_state: landed[0]!.inbox_state }),
           ...(landedId !== undefined && {
             toId: 'thread_id' in landedId ? landedId.thread_id : landedId.session_id,
+            toRuntime: landedTarget!.side.runtime,
           }),
         });
       }

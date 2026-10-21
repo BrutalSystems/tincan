@@ -204,3 +204,48 @@ test('foreign cursor is rejected and different sender key does not collide', asy
     svc.read(receiver, { cursor: page.next_cursor }),
   ).rejects.toMatchObject({ code: 'cursor_invalid' });
 });
+test('admission reserves response space for revoke and sequence growth', async () => {
+  await svc.grant(receiver, sender);
+  const seed = message('boundary', '');
+  await svc.enqueue(seed);
+  const page = await svc.read(receiver, {});
+  const overhead = Buffer.byteLength(JSON.stringify(page.messages));
+  await svc.drop(receiver, 'boundary');
+  await expect(
+    svc.enqueue({
+      ...seed,
+      envelope: { ...seed.envelope, text: 'x'.repeat(1048576 - overhead) },
+    }),
+  ).rejects.toMatchObject({ code: 'queue_full' });
+  const safe = {
+    ...seed,
+    envelope: { ...seed.envelope, text: 'x'.repeat(1048576 - overhead - 32) },
+  };
+  await svc.enqueue(safe);
+  await svc.revoke(receiver, sender);
+  expect((await svc.quarantine(receiver, {})).messages).toHaveLength(1);
+  await svc.release(receiver, 'boundary');
+  expect((await svc.read(receiver, {})).messages).toHaveLength(1);
+});
+test('admission reserves total snapshot space so revocation remains possible', async () => {
+  await svc.grant(receiver, sender);
+  for (let i = 0; i < 100; i++)
+    await svc.enqueue(message(`bulk_${i}`, 'x'.repeat(100000)));
+  const seed = message('last', '');
+  await svc.enqueue(seed);
+  const serialized = await svc.storage.transaction(receiver, (s) => ({
+    state: s!,
+    result: JSON.stringify(s),
+  }));
+  const padding = 10485760 - Buffer.byteLength(serialized);
+  await svc.drop(receiver, 'last');
+  await expect(
+    svc.enqueue({
+      ...seed,
+      envelope: { ...seed.envelope, text: 'x'.repeat(padding) },
+    }),
+  ).rejects.toMatchObject({ code: 'queue_full' });
+  await svc.revoke(receiver, sender);
+  expect((await svc.status(receiver)).eligible).toBe(0);
+  expect((await svc.status(receiver)).quarantined).toBe(100);
+}, 20000);

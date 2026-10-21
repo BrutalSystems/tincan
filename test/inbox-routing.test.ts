@@ -318,3 +318,127 @@ test('retrieval rejects external and unidentified hosts without granting by name
     'invalid_identity',
   );
 });
+test('a strict retry refuses a replacement receiver behind the same display name', async () => {
+  const tools = make();
+  const args = { peer: 'receiver', message: body, idempotency_key: 'moved' };
+  const first = await tools.send_peer(args);
+  expect(first.outcome).toBe('accepted');
+  const replacement = {
+    ...receiver,
+    id: '00000000-0000-0000-0000-000000000009',
+  };
+  await svc.enable(replacement);
+  peers = [{ ...peer, uuid: replacement.id }];
+  expect(await tools.send_peer(args)).toMatchObject({
+    refusal: 'duplicate_peer_moved',
+    message_id: first.message_id,
+  });
+  expect((await svc.status(replacement)).items).toBe(0);
+});
+test('partial mixed broadcast failure keeps the retry file body-free', async () => {
+  peers.push({
+    ...peer,
+    uuid: '00000000-0000-0000-0000-000000000009',
+    rawName: 'native',
+  });
+  const { InboxError } = await import('../src/inbox/types.js');
+  vi.spyOn(svc, 'enqueue').mockRejectedValueOnce(
+    new InboxError('policy_changed'),
+  );
+  const r = await make().send_peer({
+    peers: ['native', 'receiver'],
+    message: body,
+    idempotency_key: 'partial',
+  });
+  expect(r.accepted).toBe(1);
+  for (const file of readdirSync(join(dir, 'keys')))
+    expect(readFileSync(join(dir, 'keys', file), 'utf8')).not.toContain(body);
+});
+test.each(['canonical', 'display'])(
+  'unknown broadcast sibling does not expose %s strict body',
+  async (kind) => {
+    const address =
+      kind === 'canonical' ? `claude-code:receiver.${receiver.id}` : 'receiver';
+    expect(
+      await make().send_peer({ peers: ['unknown', address], message: body }),
+    ).toMatchObject({ refusal: 'peer_unknown' });
+    expect(readFileSync(join(dir, 'messages.jsonl'), 'utf8')).not.toContain(
+      body,
+    );
+  },
+);
+test('offline padded canonical address keeps unsent body private', async () => {
+  peers = [];
+  expect(
+    await make().send_peer({
+      peer: `  claude-code:receiver.${receiver.id}  `,
+      message: body,
+    }),
+  ).toMatchObject({ refusal: 'peer_unknown' });
+  expect(readFileSync(join(dir, 'messages.jsonl'), 'utf8')).not.toContain(body);
+});
+test('a failed duplicate attempt cannot rewrite successful reply history', async () => {
+  const { buildEnvelope } = await import('../src/envelope.js');
+  const { InboxError } = await import('../src/inbox/types.js');
+  log.appendMessage(
+    buildEnvelope({
+      id: 'question',
+      from: {
+        runtime: 'claude-code',
+        name: 'receiver',
+        session_id: receiver.id,
+      },
+      to: { runtime: 'codex', name: 'sender', thread_id: sender.id },
+      method: 'inbox',
+      text: 'question',
+      expect_reply: true,
+      reply_tool: true,
+    }),
+    true,
+  );
+  await svc.grant(receiver, sender);
+  const tools = make();
+  const args = {
+    peer: 'receiver',
+    message: body,
+    idempotency_key: 'answer',
+    answers: true,
+    in_reply_to: 'question',
+  };
+  const first = await tools.send_peer(args);
+  expect(
+    log.read({ last_n: 20 }).find((r) => r.id === 'question'),
+  ).toMatchObject({ answered: true });
+  vi.spyOn(svc, 'enqueue').mockRejectedValueOnce(new InboxError('locked'));
+  expect(await tools.send_peer(args)).toMatchObject({ outcome: 'failed' });
+  expect(
+    log
+      .read({ last_n: 20 })
+      .find((r) => r.id === first.message_id && r.kind === undefined),
+  ).toMatchObject({ outcome: 'accepted' });
+  expect(
+    log.read({ last_n: 20 }).find((r) => r.id === 'question'),
+  ).toMatchObject({ answered: true });
+});
+test('a strict retry uses the recipient snapshot that validated its cached identity', async () => {
+  const tools = make();
+  const args = {
+    peer: 'receiver',
+    message: body,
+    idempotency_key: 'moving-during-retry',
+  };
+  const first = await tools.send_peer(args);
+  const replacement = {
+    ...receiver,
+    id: '00000000-0000-0000-0000-000000000009',
+  };
+  await svc.enable(replacement);
+  let calls = 0;
+  side.listPeers = async () => ({
+    peers: ++calls === 1 ? [peer] : [{ ...peer, uuid: replacement.id }],
+  });
+  expect(await tools.send_peer(args)).toMatchObject({
+    message_id: first.message_id,
+  });
+  expect((await svc.status(replacement)).items).toBe(0);
+});

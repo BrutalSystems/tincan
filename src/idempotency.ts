@@ -51,6 +51,8 @@ export interface PriorSend {
    * can land without one being derivable.
    */
   toId?: string;
+  /** Runtime is part of a strict recipient's durable identity. */
+  toRuntime?: string;
   at: number;
 }
 
