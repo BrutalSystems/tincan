@@ -1,6 +1,6 @@
 {
   "name": "@brutalsystems/tincan",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Peer messaging between live Claude Code, Codex and opencode sessions on the same machine. One MCP server, run inside each.",
   "keywords": [
     "mcp",

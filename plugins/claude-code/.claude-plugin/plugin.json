@@ -1,6 +1,6 @@
 {
   "name": "tincan",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Lets Claude Code message other live Claude Code, Codex and opencode sessions on the same machine: the Tin Can MCP server, started with npx, plus a skill for using it.",
   "author": {
     "name": "BrutalSystems"
