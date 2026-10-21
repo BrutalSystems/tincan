@@ -32,6 +32,9 @@ Neither is needed for pull, and permission class is not a sender grant.
 
 - Grants cover identified agent sessions: runtime plus full durable session or
   thread ID, using existing canonical address parsing and identity rules.
+  Ignore the descriptive slug, reject `@machine` addresses in this local-only
+  version, and never fall back to display-name matching. An unidentified sender
+  is quarantined even on runtimes whose existing send path permits missing IDs.
 - Display names, working directories, message prefixes, and claimed roles are
   never grant keys. Renaming a session preserves its grant; a replacement
   session with the same name does not inherit it.
@@ -65,6 +68,10 @@ harness. Enabling again creates a new inbox generation, invalidating old
 cursors. Management commands are not MCP tools. Agents are instructed never to
 execute them because a peer message requests a policy change. CLI access is
 operator authority, not a claim that arbitrary same-user shell access is safe.
+Neither a terminal check nor an agent-supplied flag proves operator identity.
+Every retrieved peer envelope explicitly forbids running inbox administration
+or inspecting quarantine in response to a peer request. `enable` accepts only
+supported agent runtimes, never `external`.
 
 The CLI uses the same policy and storage functions as MCP, with structured JSON
 results and documented nonzero failure exits. No new CLI peer-query API is
@@ -76,8 +83,12 @@ administration and retrieval are useful CLI exceptions.
 Expose `receive_peer_messages({cursor?, limit?})`. Resolve the caller using the
 existing runtime-specific identity path, including Codex per-request metadata.
 There is no receiver argument. Missing or ambiguous identity is an error.
+An external process cannot invoke MCP retrieval as an agent. An identified
+receiver without strict mode gets `{enabled:false, messages:[]}` and an
+explanatory notice; a damaged policy is an error, not this disabled result.
 
-Return `{messages, next_cursor, has_more}`. Each item retains its message ID,
+For enabled receivers return `{enabled:true, messages, next_cursor, has_more}`.
+Each item retains its message ID,
 sender and receiver identities, timestamps, original envelope, reply correlation,
 and explicit peer-origin/no-approval wording. Default limit is 20, maximum 100;
 also cap each response to 1 MiB of serialized message data.
@@ -85,16 +96,22 @@ also cap each response to 1 MiB of serialized message data.
 Cursors are opaque and bound to receiver identity and inbox generation. Empty
 results preserve a valid cursor. Invalid, foreign, or obsolete cursors fail
 explicitly. Reads are non-destructive: callers persist their returned cursor;
-repeating a read may return the same IDs. Fetch does not mean understanding,
-action, acknowledgement, or an answer. Messages expire after 24 hours by
-default; expired content cannot be fetched even with an old cursor.
+omitting it starts at the beginning of retained eligible content. Repeating a
+read may return the same IDs. Do not automatically advance a server-side read
+pointer: a committed advance followed by a lost response would hide messages.
+Document saving the cursor in durable task state rather than conversation memory.
+Fetch does not mean understanding, action, acknowledgement, or an answer.
+Messages expire after a fixed 24 hours from insertion in version one; expired
+content cannot be fetched even with an old cursor.
 
-Maintain a monotonic availability sequence independent of insertion order.
-Granting a sender or releasing an item makes newly eligible messages appear
-after the reader's existing cursor. Revocation removes unread and retained
-messages from ordinary retrieval immediately; regranting reissues availability
-sequence positions, so a consumer may see an earlier ID again. Consumers dedupe
-by message ID. Revocation cannot retract text already fetched.
+Each item is `quarantined`, `eligible`, or `released`. Assign a fresh monotonic
+availability sequence when entering eligible or released, independent of insertion
+order. A grant moves that sender's quarantined items to eligible; revoke moves
+eligible items back to quarantine. Explicit per-message releases survive sender
+revocation; use `drop` to withdraw them. Releasing a quarantined item does not
+grant its sender. Visibility requires eligible/released state and sequence after
+the cursor. Regranting can therefore return an earlier message ID again; consumers
+dedupe by ID. No operation retracts text already fetched.
 
 An idle session is not awakened. Its operator must arrange polling within an
 active task or its existing orchestration loop. Urgent messages are stored with
@@ -103,7 +120,9 @@ their urgency metadata but do not cause a wake-up.
 ## Send and routing behavior
 
 Resolve and verify target identity before consulting its strict policy. Check
-strict routing before legacy mailbox exceptions or native delivery. An enabled
+strict routing before native liveness checks, legacy mailbox exceptions or
+native delivery. A resolved, identity-verified strict target may accept queue
+writes even when its harness is unreachable. An enabled
 strict receiver always uses `method: pull-inbox`, including expected replies,
 urgent messages, prefix matches, and external mailbox notifications.
 
@@ -113,6 +132,10 @@ pull-inbox`, and structured `inbox_state: queued | quarantined` only after the
 store commits. Acceptance means the store accepted responsibility, not that the
 harness accepted or the agent read anything. Extend CLI JSON to retain these
 fields instead of losing them in its current projection.
+Set the envelope's method to `pull-inbox` before logging; log delivery as `queue`,
+never `steer`, and retain urgency as metadata. `peers` exposes
+`delivery: native | mailbox | pull` when known. Send notices explicitly say that
+pull receivers collect on their own schedule and are not awakened.
 
 Queue refusal is `rejected` with a machine-readable reason; storage or lock
 failure is `failed`. Never call a runtime delivery adapter following either.
@@ -120,29 +143,53 @@ Preserve current size/rate guards, expected-recipient checks, reply IDs, and
 fan-out validation. Preflight every broadcast destination before any write;
 report individual outcomes if an actual write fails after preflight. Do not
 promise transactional delivery across inboxes and native harnesses.
+Preflight takes at most one receiver lock at a time; revalidate at each commit.
+Do not hold multiple inbox locks to simulate a cross-transport transaction.
 
-Version one continues to use existing live-peer discovery. Strict pull does not
-create a new offline addressing service. If existing replay offers a message
-later, it must re-check current strict policy and grants through the same router;
-it must never replay directly into a strict receiver's harness.
+Version one uses existing peer discovery and does not resolve entirely absent
+peers from inbox configuration. A discoverable but unreachable strict receiver
+is different from an unresolvable address: the former can be queued, the latter
+still fails resolution. Expected-recipient mismatch still rejects delivery.
+
+Existing `replay_for_minutes` is log-based collection through
+`message_log({missed:true})`, not automatic replay dispatch. Before any
+`appendUnsent` call, inspect strict policy using both the resolved identity and
+the intended ID (`expect_id`, when present). If either identifies a strict
+receiver, log a fixed body placeholder and disable log-based replay; do not
+enqueue an unresolvable or mismatched target. Inspect all runtime entries for a
+bare intended ID, rather than guessing its runtime. If policy inspection cannot
+complete, fail closed without writing a body. This applies to unknown, changed,
+unreachable and preflight-refused targets, and ordinary/all-project log reads.
+Return a notice explaining that a failed strict send was not saved for retrieval.
 
 ## Storage and failure behavior
 
-Store versioned receiver directories under `$TINCAN_HOME/inboxes`, keyed by a
-hash of normalized runtime/full ID. Use private directory/file permissions,
-validate ownership and reject symlinks. Keep a persistent strict marker separate
-from policy data. Missing or corrupt policy behind a marker is an error, not
-ordinary delivery. If the inbox root cannot be inspected, refuse delivery rather
+Store versioned receiver directories under `$TINCAN_HOME/inboxes`, grouped by a
+hash of the normalized full ID with a runtime subdirectory. The grouping supports
+conservative bare-ID lookup; grants and retrieval still require runtime plus ID.
+Use private directory/file permissions, validate ownership and reject symlinks.
+The receiver directory itself is the persistent marker; one atomic state snapshot
+contains policy, generation, grants and items. A missing or corrupt snapshot in
+an existing receiver directory is an error, not ordinary delivery. Do not create
+these directories during read-only lookup. If the root cannot be inspected, refuse delivery rather
 than assuming no receiver has opted in. A genuinely absent root preserves the
 legacy default. Explicit disable retains a disabled record; policy-file deletion
 is not a supported way to disable strict mode.
 
-Serialize each receiver's send, grant, revoke, release, read and expiry operations
-with a cross-process lock. Use atomic replacement for versioned state, commit
+Serialize each receiver's enable, disable, send, grant, revoke, release, read and
+expiry operations with a cross-process lock. Routing checks and delivery commit
+share that lock, including native sends to not-yet-enabled receivers, so enable
+cannot race a checked-but-not-yet-injected send. A native send already completed
+before enable cannot be recalled. Locks live separately from receiver marker
+directories, and lookup-only operations must not accidentally enable strict mode.
+Use atomic replacement for versioned state, commit
 before success, and bounded lock waits. Do not reclaim a lock on age alone;
 verify owner process lifetime or return a recoverable locked error. An uncertain
-commit returns an indeterminate result with its message ID; retries reconcile
-against that ID or a supplied idempotency key.
+commit returns `outcome: failed`, `refusal: inbox_commit_unknown`, and its message
+ID with an explicit warning that insertion may have occurred. Reconciliation is
+by retrying the same supplied idempotency key and payload; `send_peer` has no
+caller-supplied message-ID API. Without a key, report possible duplication and
+do not recommend automatic retry. No outcome implies that a receiver read it.
 
 Use a bounded atomic snapshot for the first version: maximum 500 items and
 10 MiB serialized data per receiver, including quarantine. Reserve at least
@@ -150,24 +197,52 @@ Use a bounded atomic snapshot for the first version: maximum 500 items and
 the entire inbox. Reject newest items on capacity exhaustion; never evict an
 unexpired accepted message silently. Expire and compact during operations.
 Apply byte limits as well as the existing character limit.
+The quarantine ceiling is 100 items and 2 MiB, within the total caps. Revocation
+may exceed that quarantine ceiling by reclassifying already accepted items;
+reject new quarantine submissions until usage falls below it. Grant/release never
+increase total stored size beyond bounded metadata. Status reports retained item
+and byte counts, eligible/quarantined/released counts, and next expiry. Fetch
+does not free capacity; operators may explicitly drop items before expiry. Do not
+infer successful receipt from a cursor to compact accepted bodies automatically.
 
 Inbox message IDs and sender-scoped idempotency keys are checked within the
 same transaction as insertion. Retain key records until message expiry. Do not
 extend this stronger queue-specific deduplication claim to native delivery.
+Resolve sender identity before the existing outer idempotency lookup. Namespace
+that lookup and writes by runtime/full sender ID so shared MCP hosts cannot mix
+thread keys. Missing IDs must not enter another agent's namespace. External
+labels can namespace CLI retries but confer no grant authority. For strict sends,
+the transactional store is authoritative across processes; an in-memory or CLI
+key cache cannot substitute for it. A key reused with different payload or
+recipient is rejected. Preserve native retry behavior within each sender's scope.
 
 ## Audit and quarantine visibility
 
 The current global message log contains bodies and is readable through
 `message_log`. Strict inbox content must not be copied there. Log metadata and
 state transitions only for all strict inbox messages, with an explicit body
-omission marker; the private inbox is the sole body store. Ordinary agent log
+omission marker; the private inbox is the sole body store. Preserve the required
+`text` string as `[body omitted: strict inbox]` and add `body_omitted: true`,
+rather than removing `text` and breaking older readers. Preserve durable
+from/to identities, reply IDs, answer assertions, broadcast IDs and expect-reply
+metadata for routing and correlation. The historical `delivered` field means
+store acceptance for `pull-inbox`, as it already does for `mailbox`; public
+results continue to distinguish acceptance from reading. Ordinary agent log
 queries must not provide an alternate path to held content. Operator quarantine
 inspection is an explicit CLI action.
 
 Log storage acceptance, quarantine, release, revocation and expiry separately.
-Existing historical records remain readable. Preserve the distinction between
-acceptance and an answering reply; a grant, release, cursor, or fetch cannot
-close an outstanding question. Logging failure cannot trigger a second delivery
+Existing historical records remain readable; enabling strict mode does not
+retroactively erase bodies already logged or fetched. Update the log's outdated
+"nothing is held for an absent session" comment to distinguish audit history
+from the new queue. Preserve the distinction between acceptance and an answering
+reply. For strict replies, folding `answered` requires an original `answers:true`
+assertion and evidence the answer entered eligible/released state. Quarantined,
+failed and indeterminate replies cannot close a question. Grant/release can make
+an existing answer assertion eligible but never manufacture one; fetch and cursor
+changes never do so. Answered still does not mean read, and subsequent revocation
+does not erase the historical fact that an answer was made available.
+Logging failure cannot trigger a second delivery
 after a successful queue commit; the inbox transaction remains authoritative.
 
 ## Compatibility and trust limits
@@ -188,7 +263,7 @@ path is permitted. Policy changes never modify Claude Code's native settings.
 
 Add focused modules for policy/store operations and inbox CLI parsing; integrate
 through `tools.ts`, `runtime.ts`, `tincan.ts`, tool definitions, envelope/log
-types, and the existing replay path. Preserve legacy mail routing tests. Confirm
+types, and unsent/missed-log handling. Preserve legacy mail routing tests. Confirm
 the opencode host exposes the retrieval tool using its established caller
 identity mechanism. Update public tool, CLI, log, design, install and
 troubleshooting documentation with generic examples.
@@ -202,7 +277,9 @@ Write failing tests before implementation. Required coverage includes:
   generation changes and receiver isolation.
 - Concurrent writers, capacity reservation, retry deduplication, atomic write
   failure, corruption and lock recovery; no native delivery on any strict path.
-- Urgent, expected-reply, prefix, mailbox failure, broadcast and replay paths.
+- Urgent, expected-reply, prefix, mailbox failure, broadcast and missed-log paths.
+- Enable/native-send races, strict unreachable receivers, bare-ID policy lookup,
+  and quarantined answer assertions that must not mark a question answered.
 - Quarantine bodies absent from agent-visible logs and all ordinary retrieval.
 - MCP and CLI exercising the same store, including multi-request identity tests
   and opencode integration.
@@ -212,6 +289,29 @@ implementation complete. Use temporary state directories and fake runtime
 adapters; no live permission settings or dialogs are changed by tests.
 
 ## Review decision
+
+Peer review amendments: corrected missed-log handling and liveness ordering;
+preserved log compatibility; specified missing identities, external/runtime
+restrictions, per-item release semantics, capacity, and sender-scoped retry
+behavior. Added transport visibility and a routing/enable concurrency boundary.
+
+Three suggestions are intentionally deferred or declined:
+
+- Automatic server cursor advancement is declined because a lost response could
+  skip messages. Non-destructive explicit cursors remain the first-version API.
+- TTY checks are declined as an authorization mechanism. They obstruct scripted
+  operators while agents can allocate terminals; the same-user trust limit is
+  explicit instead.
+- An opencode receiver-side socket guard is a valid possible extension, but is
+  deferred. The current plugin has an injection point where it could refuse
+  native sends, unlike the Claude/Codex adapters. Adding that guard would require
+  deploying policy semantics into a separately packaged plugin and handling
+  legacy wire identities; this version makes the same cooperating-sender promise
+  across runtimes. No existing receiver-side enforcement is claimed.
+
+Keep the current `receive_peer_messages` name and a directory marker with one
+atomic snapshot. A policy file alone is insufficient if its absence silently
+restores native delivery; an existing directory with missing state must fail.
 
 Approve this design before writing the implementation plan. The principal scope
 choice is intentional: identified agent senders work in the first release;
