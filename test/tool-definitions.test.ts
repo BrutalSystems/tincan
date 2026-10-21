@@ -13,10 +13,11 @@ const defs = toolDefinitions(['codex']);
 const byName = (n: string) => defs.find((d) => d.name === n)!;
 
 describe('toolDefinitions', () => {
-  test('exposes exactly peers, reregister, send_peer and message_log', () => {
+  test('exposes messaging, pull retrieval and registration tools', () => {
     expect(defs.map((d) => d.name).sort()).toEqual([
       'message_log',
       'peers',
+      'receive_peer_messages',
       'reregister',
       'send_peer',
     ]);

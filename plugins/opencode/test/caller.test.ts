@@ -24,7 +24,7 @@ describe('callerFile', () => {
 });
 
 describe('isTincanTool', () => {
-  it.each(['tincan_peers', 'tincan_send_peer', 'tincan_message_log'])('matches %s', (t) => {
+  it.each(['tincan_peers', 'tincan_send_peer', 'tincan_message_log', 'tc_receive_peer_messages'])('matches %s', (t) => {
     expect(isTincanTool(t)).toBe(true);
   });
 

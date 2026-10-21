@@ -29,7 +29,7 @@ export function callerFile(dir: string, instanceID: string): string {
  * So match the tool-name suffix, never a prefix. A leading `_` is required, so
  * a built-in called `peers` does not match.
  */
-const TINCAN_TOOLS = ['peers', 'send_peer', 'message_log'];
+const TINCAN_TOOLS = ['peers', 'send_peer', 'message_log', 'receive_peer_messages'];
 
 export function isTincanTool(toolID: string): boolean {
   return TINCAN_TOOLS.some((name) => toolID.endsWith(`_${name}`));

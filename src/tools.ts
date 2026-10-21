@@ -1,7 +1,7 @@
 /** The three tools (§7), identical on both sides. */
 import { z } from 'zod';
 import { InboxService, inboxFromEnv } from './inbox/service.js';
-import { InboxError, type InboxIdentity, type PolicyView, type EnqueueArgs, type EnqueueResult } from './inbox/types.js';
+import { InboxError, type InboxIdentity, type PolicyView, type EnqueueArgs, type EnqueueResult, type ReadArgs } from './inbox/types.js';
 import { parseInboxIdentity, senderNamespace } from './inbox/identity.js';
 import { OMITTED_BODY, requestFingerprint, strictAuditEnvelope } from './inbox/audit.js';
 
@@ -358,6 +358,7 @@ export interface PeersResult {
     /** Human-readable label; use name for send_peer. */
     display_label: string;
     canonical_id: string;
+    delivery?: 'native' | 'mailbox' | 'pull';
     state: PeerState;
     /**
      * #32. Present only when Tin Can could not read this peer's published
@@ -587,6 +588,16 @@ export function createTools(
             `no way to interrupt a running turn, so messages to them are always queued.`,
         );
       }
+      const deliveryModes = new Map<string, 'native' | 'mailbox' | 'pull'>();
+      for (const p of list) {
+        try {
+          const d = durableIdOf(p.side);
+          const id = 'thread_id' in d ? d.thread_id : d.session_id;
+          const receiver = strictIdentity(p.side.runtime, id);
+          const policy = receiver === undefined ? {enabled:false} : await pullInbox.inspect(receiver);
+          deliveryModes.set(p.canonicalId, policy.enabled ? 'pull' : mail.recipient()?.id === id ? 'mailbox' : 'native');
+        } catch { notes.push(`Delivery policy for ${p.display} could not be read; do not assume native delivery.`); }
+      }
       return {
         /**
          * The version of the Tin Can serving THIS call — not whatever `tincan
@@ -605,6 +616,7 @@ export function createTools(
             ? p.display
             : `${basename(p.side.cwd) || p.runtime} · ${(p.side.threadId ?? p.uuid).slice(-4).toLowerCase()}`,
           canonical_id: p.canonicalId,
+          ...(deliveryModes.has(p.canonicalId) && { delivery: deliveryModes.get(p.canonicalId) }),
           state: p.side.state,
           // Additive, and absent unless it applies: `state` stays the whole
           // answer for every consumer that switches on it.
@@ -1257,6 +1269,15 @@ export function createTools(
         ...(only.notice !== undefined && { notice: only.notice }),
         ...(only.refusal !== undefined && { refusal: only.refusal, detail: only.detail }),
       };
+    },
+    async receive_peer_messages(rawArgs: ReadArgs) {
+      const args = z.object({cursor:z.string().optional(),limit:z.number().int().min(1).max(100).optional()}).strict().parse(rawArgs);
+      if (side.selfRuntime === 'external') throw new InboxError('invalid_identity');
+      const self = await side.resolveSelf();
+      const d = await side.selfDurableId?.(self);
+      const receiver = strictIdentity(side.selfRuntime, d === undefined ? undefined : 'thread_id' in d ? d.thread_id : d.session_id);
+      if (receiver === undefined) throw new InboxError('invalid_identity');
+      return pullInbox.read(receiver, args);
     },
     async message_log(
       rawArgs: MessageLogArgs,

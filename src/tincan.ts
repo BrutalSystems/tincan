@@ -249,6 +249,8 @@ async function main(): Promise<void> {
           return text(await tools.peers());
         case 'send_peer':
           return text(await tools.send_peer(args as SendPeerArgs));
+        case 'receive_peer_messages':
+          return text(await tools.receive_peer_messages(args));
         case 'message_log':
           return text(await tools.message_log(args as MessageLogArgs));
         case 'reregister':

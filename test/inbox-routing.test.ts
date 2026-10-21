@@ -64,3 +64,12 @@ test('a live strict retry uses authoritative queue state rather than a stale out
  await svc.grant(receiver,sender);
  expect(await tools.send_peer({peer:'receiver',message:body,idempotency_key:'k'})).toMatchObject({outcome:'accepted',message_id:first.message_id,inbox_state:'queued'});
 });
+test('peer listing advertises pull delivery and keeps unreadable policy unknown',async()=>{
+ const tools=make();expect((await tools.peers()).peers[0]).toMatchObject({delivery:'pull'});
+ vi.spyOn(svc,'inspect').mockRejectedValueOnce(new Error('unreadable'));
+ const listed=await tools.peers();expect(listed.peers[0]?.delivery).toBeUndefined();expect(listed.notes?.join(' ')).toContain('could not be read');
+});
+test('retrieval rejects external and unidentified hosts without granting by name',async()=>{
+ side={...side,selfRuntime:'external'};await expect(make().receive_peer_messages({})).rejects.toThrow('invalid_identity');
+ side={...side,selfRuntime:'claude-code',selfDurableId:async()=>undefined};await expect(make().receive_peer_messages({})).rejects.toThrow('invalid_identity');
+});
