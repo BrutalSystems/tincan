@@ -24,6 +24,10 @@
 export const IDEMPOTENCY_WINDOW_MS = 600_000;
 
 export interface PriorSend {
+  /** Strict sends store a body-free projection and full request fingerprint. */
+  strict?: true;
+  fingerprint?: string;
+  inbox_state?: 'queued' | 'quarantined';
   /** The id of the message the first call actually sent. */
   messageId: string;
   /** Display name of the peer it went to, for the refusal text. */

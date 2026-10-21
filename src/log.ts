@@ -15,8 +15,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Envelope } from './envelope.js';
+import { strictAuditEnvelope } from './inbox/audit.js';
+import type { InboxEvent } from './inbox/service.js';
 
 export interface MessageRecord {
+  body_omitted?: true;
   id: string;
   at: string;
   /**
@@ -43,9 +46,8 @@ export interface MessageRecord {
    * exactly once per message, so there is nothing to deduplicate and no
    * existing query changes shape.
    *
-   * Not an offline queue: this records what was delivered, at the moment it
-   * was delivered. Nothing is held for an absent session and no retry is
-   * introduced.
+   * This log is audit history, not the queue. Strict pull inboxes separately
+   * retain bodies for recipients, including discoverable unreachable sessions.
    */
   direction: 'out' | 'in';
   from: Envelope['from'];
@@ -229,7 +231,10 @@ export interface ChainFields {
   sig?: string;
 }
 
+export interface InboxEventRecord { id: string; at: string; kind: 'inbox'; state: InboxEvent }
+
 export type LogRecord = (
+  | InboxEventRecord
   | MessageRecord
   | NoticeRecord
   | DroppedRecord
@@ -402,6 +407,7 @@ export class MessageLog {
   }
 
   appendMessage(e: Envelope, delivered: boolean, delivery?: 'queue' | 'steer'): MessageRecord {
+    if (e.method === 'pull-inbox') e = strictAuditEnvelope(e);
     const rec: MessageRecord = {
       id: e.id,
       at: e.at,
@@ -409,6 +415,7 @@ export class MessageLog {
       from: e.from,
       to: e.to,
       text: e.text,
+      ...(e.body_omitted && { body_omitted: true as const }),
       method: e.method,
       delivered,
       expect_reply: e.expect_reply,
@@ -442,6 +449,7 @@ export class MessageLog {
    * time; an arrival has already arrived.
    */
   appendIncoming(e: Envelope): MessageRecord {
+    if (e.method === 'pull-inbox') e = strictAuditEnvelope(e);
     const rec: MessageRecord = {
       id: e.id,
       at: e.at,
@@ -449,6 +457,7 @@ export class MessageLog {
       from: e.from,
       to: e.to,
       text: e.text,
+      ...(e.body_omitted && { body_omitted: true as const }),
       method: e.method,
       delivered: true,
       expect_reply: e.expect_reply,
@@ -458,6 +467,10 @@ export class MessageLog {
     };
     this.append(rec);
     return rec;
+  }
+
+  appendInboxEvent(id: string, state: InboxEvent, at: string): void {
+    this.append({ id, state, at, kind: 'inbox' });
   }
 
   appendOutcome(id: string, delivered: boolean, detail?: string): OutcomeRecord {
@@ -666,9 +679,11 @@ export class MessageLog {
     // every record with a matching `in_reply_to` would let "got it" close a
     // question nobody answered — and a log that reports an unanswered question
     // as answered is worse than one that reports nothing at all.
+    const available = new Set(records.filter((r) => r.kind === 'inbox' && (r.state === 'queued' || r.state === 'released')).map(r => r.id));
     const answered = new Set<string>();
     for (const r of records) {
-      if (isMessage(r) && r.answers === true && r.in_reply_to !== undefined) {
+      if (isMessage(r) && r.answers === true && r.in_reply_to !== undefined &&
+          (r.method !== 'pull-inbox' || (available.has(r.id) && outcomes.get(r.id)?.delivered === true))) {
         answered.add(r.in_reply_to);
       }
     }

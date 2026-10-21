@@ -41,6 +41,8 @@ export interface EnvelopeParty {
 }
 
 export interface Envelope {
+  /** Audit projection only; a stored queue envelope retains its body. */
+  body_omitted?: true;
   id: string;
   at: string;
   from: EnvelopeParty;

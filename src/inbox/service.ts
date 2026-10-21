@@ -8,8 +8,8 @@ const bytes=(x:unknown)=>Buffer.byteLength(JSON.stringify(x));
 const digest=(x:string)=>createHash('sha256').update(x).digest('hex');
 export type InboxEvent = 'queued'|'quarantined'|'released'|'revoked'|'expired'|'dropped';
 export interface InboxOptions { now?:()=>number; newGeneration?:()=>string; audit?:(id:string,state:InboxEvent,at:string)=>void }
-export function inboxFromEnv(env:NodeJS.ProcessEnv=process.env):InboxService {
- return new InboxService(new InboxStorage({root:join(env.TINCAN_HOME??join(homedir(),'.tincan'),'inboxes')}));
+export function inboxFromEnv(env:NodeJS.ProcessEnv=process.env, options:InboxOptions={}):InboxService {
+ return new InboxService(new InboxStorage({root:join(env.TINCAN_HOME??join(homedir(),'.tincan'),'inboxes')}), options);
 }
 export class InboxService {
  constructor(readonly storage:InboxStorage, private readonly options:InboxOptions={}){}
