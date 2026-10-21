@@ -67,3 +67,16 @@ and reports the peer `unreachable` once rather than on every call. A session
 resumed with `opencode --continue` is a separate case — it does not appear in
 `peers` at all, reachable or not, until it next does something. That is
 expected, not a bug: see [Known limits](./design.md#known-limits).
+
+## A strict inbox receiver is not responding
+
+Use `tincan inbox status --receiver <canonical-id>`. A queued message waits for
+the receiver to call `receive_peer_messages` on its own turn; an idle session is
+not awakened. Quarantined messages require operator review. Cursor-less reads
+repeat retained items; save and reuse `next_cursor` and deduplicate message IDs.
+
+Check capacity and next expiry. Reads do not free space; operator drops can.
+If a message still opens a native dialog, check for an older sending connection,
+a different `TINCAN_HOME`, a direct native send, or a send already in flight when
+strict mode was enabled. Corrupt state and uncertain locks fail closed, so do not
+delete policy to try to repair delivery. See [strict inbox limits and recovery](./inbox.md).

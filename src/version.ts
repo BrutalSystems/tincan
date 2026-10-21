@@ -10,6 +10,7 @@
  * repo and in an installed copy.
  */
 import { readFileSync } from 'node:fs';
+import { inboxHelpText } from './inbox-cli.js';
 
 function read(): string {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -35,7 +36,7 @@ export function helpText(): string {
     '',
     'Tin Can is mainly a stdio MCP server, started by your agent harness rather',
     'than by hand: point a Claude Code, Codex, or opencode MCP server entry at',
-    'this binary and it exposes the peers, send_peer and message_log tools.',
+    'this binary to expose peer messaging, logs and receive_peer_messages.',
     '',
     '`send` is the exception, for a program that is not an agent session and has',
     'no harness to host an MCP server. It reaches all three runtimes.',
@@ -44,12 +45,15 @@ export function helpText(): string {
     '  tincan                  run the MCP server on stdio',
     '  tincan send ...         deliver one message to one peer, then exit',
     '  tincan mcp ...          register tincan with Claude Code, then exit',
+    '  tincan inbox ...        manage or read a strict pull inbox, then exit',
     '  tincan --version, -v    print the version and exit',
     '  tincan --help, -h       print this help and exit',
     '',
     sendHelpText(),
     '',
     mcpHelpText(),
+    '',
+    inboxHelpText(),
     '',
     'Docs: https://github.com/BrutalSystems/tincan',
   ].join('\n');
@@ -88,6 +92,8 @@ export function sendHelpText(): string {
     '  rather than the exit code: 0 accepted, 2 rejected, 1 failed, 64 bad usage.',
     '  `accepted` means the peer\'s harness took the message, NOT that it was',
     '  read or acted on. Diagnostics go to stderr.',
+    '  For strict receivers, accepted means stored, with method: pull-inbox',
+    '  and inbox_state: queued or quarantined. No native wake-up occurs.',
     '',
     '  To a configured mail recipient ($TINCAN_HOME/mail-routing.json), a',
     '  message is filed with the configured inbox command instead (method',
@@ -140,7 +146,7 @@ export const FLAGS: ReadonlyArray<{
  * The subcommands. Named here rather than inline so `unknownArgText` and the
  * help/argv parity test cannot disagree with the dispatcher about what exists.
  */
-export const SUBCOMMANDS = ['send', 'mcp'] as const;
+export const SUBCOMMANDS = ['send', 'mcp', 'inbox'] as const;
 
 /** What the process should do, decided from argv alone. */
 export type ArgvIntent =
@@ -151,10 +157,11 @@ export type ArgvIntent =
   | { kind: 'send'; argv: string[] }
   /** `mcp`'s own arguments, parsed by mcp-cli rather than here. */
   | { kind: 'mcp'; argv: string[] }
+  | { kind: 'inbox'; argv: string[] }
   | { kind: 'unknown'; arg: string };
 
 /**
- * Tin Can has two subcommands, and everything else is still refused.
+ * Tin Can has three subcommands, and everything else is still refused.
  *
  * The rule this function was written to enforce has not changed: an
  * unrecognised argument must NOT fall through to starting the server, because a
@@ -173,6 +180,7 @@ export type ArgvIntent =
  */
 export function classifyArgv(argv: string[]): ArgvIntent {
   if (argv[0] === 'send') return { kind: 'send', argv: argv.slice(1) };
+  if (argv[0] === 'inbox') return {kind:'inbox',argv:argv.slice(1)};
   if (argv[0] === 'mcp') return { kind: 'mcp', argv: argv.slice(1) };
   for (const arg of argv) {
     for (const flag of FLAGS) {
@@ -188,7 +196,7 @@ export function unknownArgText(arg: string): string {
   return [
     `tincan: unrecognised argument '${arg}'`,
     '',
-    'tincan is an MCP server with two subcommands: `tincan send` delivers one',
+    'tincan is an MCP server; `tincan inbox` manages strict pull inboxes. `tincan send` delivers one',
     'message from outside a session, and `tincan mcp install|uninstall|status`',
     'registers the server with Claude Code. There is no `tincan peers`. Peers',
     'are listed by calling the `peers` tool from inside an agent session that',

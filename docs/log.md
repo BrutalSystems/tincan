@@ -97,3 +97,22 @@ Records written before chaining existed are counted as `unchained` and are not
 a fault: the format is append-only and that history is real. A log that
 predates this reads back clean, and the chain simply starts at the next record
 appended.
+
+## Strict inbox audit records
+
+Strict pull message records retain routing and reply metadata with
+`method: "pull-inbox"`, `body_omitted: true`, and the fixed text
+`[body omitted: strict inbox]`. Bodies are held in the private queue, not the
+shared log or retry cache. Mixed native/pull broadcasts also omit bodies from
+the native audit copies. The legacy `delivered` field means storage acceptance
+for this transport, not harness delivery or reading.
+
+`kind: "inbox"` events record queued, quarantined, released, revoked, expired and
+dropped states. Only an explicit answer assertion that became eligible/released
+and has a successful outcome closes a question; a quarantined answer does not.
+Later revocation does not erase that historical availability.
+
+Unsent attempts targeting a strict inbox omit their bodies and disable log-based
+replay, including `message_log({missed:true})`. Such failed sends are not saved as
+readable messages. Historical log content predating strict mode remains intact.
+See [strict pull inboxes](./inbox.md).

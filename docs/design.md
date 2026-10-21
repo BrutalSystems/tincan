@@ -108,3 +108,16 @@ Three things worth knowing before you rely on them, none of them bugs:
   over guessing from a session list, which would advertise sessions that are
   actually closed. See [When a Codex peer is unreachable](./troubleshooting.md#when-a-codex-peer-is-unreachable)
   for the analogous opencode note.
+
+## Strict pull delivery
+
+[`tincan inbox`](./inbox.md) adds operator administration and retrieval for
+explicitly configured receivers. It is a useful CLI query exception: operators
+need to inspect quarantine and manage grants outside the receiving agent. The
+CLI and MCP retrieval share one store and policy implementation. Native and
+legacy mailbox behavior remain unchanged for other receivers.
+
+An inbox queues bodies; the message log is still audit history. No agent is
+spawned or awakened, no message approves anything, and storage failure never
+falls back to native delivery. Sender attestation and channel push remain outside
+this feature. All senders must support the policy and share the same state root.

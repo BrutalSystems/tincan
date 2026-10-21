@@ -297,3 +297,11 @@ to every other peer's `peers` list. See [Install](#install) and
 [opencode: inverted reach](./how-it-works.md#opencode-inverted-reach).
 
 **Node 22 or newer**, for the `tincan` process itself.
+
+## Optional strict pull inboxes
+
+After upgrading, restart every sending Tin Can connection, including opencode
+MCP connections and its caller-tracking plugin. Existing processes retain their
+loaded code. Configure all participants with the same `TINCAN_HOME`, then follow
+[the operator setup](./inbox.md). The feature adds `receive_peer_messages`; it
+does not install hooks, change native permissions or run a polling daemon.

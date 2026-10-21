@@ -9,6 +9,7 @@ import {
   FLAGS,
   SUBCOMMANDS,
 } from '../src/version.js';
+import { INBOX_FLAGS } from '../src/inbox-cli.js';
 import { SEND_FLAGS } from '../src/send-cli.js';
 import { MCP_FLAGS, MCP_ACTIONS, parseMcpArgs } from '../src/mcp-cli.js';
 
@@ -69,7 +70,7 @@ describe('version', () => {
         .flatMap((line) => line.match(/(?<![\w-])--?[a-z][\w-]*/g) ?? []);
 
     /** Every flag any entry point accepts: the top-level ones plus send's and mcp's. */
-    const accepted = (): string[] => [...FLAGS.flatMap((f) => f.flags), ...SEND_FLAGS, ...MCP_FLAGS];
+    const accepted = (): string[] => [...FLAGS.flatMap((f) => f.flags), ...SEND_FLAGS, ...MCP_FLAGS, ...INBOX_FLAGS];
 
     it('documents every flag it accepts', () => {
       const docs = documented();
@@ -114,12 +115,13 @@ describe('version', () => {
       expect(intent.argv).toEqual(['--to', 'muster-59', '--from', 'bd-1', '--message', 'x']);
     });
 
-    it('is one of two subcommands, and the others are still refused', () => {
+    it('is one of three subcommands, and the others are still refused', () => {
       // The stance that produced this function has not been dropped: admitting
       // `send` and `mcp` must not admit the guessed CLI it was written to refuse.
       expect(classifyArgv(['peers'])).toEqual({ kind: 'unknown', arg: 'peers' });
       expect(classifyArgv(['message_log'])).toEqual({ kind: 'unknown', arg: 'message_log' });
-      expect(SUBCOMMANDS).toEqual(['send', 'mcp']);
+      expect(SUBCOMMANDS).toEqual(['send', 'mcp', 'inbox']);
+      expect(classifyArgv(['inbox','status'])).toEqual({kind:'inbox',argv:['status']});
     });
 
     it('dispatches mcp with its own arguments left unparsed', () => {

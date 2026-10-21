@@ -54,7 +54,7 @@ attention.
   for agent-to-agent — Tin Can does an agent-to-agent job through the
   agent-to-tool channel, because that is the doorway every runtime already has.
 - **It never claims more than it established.** A send reports `accepted` when
-  the peer's harness took the message — not that it was read, and not that it
+  the peer's harness or configured inbox took the message — not that it was read, and not that it
   will be acted on. Nothing blocks waiting for an answer, and there is no
   `await_reply`.
 - **It refuses rather than guessing.** An address that matches two sessions, a
@@ -139,6 +139,7 @@ Full install for all three runtimes, including the opencode plugin:
 | [Install](./docs/install.md) | All three runtimes, the opencode plugin, environment |
 | [Peers and names](./docs/peers.md) | Who you can see, and what you can type as an address |
 | [The message log](./docs/log.md) | What is recorded, rotation, and damage reporting |
+| [Strict pull inboxes](./docs/inbox.md) | Operator grants, quarantine and explicit message retrieval without wake-ups |
 | [Mail routing](./docs/mail-routing.md) | Messages to a configured recipient go to a configured inbox command; how to configure and turn it off |
 | [Troubleshooting](./docs/troubleshooting.md) | Symptoms and what they mean |
 | [How it works](./docs/how-it-works.md) | The delivery mechanism for each runtime |
@@ -224,3 +225,6 @@ publish. Outside contributions go through a fork and a pull request.
 
 Procedure and the trusted-publisher setup: [`RELEASING.md`](./RELEASING.md) and
 [`docs/ci-cd-standard.md`](./docs/ci-cd-standard.md).
+
+Strict pull inboxes are an opt-in exception to native inbox delivery: an operator
+can require messages to be stored for explicit retrieval. See [setup and limits](./docs/inbox.md).

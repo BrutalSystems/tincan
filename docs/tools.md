@@ -1,6 +1,6 @@
 # Tools
 
-The three tools Tin Can exposes to a session, and what a peer receives
+The tools Tin Can exposes to a session, and what a peer receives
 when you use them. For the `tincan send` command-line equivalent, see
 [the send CLI](./send-cli.md).
 
@@ -11,6 +11,7 @@ when you use them. For the `tincan send` command-line equivalent, see
 | `peers` | Lists the live sessions you can reach (see [Which peers you see](./peers.md#which-peers-you-see)): name, state (`idle` / `busy` / `unreachable`), cwd, and a durable id — `thread_id` for Codex, `session_id` for Claude Code and opencode. Also reports `tincan_version` for the Tin Can serving the call, and each peer's own recorded version where it wrote one. Never lists the calling session; `self` gives the address that reaches it instead — `name` (the qualified `slug.suffix`, which resolves from every peer) and `canonical_id`, plus its durable id and cwd. |
 | `send_peer` | Sends text to one peer, or to several at once. `{peer?, peers?, message, in_reply_to?, expect_reply?, answers?, urgent?, expect_id?, idempotency_key?, replay_for_minutes?}` — exactly one of `peer` and `peers`. `replay_for_minutes` leaves a refused send for the recipient to collect when it returns, and needs `expect_id` to say who it was for. |
 | `reregister` | Re-publishes this session's registration so peers can see it can reply, and reports the session id it now holds. Automatic; call it when a peer reports this session as unreachable, or when an arriving message says this session has no `send_peer` to answer with. |
+| `receive_peer_messages` | `{cursor?, limit?}` fetches eligible messages from this session’s [strict pull inbox](./inbox.md). Save `next_cursor`; cursor-less polls repeat retained messages. Deduplicate by message ID. Fetch is not acknowledgement. |
 | `message_log` | Reads back `~/.tincan/messages.jsonl`, filtered by peer or by reply chain. `missed: true` returns only the attempts left for this session that are still in date. |
 
 `send_peer` returns an `outcome`: `accepted` (the peer's harness took the

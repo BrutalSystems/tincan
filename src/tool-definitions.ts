@@ -104,6 +104,7 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
         `about the call needs fixing (see \`refusal\`); sending it again unchanged will fail ` +
         `the same way. \`failed\` means it was attempted and the peer or transport did not ` +
         `take it; nothing you did is wrong and later may work. ` +
+        `For strict pull receivers, accepted means stored in the inbox, with inbox_state queued or quarantined; no wake-up occurs. ` +
         `For \`peers\`, you get \`requested\` and \`accepted\` counts plus a \`results\` entry ` +
         `per recipient instead.`,
       inputSchema: {
@@ -222,6 +223,7 @@ export function toolDefinitions(peerRuntimes: RuntimeName[]): ToolDefinition[] {
         'message — the peer was unknown, unreachable, or had been replaced by another ' +
         'session of the same name — and carries `to_address` and `reason`. It is how you ' +
         'find that someone tried to reach a session while it was down. ' +
+        'Strict pull records omit bodies; accepted means stored, not read. Retrieve eligible content with receive_peer_messages. ' +
         'Filter by peer, or follow a reply chain from a message id. ' +
         'If an `integrity` field comes back, read it: `ok: false` means the log is damaged ' +
         'or was edited and what you are reading is an incomplete account — say so rather ' +

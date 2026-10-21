@@ -1,7 +1,7 @@
 # Sending from outside a session
 
 `tincan send` is the one part of Tin Can reachable without an agent
-harness. Everything else is an MCP tool; see [Tools](./tools.md).
+harness. Operator inbox management and retrieval use [`tincan inbox`](./inbox.md). Peer messaging tools are documented in [Tools](./tools.md).
 
 ## Sending from outside a session
 
@@ -126,3 +126,11 @@ start accepting a tincan that cannot deliver.
 
 Do not use `--version` for this. It couples a caller to version semantics for a
 question the binary can answer about itself.
+
+## Strict pull receivers
+
+For an opted-in receiver, the JSON result also includes `method: "pull-inbox"`
+and `inbox_state: "queued"` or `"quarantined"`. Acceptance means stored, never
+read. External `--from` labels cannot hold grants, so external sends enter
+quarantine until operator release. No notification is injected. See
+[strict inbox behavior, retries and failure codes](./inbox.md).

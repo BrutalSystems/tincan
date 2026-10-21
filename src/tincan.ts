@@ -15,6 +15,8 @@ import { detectRuntime, buildSide, claudeRegistryDirs, externalSide } from './ru
 import { codexRequestContext } from './codex/self.js';
 import { withOpencodeHost } from './opencode/host.js';
 import { runSend } from './send-cli.js';
+import { runInbox } from './inbox-cli.js';
+import { inboxFromEnv } from './inbox/service.js';
 import { runMcp, runClaude } from './mcp-cli.js';
 import { FileIdempotencyStore, cliIdempotencyDir } from './cli-idempotency.js';
 import { homedir } from 'node:os';
@@ -59,6 +61,9 @@ async function handleArgv(argv: string[]): Promise<boolean> {
     case 'send':
       await serveSend(intent.argv);
       return true;
+    case 'inbox':
+      await serveInbox(intent.argv);
+      return true;
     case 'mcp':
       await serveMcp(intent.argv);
       return true;
@@ -71,6 +76,20 @@ async function handleArgv(argv: string[]): Promise<boolean> {
     case 'serve':
       return false;
   }
+}
+
+async function serveInbox(argv: string[]): Promise<never> {
+  let out = ''; let err = '';
+  const log = new MessageLog(messagesPath(process.env));
+  const code = await runInbox(argv, {
+    service: inboxFromEnv(process.env, {audit:(id,state,at)=>log.appendInboxEvent(id,state,at)}),
+    stdout: s => { out += s; }, stderr: s => { err += s; },
+    peers: async () => createTools(externalSide('inbox-operator', {
+      registryDirs: () => claudeRegistryDirs(process.env), pid:process.pid, ppid:process.ppid, cwd:process.cwd(),
+    }), log).peers().then(result=>result.peers),
+  });
+  await flush(process.stdout, out); await flush(process.stderr, err);
+  process.exit(code);
 }
 
 /**
