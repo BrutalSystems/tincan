@@ -1,4 +1,7 @@
 import { describe, test, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ToolSchema } from '@modelcontextprotocol/sdk/types.js';
 import { toolDefinitions } from '../src/tool-definitions.js';
 import {
   MAX_FANOUT,
@@ -158,4 +161,64 @@ test('toolDefinitions takes no host argument, because nothing varies by host', (
   // as one host's `peers` description had to disclaim part of its own list;
   // taking it back would mean that disclaimer had returned.
   expect(toolDefinitions).toHaveLength(1);
+});
+
+describe('standard MCP tool metadata', () => {
+  // What a generic MCP client reads, as opposed to what the model reads. A
+  // client with no Tin Can knowledge decides how to show and gate a tool from
+  // these alone, so each is asserted per tool rather than as a count.
+  const expected: Record<string, { readOnlyHint: boolean; idempotentHint?: boolean }> = {
+    peers: { readOnlyHint: true },
+    message_log: { readOnlyHint: true },
+    receive_peer_messages: { readOnlyHint: true },
+    reregister: { readOnlyHint: false, idempotentHint: true },
+    send_peer: { readOnlyHint: false, idempotentHint: false },
+  };
+
+  test('every tool validates against the SDK Tool schema', () => {
+    for (const d of defs) expect(() => ToolSchema.parse(d), d.name).not.toThrow();
+  });
+
+  test('every tool has a human-readable title', () => {
+    for (const d of defs) {
+      expect(d.title, d.name).toEqual(expect.any(String));
+      expect(d.title, d.name).not.toBe(d.name);
+    }
+  });
+
+  test('annotations say which tools only read, and that none reaches off the machine', () => {
+    expect(Object.keys(expected).sort()).toEqual(defs.map((d) => d.name).sort());
+    for (const d of defs) {
+      const a = d.annotations;
+      expect(a, d.name).toBeDefined();
+      expect(a!.readOnlyHint, d.name).toBe(expected[d.name]!.readOnlyHint);
+      // Local sessions on one machine only; there is no network transport.
+      expect(a!.openWorldHint, d.name).toBe(false);
+      if (!a!.readOnlyHint) {
+        // Nothing deletes or overwrites: a send adds a message, a reregister
+        // rewrites only this session's own pointer to what it already is.
+        expect(a!.destructiveHint, d.name).toBe(false);
+        expect(a!.idempotentHint, d.name).toBe(expected[d.name]!.idempotentHint);
+      }
+    }
+  });
+
+  test('integer-only parameters are advertised as integers', () => {
+    // zod refuses 2.5 for these; a schema saying `number` invites it.
+    const props = (n: string) => byName(n).inputSchema.properties as Record<string, { type?: string }>;
+    expect(props('message_log').last_n?.type).toBe('integer');
+    expect(props('receive_peer_messages').limit?.type).toBe('integer');
+    expect(props('send_peer').replay_for_minutes?.type).toBe('integer');
+  });
+
+  test('descriptions use MCP vocabulary, not "harness"', () => {
+    for (const d of toolDefinitions(['codex', 'claude-code', 'opencode'])) {
+      expect(JSON.stringify(d), d.name).not.toMatch(/harness/i);
+    }
+  });
+});
+
+test('the npm description names all three runtimes', () => {
+  const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'));
+  for (const r of ['Claude Code', 'Codex', 'opencode']) expect(pkg.description).toContain(r);
 });
