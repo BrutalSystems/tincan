@@ -17,6 +17,10 @@ re-explained.
 Install only after the run finishes. The registry lags a publish by a minute
 or two, so an install that races it fetches the previous version or 404s.
 
+Updating the binary is not the end of the local update: also
+[refresh and verify running connections](#refresh-and-verify-running-connections).
+A successful install does not replace an MCP server already running in memory.
+
 ## Before you start
 
 **Turn on the pre-push check once per clone:** `git config core.hooksPath
@@ -350,3 +354,76 @@ npm update -g @brutalsystems/tincan
 Sessions configured with `command = "tincan"` get it on their next start.
 Sessions pointed at a working copy do not — that is usually what you want while
 developing.
+
+### Refresh and verify running connections
+
+**Check the serving process, not just the installed binary.** Run `peers` from
+each agent session that uses Tin Can and inspect its top-level `tincan_version`.
+That is the version serving that call. `tincan --version` checks the executable
+on `PATH`; another session's `peers` result does not prove this session updated.
+
+#### Codex shared-daemon connections
+
+A Codex configuration reload can reuse an existing MCP connection when its
+configuration is unchanged. During the 3.0.0 rollout, updating the global
+package and calling `config/mcpServer/reload` left existing connections on
+2.6.1. Changing a Tin Can connection setting before reloading replaced those
+connections without restarting the agents or the shared daemon.
+
+Use a harmless environment marker to make the connection configuration change.
+In the effective Codex configuration, preserve all existing Tin Can settings
+and environment entries and set this one key to the version being installed:
+
+```toml
+[mcp_servers.tincan.env]
+TINCAN_CONNECTION_REVISION = "3.0.0"
+```
+
+Tin Can does not interpret this marker. It makes the MCP connection settings
+different so Codex can start a replacement process. Update its value on each
+release; reusing the same value does not change the settings. Leave it in place
+after verification.
+
+For automation through an initialized connection to the **running shared
+Codex app-server**, enable its experimental API and send these requests in
+order, replacing the example version with the installed version:
+
+```json
+{"id":1,"method":"config/value/write","params":{"keyPath":"mcp_servers.tincan.env.TINCAN_CONNECTION_REVISION","value":"3.0.0","mergeStrategy":"upsert"}}
+{"id":2,"method":"config/mcpServer/reload","params":null}
+```
+
+Wait for the configuration write to succeed before requesting the reload.
+This writes only the marker key in the user configuration. Account for any
+project or session override that changes the effective Tin Can settings. A
+separate `codex app-server --listen stdio://` process is not the running daemon
+and cannot refresh its existing connections. Discover the current daemon
+endpoint; never copy a socket path from another machine or an old session.
+
+**A reload acknowledgment is not completion.** Repeat the `peers` call through
+each affected session's existing MCP connection. Confirm:
+
+- `tincan_version` is the installed version.
+- `self.thread_id` equals that conversation's actual harness thread ID, obtained
+  independently of Tin Can message tags.
+- The name and cwd agree with a fresh independent peer listing when thread
+  metadata is available. Before that metadata exists, cwd should remain unknown.
+
+If a connection still serves the old version, report the local update as
+incomplete. Reconnect or restart that session's MCP connection. If the host
+cannot replace it individually, arrange a shared-daemon restart at a safe
+stopping point; it can interrupt other agents' work. Do not infer that a new
+user turn or an accepted reload necessarily replaced the process.
+
+#### Other runtimes and old messages
+
+For Claude Code and opencode, reconnect or restart the relevant MCP connection
+and verify its serving version in the same way. Clear the opencode cache as
+described above before starting the updated plugin.
+
+During an upgrade from 2.6.1, a 3.0.0 recipient can still receive an incorrect
+sender ID from an old Codex connection. Canonical routing follows the supplied
+ID and cannot repair that attribution. Update and verify every relevant Codex
+sender before relying on identity-dependent replies or review approvals.
+Restarting does not repair old message tags: request fresh reviews from verified
+sessions rather than reusing affected messages as approval evidence.
