@@ -21,6 +21,10 @@ function repoAt(v: string) {
   write('CANONICAL_ID.md', `# Canonical ID\n\n> **Normative for \`@brutalsystems/tincan\` ${v}.**\n\nBody.\n`);
   write('plugins/opencode/package.json', `{\n  "name": "@brutalsystems/tincan-opencode",\n  "version": "${v}",\n  "type": "module"\n}\n`);
   write('plugins/claude-code/.claude-plugin/plugin.json', `{\n  "name": "tincan",\n  "version": "${v}"\n}\n`);
+  write(
+    'plugins/claude-code/.mcp.json',
+    `{\n  "mcpServers": {\n    "tincan": {\n      "command": "npx",\n      "args": ["-y", "@brutalsystems/tincan@${v}"]\n    }\n  }\n}\n`,
+  );
 }
 
 beforeEach(() => {
@@ -38,6 +42,10 @@ describe('syncVersion', () => {
     expect(read('plugins/opencode/tincan-lib/types.ts')).toContain("PLUGIN_VERSION = '0.6.0'");
     expect(read('CANONICAL_ID.md')).toContain('`@brutalsystems/tincan` 0.6.0.');
     expect(JSON.parse(read('plugins/claude-code/.claude-plugin/plugin.json')).version).toBe('0.6.0');
+    expect(JSON.parse(read('plugins/claude-code/.mcp.json')).mcpServers.tincan.args).toEqual([
+      '-y',
+      '@brutalsystems/tincan@0.6.0',
+    ]);
   });
 
   test('covers every site the release procedure lists, with none missing', () => {
@@ -47,6 +55,7 @@ describe('syncVersion', () => {
       'CANONICAL_ID.md',
       'package.json',
       'plugins/claude-code/.claude-plugin/plugin.json',
+      'plugins/claude-code/.mcp.json',
       'plugins/opencode/package.json',
       'plugins/opencode/tincan-lib/types.ts',
       'test/fixtures/canonical-id.json',
@@ -58,6 +67,7 @@ describe('syncVersion', () => {
       'CANONICAL_ID.md',
       'package.json',
       'plugins/claude-code/.claude-plugin/plugin.json',
+      'plugins/claude-code/.mcp.json',
       'plugins/opencode/package.json',
       'plugins/opencode/tincan-lib/types.ts',
       'test/fixtures/canonical-id.json',
@@ -117,6 +127,20 @@ describe('checkVersion', () => {
     });
   });
 
+  test('catches the plugin-bundled server pin drifting from the server', () => {
+    // The pin is what a plugin install actually runs. Left behind, every
+    // plugin user starts the previous release no matter what was shipped.
+    write(
+      'plugins/claude-code/.mcp.json',
+      `{\n  "mcpServers": { "tincan": { "command": "npx", "args": ["-y", "@brutalsystems/tincan@0.4.0"] } }\n}\n`,
+    );
+    expect(checkVersion(dir).mismatches).toContainEqual({
+      file: 'plugins/claude-code/.mcp.json',
+      found: '0.4.0',
+      expected: '0.5.5',
+    });
+  });
+
   test('names the file, what it found, and what package.json says', () => {
     write('CANONICAL_ID.md', '# Canonical ID\n\n> **Normative for `@brutalsystems/tincan` 0.5.4.**\n');
     const r = checkVersion(dir);
@@ -133,5 +157,29 @@ describe('checkVersion', () => {
       'CANONICAL_ID.md',
       'plugins/opencode/tincan-lib/types.ts',
     ]);
+  });
+});
+
+describe('this repository', () => {
+  const root = join(import.meta.dirname, '..');
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+
+  test('the npm version script stages every site it rewrites', () => {
+    // A site rewritten but not staged is left out of the release commit, so
+    // the tag ships the old literal while the working tree shows the new one.
+    const staged: string = pkg.scripts.version;
+    for (const { file } of VERSION_SITES) {
+      if (file === 'package.json') continue; // npm version stages it itself
+      expect(staged, file).toContain(file);
+    }
+  });
+
+  test('the Claude Code plugin bundles the server under the name tincan, pinned to this release', () => {
+    const mcp = JSON.parse(readFileSync(join(root, 'plugins/claude-code/.mcp.json'), 'utf8'));
+    expect(Object.keys(mcp.mcpServers)).toEqual(['tincan']);
+    expect(mcp.mcpServers.tincan).toEqual({
+      command: 'npx',
+      args: ['-y', `@brutalsystems/tincan@${pkg.version}`],
+    });
   });
 });

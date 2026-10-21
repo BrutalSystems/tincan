@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tincan": {
+      "command": "npx",
+      "args": ["-y", "@brutalsystems/tincan@3.1.0"]
+    }
+  }
+}

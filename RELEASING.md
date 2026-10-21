@@ -90,7 +90,7 @@ steps and not one.
 npm version patch -m "%s — <what changed>"     # or minor / major
 ```
 
-That is the whole release. It rewrites **all six** version sites, commits
+That is the whole release. It rewrites **all seven** version sites, commits
 them, creates the `v0.5.6` tag, and pushes commit and tag to `origin`, which
 fires `publish.yml` — publishing both `@brutalsystems/tincan` and
 `@brutalsystems/tincan-opencode` from the one run. Watch it:
@@ -99,23 +99,33 @@ fires `publish.yml` — publishing both `@brutalsystems/tincan` and
 gh run watch --repo BrutalSystems/tincan
 ```
 
-The six sites are `package.json`, `plugins/opencode/package.json`,
-`plugins/claude-code/.claude-plugin/plugin.json`,
+The seven sites are `package.json`, `plugins/opencode/package.json`,
+`plugins/claude-code/.claude-plugin/plugin.json`, the server pin in
+`plugins/claude-code/.mcp.json`,
 `test/fixtures/canonical-id.json`,
 `plugins/opencode/tincan-lib/types.ts` and `CANONICAL_ID.md` line 3, kept in
 step by `scripts/sync-version.mjs` from the `version` lifecycle hook;
 `postversion` does the push. `npm run check-version` reports drift without
 changing anything, and CI runs it on every push.
 
+The Claude Code plugin is published by the push itself, not by the workflow:
+the marketplace is this repository, so `claude plugin marketplace update`
+fetches the new `.mcp.json` as soon as the release commit reaches GitHub. Its
+pin names a version npm will not serve until `publish.yml` finishes, so a
+session that updates the plugin and starts in that minute or two fails to
+start the server. A restart once the run is green fixes it. That is why the pin
+is only ever rewritten by `npm version`, in the same push as the tag, and never
+committed ahead of a cut.
+
 They are literals rather than runtime reads of package.json for reasons the
 script's header gives: the fixture is a staleness check consumers compare
 against, the opencode plugin ships untranspiled into opencode with no path to
-our package.json, the Claude Code plugin manifest is read by Claude Code's
+our package.json, the Claude Code plugin manifest and its server pin are read by Claude Code's
 plugin loader, and `CANONICAL_ID.md` is prose. The program's own version is *not* one
 of them — `src/version.ts` reads package.json at runtime.
 
 **If you need the pieces separately** — a dry run, or a release built by hand:
-`npm run sync-version 0.5.6` rewrites the six sites and nothing else, leaving
+`npm run sync-version 0.5.6` rewrites the seven sites and nothing else, leaving
 the commit, tag and push to you. `npm version --no-git-tag-version` bumps
 without committing. Neither publishes; only a pushed `v*` tag does.
 

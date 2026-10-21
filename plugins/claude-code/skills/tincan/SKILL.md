@@ -8,8 +8,10 @@ description: "Use when asked to message, tell, ask, notify or reply to another l
 Tin Can lets live Claude Code, Codex and opencode sessions **on one machine**
 message each other. It runs as an MCP server named `tincan` inside each session.
 Its tools are `peers`, `send_peer`, `message_log` and `reregister`, shown in Claude Code as
-`mcp__tincan__<tool>` when registered under that name. It never starts a
-session, never waits for an answer, and has no network transport.
+`mcp__tincan__<tool>` when registered at user scope, or
+`mcp__plugin_tincan_tincan__<tool>` when this plugin started it. They are the
+same tools either way. It never starts a session, never waits for an answer,
+and has no network transport.
 
 **Use it to reach a session someone else started.** Agents *this* session
 spawned (Agent-tool subagents, teammates) are not peers. Use `SendMessage`
@@ -18,11 +20,15 @@ runtimes and config dirs, and carries `in_reply_to`/`answers`. Claude Code's
 own path to other sessions in the same config dir is not recorded in
 `message_log`.
 
-**No `mcp__tincan__*` tools in this session?** Tin Can is not registered.
-Offer to run `tincan mcp install` (it registers the server at user scope as
-`tincan`; needs `npm install -g @brutalsystems/tincan` first if `tincan` is not
-on PATH). **Ask the user before running it; never run it unasked.** Then tell
-them to restart the session, since MCP servers load at startup.
+**No Tin Can tools in this session under either name?** This plugin brings
+the server, so the usual cause is a session started before the plugin was
+installed or enabled; tell the user to restart it, since MCP servers load at
+startup. The plugin starts the server with `npx`, so it also needs Node and npm
+on `PATH`. The alternative is `tincan mcp install`, which registers the server
+at user scope as `tincan` and needs `npm install -g @brutalsystems/tincan`
+first if `tincan` is not on PATH. **Ask the user before running it; never run
+it unasked**, and say they should use the plugin's server or that registration,
+not both, since a session with both gets every tool twice.
 `tincan mcp status` shows the current registration. If install reports a
 different `tincan` already registered, show them both and let them decide on
 `--force`.

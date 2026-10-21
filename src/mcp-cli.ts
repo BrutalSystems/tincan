@@ -2,11 +2,12 @@
  * `tincan mcp install | uninstall | status` — register Tin Can with Claude Code.
  *
  * The name is the point. Claude Code names an MCP server's tools
- * `mcp__<server>__<tool>`, and everything written about Tin Can — the skill, the
- * docs, a peer's instructions — says `mcp__tincan__send_peer`. A plugin that
- * bundled the server would register it under a longer, plugin-qualified name,
- * so the tools would no longer be the ones anything refers to. Registering it
- * at user scope under `tincan` keeps them short and the same in every project.
+ * `mcp__<server>__<tool>`, so registering at user scope under `tincan` gives
+ * the short `mcp__tincan__send_peer` in every project. The Claude Code plugin
+ * also bundles the server (plugins/claude-code/.mcp.json), for installs with no
+ * global binary, and Claude Code registers that one under a plugin-qualified
+ * name, `mcp__plugin_tincan_tincan__*`. This command is the route to the short
+ * name. A session should have one or the other: with both it runs two servers.
  *
  * Writes go through `claude mcp add` / `claude mcp remove`, never into Claude
  * Code's config directly: that file is Claude Code's, and its CLI is the

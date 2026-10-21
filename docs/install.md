@@ -40,6 +40,10 @@ That runs `claude mcp add --scope user tincan -- tincan` for you, following
 alone, and a different one is replaced only with `--force`. `tincan mcp status`
 shows what is registered; `tincan mcp uninstall` removes it.
 
+Or install the Claude Code plugin instead, which starts a pinned server through
+`npx` and needs no global install. See the README, "Use with Claude Code".
+Use one or the other: a session with both runs two servers.
+
 **Codex**, in `~/.codex/config.toml`:
 
 ```toml

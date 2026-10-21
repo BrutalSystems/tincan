@@ -148,35 +148,48 @@ Full install for all three runtimes, including the opencode plugin:
 
 ## Use with Claude Code
 
-1. **Install the plugin.** This repository is also a Claude Code plugin
-   marketplace. Its plugin carries a `tincan` skill that teaches a session how
-   to use Tin Can well: finding peers, sending, replying so a question closes,
-   reading outcomes and refusals, and the traps. It is versioned with Tin Can,
-   so it describes the tools and flags of the release it ships with.
+There are two ways in. Use **one**, not both: a session with both runs two Tin
+Can servers and gets every tool twice.
 
-   ```bash
-   claude plugin marketplace add BrutalSystems/tincan
-   claude plugin install tincan@tincan
-   ```
+**The plugin (no global install).** This repository is also a Claude Code
+plugin marketplace. Its plugin brings the server and a `tincan` skill that
+teaches a session to use it well: finding peers, sending, replying so a
+question closes, reading outcomes and refusals, and the traps.
 
-   Or from inside a session: `/plugin marketplace add BrutalSystems/tincan`,
-   then `/plugin install tincan@tincan`.
+```bash
+claude plugin marketplace add BrutalSystems/tincan
+claude plugin install tincan@tincan
+```
 
-2. **Register the server.** The plugin adds only the skill. With Tin Can
-   installed (`npm install -g @brutalsystems/tincan`), run:
+Or from inside a session: `/plugin marketplace add BrutalSystems/tincan`, then
+`/plugin install tincan@tincan`. Then restart the session; MCP servers load at
+startup.
 
-   ```bash
-   tincan mcp install
-   ```
+The plugin starts the server with `npx`, pinned to the release the plugin was
+shipped with, so the skill and the server always match. It needs Node and npm
+on `PATH`; the first start downloads the package, and later starts use npm's
+cache. A server that comes from a plugin gets a plugin-qualified name in Claude
+Code, so its tools appear as `mcp__plugin_tincan_tincan__*` rather than
+`mcp__tincan__*`. Permission allow-lists written for one name do not cover the
+other. To upgrade, update the marketplace (`claude plugin marketplace update
+tincan`) and restart.
 
-   It registers Tin Can at Claude Code user scope under the name `tincan`, so
-   its tools are `mcp__tincan__*` in every project. It respects
-   `CLAUDE_CONFIG_DIR`, changes nothing if the same registration is already
-   there, and refuses to replace a different one without `--force`.
-   `tincan mcp status` shows the registration; `tincan mcp uninstall` removes
-   it.
+**User-scope registration.** With Tin Can installed globally
+(`npm install -g @brutalsystems/tincan`), run:
 
-3. **Restart the session.** MCP servers load at startup.
+```bash
+tincan mcp install
+```
+
+It registers Tin Can at Claude Code user scope under the name `tincan`, so its
+tools are `mcp__tincan__*` in every project. It respects `CLAUDE_CONFIG_DIR`,
+changes nothing if the same registration is already there, and refuses to
+replace a different one without `--force`. `tincan mcp status` shows the
+registration; `tincan mcp uninstall` removes it. You can still install the
+plugin for its skill. If you do, disable it, or remove this registration, so
+that only one server runs.
+
+Restart the session either way.
 
 ## Keeping it up to date
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One version, six files. package.json is the source; the others are
+// One version, seven files. package.json is the source; the others are
 // derived from it here and nowhere else.
 //
 // They cannot simply read package.json at runtime the way src/version.ts
@@ -58,6 +58,15 @@ export const VERSION_SITES = [
     file: 'plugins/claude-code/.claude-plugin/plugin.json',
     read: (s) => JSON.parse(s).version,
     write: (s, v) => s.replace(/("version"\s*:\s*)"[^"]*"/, `$1"${v}"`),
+  },
+  {
+    // The server the Claude Code plugin starts, pinned to the release that
+    // carries it. Unpinned, `npx` would run whatever was newest whenever a
+    // session happened to start, so the skill and the server could disagree;
+    // left behind here, every plugin user runs the previous release.
+    file: 'plugins/claude-code/.mcp.json',
+    read: (s) => s.match(/"@brutalsystems\/tincan@([^"]*)"/)?.[1],
+    write: (s, v) => s.replace(/("@brutalsystems\/tincan@)[^"]*"/, `$1${v}"`),
   },
   {
     file: 'plugins/opencode/tincan-lib/types.ts',
